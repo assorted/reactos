@@ -840,26 +840,35 @@ UDFGetFullNameInformation(
     )
 {
     ULONG BytesToCopy;
-    NTSTATUS RC = STATUS_SUCCESS;
-
 
     AdPrint(("UDFGetFullNameInformation\n"));
 
+    /* If buffer can't hold at least the file name length, bail out */
+    if (*PtrReturnedLength < (LONG)FIELD_OFFSET(FILE_NAME_INFORMATION, FileName[0]))
+        return STATUS_BUFFER_OVERFLOW;
+
+    /* Save file name length, and as much file len, as buffer length allows */
     PtrBuffer->FileNameLength = FileObject->FileName.Length;
-    BytesToCopy = FileObject->FileName.Length;
 
-    if (PtrBuffer->FileNameLength + sizeof( ULONG ) > (ULONG)(*PtrReturnedLength)) {
+    /* Calculate amount of bytes to copy not to overflow the buffer */
+    BytesToCopy = min(FileObject->FileName.Length,
+                      *PtrReturnedLength - FIELD_OFFSET(FILE_NAME_INFORMATION, FileName[0]));
 
-        BytesToCopy = *PtrReturnedLength - sizeof( ULONG );
-        RC = STATUS_BUFFER_OVERFLOW;
+    /* Fill in the bytes */
+    RtlCopyMemory(PtrBuffer->FileName, FileObject->FileName.Buffer, BytesToCopy);
+
+    /* Check if we could write more but are not able to */
+    if (*PtrReturnedLength < (LONG)FileObject->FileName.Length + (LONG)FIELD_OFFSET(FILE_NAME_INFORMATION, FileName[0]))
+    {
+        /* Return number of bytes written */
+        *PtrReturnedLength -= FIELD_OFFSET(FILE_NAME_INFORMATION, FileName[0]) + BytesToCopy;
+        return STATUS_BUFFER_OVERFLOW;
     }
 
-    RtlCopyMemory( PtrBuffer->FileName, FileObject->FileName.Buffer, BytesToCopy );
+    /* We filled up as many bytes, as needed */
+    *PtrReturnedLength -= (FIELD_OFFSET(FILE_NAME_INFORMATION, FileName[0]) + FileObject->FileName.Length);
 
-    //  Reduce the available bytes by the amount stored into this buffer.
-    *PtrReturnedLength -= sizeof( ULONG ) + PtrBuffer->FileNameLength;
-
-    return RC;
+    return STATUS_SUCCESS;
 } // end UDFGetFullNameInformation()
 
 /*
