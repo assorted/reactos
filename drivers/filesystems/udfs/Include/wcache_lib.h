@@ -115,7 +115,11 @@ typedef struct _W_CACHE_FRAME {
 #define CACHED_BLOCK_MEMORY_TYPE PagedPool
 #define MAX_TRIES_FOR_NA         3
 
-#define WCACHE_ADDR_MASK     0xfffffff8
+#ifdef _WIN64
+    #define WCACHE_ADDR_MASK     0xfffffffffffffff8
+#else
+    #define WCACHE_ADDR_MASK     0xfffffff8
+#endif
 #define WCACHE_FLAG_MASK     0x00000007
 #define WCACHE_FLAG_MODIFIED 0x00000001
 #define WCACHE_FLAG_ZERO     0x00000002
