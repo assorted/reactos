@@ -249,6 +249,7 @@ UDFQueryDirectory(
     PFILE_BOTH_DIR_INFORMATION  DirInformation = NULL;      // Returned from udf_info module
     PFILE_BOTH_DIR_INFORMATION  BothDirInformation = NULL;  // Pointer in callers buffer
     PFILE_NAMES_INFORMATION     NamesInfo;
+    PFILE_ID_BOTH_DIR_INFORMATION IdBothDirInfo = NULL;
     ULONG                       BytesRemainingInBuffer;
     UCHAR                       FNM_Flags = 0;
     PHASH_ENTRY                 cur_hashes = NULL;
@@ -311,6 +312,9 @@ UDFQueryDirectory(
             break;
         case FileBothDirectoryInformation:
             BaseLength = FIELD_OFFSET( FILE_BOTH_DIR_INFORMATION,  FileName[0] );
+            break;
+        case FileIdBothDirectoryInformation:
+            BaseLength = FIELD_OFFSET( FILE_ID_BOTH_DIR_INFORMATION, FileName[0] );
             break;
         default:
             try_return(RC = STATUS_INVALID_INFO_CLASS);
@@ -531,6 +535,7 @@ UDFQueryDirectory(
 
             case FileBothDirectoryInformation:
             case FileFullDirectoryInformation:
+            case FileIdBothDirectoryInformation:
             case FileDirectoryInformation:
 
                 BothDirInformation = (PFILE_BOTH_DIR_INFORMATION)(Buffer + CurrentOffset);
@@ -549,6 +554,18 @@ UDFQueryDirectory(
             default:
                 break;
             }
+
+            switch (FileInformationClass) {
+
+            case FileIdBothDirectoryInformation:
+                IdBothDirInfo = (PFILE_ID_BOTH_DIR_INFORMATION)(Buffer + CurrentOffset);
+                IdBothDirInfo->FileId.QuadPart = UDFGetNTFileId(Vcb, Fcb->FileInfo, &(Fcb->FCBName->ObjectName));
+                break;
+
+            default:
+                break;
+            }
+
             if (FileNameBytes) {
                 //  This is a Unicode name, we can copy the bytes directly.
                 RtlCopyMemory( (PVOID)(Buffer + CurrentOffset + BaseLength),
