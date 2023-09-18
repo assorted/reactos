@@ -2690,16 +2690,13 @@ UDFGetBlockSize(
     )
 {
     OSSTATUS        RC = STATUS_SUCCESS;
-    PDISK_GEOMETRY  DiskGeometry = (PDISK_GEOMETRY)MyAllocatePool__(NonPagedPool,sizeof(DISK_GEOMETRY));
-    PPARTITION_INFORMATION  PartitionInfo = (PPARTITION_INFORMATION)MyAllocatePool__(NonPagedPool,sizeof(PARTITION_INFORMATION)*2);
+    DISK_GEOMETRY_EX DiskGeometryEx;
+    PARTITION_INFORMATION  PartitionInfo;
 #ifdef UDF_FORMAT_MEDIA
     PUDFFmtState            fms = Vcb->fms;
 #else
   #define fms FALSE
 #endif //UDF_FORMAT_MEDIA
-
-    if(!DiskGeometry || !PartitionInfo)
-        try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
 
 #ifdef _BROWSE_UDF_
 
@@ -2707,16 +2704,16 @@ UDFGetBlockSize(
     if(!fms) {
         if(UDFGetDevType(DeviceObject) == FILE_DEVICE_DISK) {
             UDFPrint(("UDFGetBlockSize: HDD\n"));
-            RC = UDFPhSendIOCTL(IOCTL_DISK_GET_DRIVE_GEOMETRY,DeviceObject,
+            RC = UDFPhSendIOCTL(IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,DeviceObject,
                 0,NULL,
-                DiskGeometry,sizeof(DISK_GEOMETRY),
+                &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
                 TRUE,NULL );
-            Vcb->BlockSize = (OS_SUCCESS(RC)) ? DiskGeometry->BytesPerSector : 512;
+            Vcb->BlockSize = (OS_SUCCESS(RC)) ? DiskGeometryEx.Geometry.BytesPerSector : 512;
             if(!NT_SUCCESS(RC))
                 try_return(RC);
             RC = UDFPhSendIOCTL(IOCTL_DISK_GET_PARTITION_INFO,DeviceObject,
                 0,NULL,
-                PartitionInfo,sizeof(PARTITION_INFORMATION),
+                &PartitionInfo,sizeof(PARTITION_INFORMATION),
                 TRUE,NULL );
             if(!NT_SUCCESS(RC)) {
                 UDFPrint(("UDFGetBlockSize: IOCTL_DISK_GET_PARTITION_INFO failed\n"));
@@ -2724,15 +2721,15 @@ UDFGetBlockSize(
                     RC = STATUS_UNRECOGNIZED_VOLUME;
                 try_return(RC);
             }
-            if(PartitionInfo->PartitionType != PARTITION_IFS) {
-                UDFPrint(("UDFGetBlockSize: PartitionInfo->PartitionType != PARTITION_IFS\n"));
+            if(PartitionInfo.PartitionType != PARTITION_IFS && PartitionInfo.PartitionType != PARTITION_HUGE) {
+                UDFPrint(("UDFGetBlockSize: PartitionInfo.PartitionType != PARTITION_IFS\n"));
                 try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
             }
         } else {
 #endif //UDF_HDD_SUPPORT
-            RC = UDFPhSendIOCTL(IOCTL_CDROM_GET_DRIVE_GEOMETRY,DeviceObject,
-                DiskGeometry,sizeof(DISK_GEOMETRY),
-                DiskGeometry,sizeof(DISK_GEOMETRY),
+            RC = UDFPhSendIOCTL(IOCTL_CDROM_GET_DRIVE_GEOMETRY_EX,DeviceObject,
+                &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
+                &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
                 TRUE,NULL );
 
             if(RC == STATUS_DEVICE_NOT_READY) {
@@ -2741,7 +2738,7 @@ UDFGetBlockSize(
                 try_return(RC);
             }
 
-            Vcb->BlockSize = (OS_SUCCESS(RC)) ? DiskGeometry->BytesPerSector : 2048;
+            Vcb->BlockSize = (OS_SUCCESS(RC)) ? DiskGeometryEx.Geometry.BytesPerSector : 2048;
 #ifdef UDF_HDD_SUPPORT
         }
     }
@@ -2751,21 +2748,21 @@ UDFGetBlockSize(
 
 #ifdef UDF_FORMAT_MEDIA
     if(fms) {
-        RC = UDFPhSendIOCTL(IOCTL_CDROM_GET_DRIVE_GEOMETRY,DeviceObject,
-            DiskGeometry,sizeof(DISK_GEOMETRY),
-            DiskGeometry,sizeof(DISK_GEOMETRY),
+        RC = UDFPhSendIOCTL(IOCTL_CDROM_GET_DRIVE_GEOMETRY_EX,DeviceObject,
+            &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
+            &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
             FALSE, NULL );
 
         if(!NT_SUCCESS(RC)) {
-            RC = UDFPhSendIOCTL(IOCTL_DISK_GET_DRIVE_GEOMETRY,DeviceObject,
-                DiskGeometry,sizeof(DISK_GEOMETRY),
-                DiskGeometry,sizeof(DISK_GEOMETRY),
+            RC = UDFPhSendIOCTL(IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,DeviceObject,
+                &DiskGeometryEx,sizeof(DISK_GEOMETRY),
+                &DiskGeometryEx,sizeof(DISK_GEOMETRY),
                 FALSE, NULL );
             if(NT_SUCCESS(RC)) {
                 fms->opt_media = MT_HD;
                 RC = UDFPhSendIOCTL(IOCTL_DISK_GET_PARTITION_INFO,DeviceObject,
                     NULL,0,
-                    PartitionInfo,sizeof(PARTITION_INFORMATION)*2,
+                    &PartitionInfo,sizeof(PARTITION_INFORMATION),
                     FALSE, NULL );
                 if(!NT_SUCCESS(RC)) {
                     LONG HiOffs=0;
@@ -2780,7 +2777,7 @@ UDFGetBlockSize(
             try_return(RC );
         }
 
-        Vcb->BlockSize = (NT_SUCCESS(RC)) ? DiskGeometry->BytesPerSector : 2048;
+        Vcb->BlockSize = (NT_SUCCESS(RC)) ? DiskGeometryEx.Geometry.BytesPerSector : 2048;
     }
 #endif //UDF_FORMAT_MEDIA
 
@@ -2819,14 +2816,14 @@ UDFGetBlockSize(
 
         Vcb->FirstLBA=0;//(ULONG)(PartitionInfo->StartingOffset.QuadPart >> Vcb->BlockSizeBits);
         Vcb->LastPossibleLBA =
-        Vcb->LastLBA = (uint32)(PartitionInfo->PartitionLength.QuadPart >> Vcb->BlockSizeBits)/* + Vcb->FirstLBA*/ - 1;
+        Vcb->LastLBA = (uint32)(DiskGeometryEx.DiskSize.QuadPart >> Vcb->BlockSizeBits)/* + Vcb->FirstLBA*/ - 1;
     } else {
 #endif //UDF_HDD_SUPPORT
         Vcb->FirstLBA=0;
         if(OS_SUCCESS(RC)) {
-            Vcb->LastLBA = (uint32)(DiskGeometry->Cylinders.QuadPart *
-                                    DiskGeometry->TracksPerCylinder *
-                                    DiskGeometry->SectorsPerTrack - 1);
+            Vcb->LastLBA = (uint32)(DiskGeometryEx.Geometry.Cylinders.QuadPart *
+                                    DiskGeometryEx.Geometry.TracksPerCylinder *
+                                    DiskGeometryEx.Geometry.SectorsPerTrack - 1);
             if(Vcb->LastLBA == 0x7fffffff) {
                 Vcb->LastLBA = UDFIsDvdMedia(Vcb) ? DEFAULT_LAST_LBA_DVD : DEFAULT_LAST_LBA_FP_CD;
             }
@@ -2859,8 +2856,6 @@ try_exit:   NOTHING;
     UDFPrint(("UDFGetBlockSize:\nBlock size is %x, Block size bits %x, Last LBA is %x\n",
               Vcb->BlockSize, Vcb->BlockSizeBits, Vcb->LastLBA));
 
-    MyFreePool__(PartitionInfo);
-    MyFreePool__(DiskGeometry);
     return RC;
 
 } // end UDFGetBlockSize()
