@@ -763,6 +763,12 @@ UDFSetDstring(
     uint8* CS0;
     SIZE_T len = Length-1;
 
+    // A zero length string shall be recorded by a Dstring with all zeros bytes
+    if (UName->Length == 0) {
+        RtlZeroMemory(Dest, Length);
+        return STATUS_SUCCESS;
+    }
+
     UDFCompressUnicode(UName, &CS0, &len);
     if(!CS0)
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -775,7 +781,7 @@ UDFSetDstring(
     if(len < Length-1)
         RtlZeroMemory(Dest+len, Length-1-len);
     Dest[Length-1] = (uint8)len;
-    return TRUE;
+    return STATUS_SUCCESS;
 } // end UDFSetDstring()
 
 void
