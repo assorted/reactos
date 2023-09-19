@@ -1900,7 +1900,7 @@ UDFVerifyFreeSpaceBitmap(
         status = STATUS_SUCCESS;
     }
     return status;
-} // end UDFBuildFreeSpaceBitmap()
+} // end UDFVerifyFreeSpaceBitmap()
 
 /*
     This routine builds FreeSpaceBitmap (internal) according to media
@@ -1921,6 +1921,7 @@ UDFBuildFreeSpaceBitmap(
     PEXTENT_MAP Extent;
     lb_addr locAddr;
     uint32 PartNum;
+    BOOLEAN UnallocSpaceExtent = FALSE;
 
     PartNum = UDFGetPartNumByPartNdx(Vcb, PartNdx);
     if(!(Vcb->FSBM_Bitmap)) {
@@ -2002,6 +2003,9 @@ free_fsbm:
                     Extent[i].extLength =
                     Extent[i].extLocation = 0;
                     Extent = UDFMergeMappings(Extent, (PEXTENT_MAP)(AllocDesc+sizeof(UNALLOC_SPACE_DESC)) );
+
+                    // If the descriptor was not found, Extent will contain gibberish
+                    UnallocSpaceExtent = TRUE;
 #ifdef UDF_DBG
                 } else {
                     UDFPrint(("Broken unallocated space descriptor sequence\n"));
@@ -2009,7 +2013,11 @@ free_fsbm:
                 }
             }
         }
-        UDFMarkSpaceAsXXX(Vcb, (-1), Extent, AS_USED); // mark as used
+
+        if (UnallocSpaceExtent) {
+            UDFMarkSpaceAsXXX(Vcb, (-1), Extent, AS_USED); // mark as used
+        }
+
         MyFreePool__(Extent);
         MyFreePool__(AllocDesc);
     }
