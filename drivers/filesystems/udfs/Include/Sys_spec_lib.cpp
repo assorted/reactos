@@ -252,7 +252,7 @@ UDFFileDirInfoToNT(
     DosName.MaximumLength = sizeof(NTFileInfo->ShortName); // 12*sizeof(WCHAR)
 
     _SEH2_TRY {
-        UDFPrint(("  DirInfoToNT: %*.*S\n", FileDirNdx->FName.Length/sizeof(WCHAR), FileDirNdx->FName.Length/sizeof(WCHAR), FileDirNdx->FName));
+        UDFPrint(("  DirInfoToNT: %wZ\n", &FileDirNdx->FName));
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         UDFPrint(("  DirInfoToNT: exception when printing file name\n"));
     } _SEH2_END;
