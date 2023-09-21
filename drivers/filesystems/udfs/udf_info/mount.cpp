@@ -2376,7 +2376,8 @@ UDFProcessSequence(
      IN PVCB              Vcb,
      IN uint32            block,
      IN uint32            lastblock,
-    OUT lb_addr           *fileset
+    OUT lb_addr           *fileset,
+    OUT UDF_VDS_RECORD    *volDesc
     )
 {
     OSSTATUS    RC = STATUS_SUCCESS;
@@ -2405,11 +2406,7 @@ UDFProcessSequence(
 
                 if(i == VDS_POS_PRIMARY_VOL_DESC) {
                     UDFLoadPVolDesc(Vcb,Buf);
-                    if(!Vcb->PVolDescAddr.block) {
-                        Vcb->PVolDescAddr = vds[i];
-                    } else {
-                        Vcb->PVolDescAddr2 = vds[i];
-                    }
+                    *volDesc = vds[i];
                 } else
                 if(i == VDS_POS_LOGICAL_VOL_DESC) {
                     RC = UDFLoadLogicalVol(DeviceObject,Vcb, Buf, fileset);
@@ -2477,7 +2474,8 @@ UDFVerifySequence(
      IN PVCB              Vcb,
      IN uint32             block,
      IN uint32             lastblock,
-     OUT lb_addr          *fileset
+     OUT lb_addr          *fileset,
+     OUT UDF_VDS_RECORD   *volDesc
      )
 {
     OSSTATUS    RC = STATUS_SUCCESS;
@@ -2503,13 +2501,12 @@ UDFVerifySequence(
                     try_return(RC);
                 UDFRegisterFsStructure(Vcb, vds[i].block, Vcb->BlockSize);
 
-    /*            if(i == VDS_POS_PRIMARY_VOL_DESC)
-                    UDFLoadPVolDesc(Vcb,Buf);
-                else if(i == VDS_POS_LOGICAL_VOL_DESC) {
-                    RC = UDFLoadLogicalVol(DeviceObject,Vcb, Buf, fileset);
-                    if(!OS_SUCCESS(RC)) try_return(RC);
+                if(i == VDS_POS_PRIMARY_VOL_DESC) {
+                    *volDesc = vds[i];
                 }
-                else*/ if(i == VDS_POS_PARTITION_DESC)
+                else if(i == VDS_POS_LOGICAL_VOL_DESC) {
+                }
+                else if(i == VDS_POS_PARTITION_DESC)
                 {
                     Buf2 = (int8*)MyAllocatePool__(NonPagedPool,Vcb->BlockSize);
                     if(!Buf2) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
@@ -2631,6 +2628,8 @@ UDFLoadPartition(
     int8*               Buf = (int8*)MyAllocatePool__(NonPagedPool,Vcb->BlockSize);
     uint32              main_s, main_e;
     uint32              reserve_s, reserve_e;
+    UDF_VDS_RECORD      mainVolDesc;
+    UDF_VDS_RECORD      reserveVolDesc;
     int                 i;
 
     if(!Buf) return STATUS_INSUFFICIENT_RESOURCES;
@@ -2661,7 +2660,7 @@ UDFLoadPartition(
                 // responsible for finding the PartitionDesc(s)
                 UDFPrint(("-----------------------------------\n"));
                 UDFPrint(("UDF: Main sequence:\n"));
-                RC = UDFProcessSequence(DeviceObject, Vcb, main_s, main_e, fileset);
+                RC = UDFProcessSequence(DeviceObject, Vcb, main_s, main_e, fileset, &mainVolDesc);
             }
 
             if(!OS_SUCCESS(RC)) {
@@ -2676,13 +2675,14 @@ UDFLoadPartition(
 
                 RC2 = UDFIsCachedBadSequence(Vcb, reserve_s);
                 if(OS_SUCCESS(RC2)) {
-                    RC2 = UDFProcessSequence(DeviceObject, Vcb, reserve_s, reserve_e, fileset);
+                    RC2 = UDFProcessSequence(DeviceObject, Vcb, reserve_s, reserve_e, fileset, &reserveVolDesc);
                 }
 
                 if(OS_SUCCESS(RC2)) {
                     UDFPrint(("-----------------------------------\n"));
                     Vcb->VDS2_Len = reserve_e - reserve_s;
                     Vcb->VDS2 = reserve_s;
+                    Vcb->PVolDescAddr2 = reserveVolDesc;
                     RC = STATUS_SUCCESS;
                     // Vcb is already Zero-filled
 //                    Vcb->VDS1_Len = 0;
@@ -2696,13 +2696,15 @@ UDFLoadPartition(
                 // remember these values for umount__
                 Vcb->VDS1_Len = main_e - main_s;
                 Vcb->VDS1 = main_s;
+                Vcb->PVolDescAddr = mainVolDesc;
 /*                if(Vcb->LVid) MyFreePool__(Vcb->LVid);
                 Vcb->LVid = NULL;*/
-                if(OS_SUCCESS(UDFVerifySequence(DeviceObject, Vcb, reserve_s, reserve_e, fileset)))
+                if(OS_SUCCESS(UDFVerifySequence(DeviceObject, Vcb, reserve_s, reserve_e, fileset, &reserveVolDesc)))
                 {
                     UDFPrint(("-----------------------------------\n"));
                     Vcb->VDS2_Len = reserve_e - reserve_s;
                     Vcb->VDS2 = reserve_s;
+                    Vcb->PVolDescAddr2 = reserveVolDesc;
                     break;
                 } else {
                     UDFPrint(("UDF: Reserve sequence verification failed.\n"));
