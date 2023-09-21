@@ -911,13 +911,15 @@ OSSTATUS UDFProcessSequence(IN PDEVICE_OBJECT DeviceObject,
                             IN PVCB           Vcb,
                             IN uint32          block,
                             IN uint32          lastblock,
-                           OUT lb_addr        *fileset);
+                           OUT lb_addr        *fileset,
+                           OUT UDF_VDS_RECORD  *volDesc);
 // Verifies a main/reserve volume descriptor sequence.
 OSSTATUS UDFVerifySequence(IN PDEVICE_OBJECT    DeviceObject,
                            IN PVCB              Vcb,
                            IN uint32             block,
                            IN uint32             lastblock,
-                          OUT lb_addr           *fileset);
+                          OUT lb_addr           *fileset,
+                          OUT UDF_VDS_RECORD    *volDesc);
 // remember some useful info about FileSet & RootDir location
 void     UDFLoadFileset(IN PVCB            Vcb,
                         IN PFILE_SET_DESC  fset,
