@@ -2768,7 +2768,7 @@ UDFPackMapping(
     NewSize = UDFGetMappingLength(OldMap);
 #ifdef UDF_DBG
     check_size = UDFGetExtentLength(ExtInfo->Mapping);
-    ASSERT(!(check_size & (2048-1)));
+    ASSERT(!(check_size & (Vcb->LBlockSize-1)));
 #endif //UDF_DBG
 
     l=OldMap[0].extLength & UDF_EXTENT_LENGTH_MASK;
