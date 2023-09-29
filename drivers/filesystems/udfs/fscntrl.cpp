@@ -370,7 +370,7 @@ UDFMountVolume(
     } else {
         RemovableMedia = (Characteristics & FILE_REMOVABLE_MEDIA) ? TRUE : FALSE;
         if(TargetDeviceObject->DeviceType != FILE_DEVICE_CD_ROM) {
-            if(UDFGetRegParameter(NULL, REG_MOUNT_ON_CDONLY_NAME, TRUE)) {
+            if(UDFGetRegParameter(NULL, REG_MOUNT_ON_CDONLY_NAME, FALSE)) {
                 WrongMedia = TRUE;
             }
         }
@@ -379,12 +379,13 @@ UDFMountVolume(
 #ifdef UDF_HDD_SUPPORT
         } else
         if (TargetDeviceObject->DeviceType == FILE_DEVICE_DISK) {
+            WrongMedia = FALSE; // Reset the flag as it may be altered in the preceding code
             if(RemovableMedia) {
-                if(!UDFGetRegParameter(NULL, REG_MOUNT_ON_ZIP_NAME, FALSE)) {
+                if(!UDFGetRegParameter(NULL, REG_MOUNT_ON_ZIP_NAME, TRUE)) {
                     WrongMedia = TRUE;
                 }
             } else {
-                if(!UDFGetRegParameter(NULL, REG_MOUNT_ON_HDD_NAME, FALSE)) {
+                if(!UDFGetRegParameter(NULL, REG_MOUNT_ON_HDD_NAME, TRUE)) {
                     WrongMedia = TRUE;
                 }
             }
@@ -854,7 +855,11 @@ UDFStartEjectWaiter(
 //    NTSTATUS RC;
     PREVENT_MEDIA_REMOVAL_USER_IN Buff;
     UDFPrint(("UDFStartEjectWaiter:\n"));
-
+    UDFPrint(("Vcb->FsDeviceType=%x\n", Vcb->FsDeviceType));
+    if (Vcb->FsDeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) {
+        UDFPrint(("Is HDD so skip\n"));
+        return STATUS_SUCCESS;
+    }
     if(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY) {
         UDFPrint(("  UDF_VCB_FLAGS_MEDIA_READ_ONLY\n"));
     }
