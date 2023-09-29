@@ -558,7 +558,7 @@ UDFIndexDirectory(
     DirNdx = UDFDirIndex(hDirNdx,0);
     ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     DirNdx->FileEntryLoc.partitionReferenceNum = PartNum =
-        (uint16)UDFGetPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
+        (uint16)UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     ASSERT(PartNum != -1);
     DirNdx->FileEntryLoc.logicalBlockNum =
         UDFPhysLbaToPart(Vcb, PartNum, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
@@ -741,7 +741,7 @@ UDFPackDirectory__(
     }
 
     ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
-    PartNum = (uint16)UDFGetPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
+    PartNum = (uint16)UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     ASSERT(PartNum != -1);
 
     while((DirNdx = UDFDirIndexScan(&ScanContext, NULL))) {
@@ -812,7 +812,7 @@ UDFPackDirectory__(
                 UDFSetUpTag(Vcb, (tag*)Buf, (uint16)l,
                           UDFPhysLbaToPart(Vcb, PartNum,
                                      UDFExtentOffsetToLba(Vcb, FileInfo->Dloc->DataLoc.Mapping,
-                                                Offset, NULL, NULL, NULL, NULL)));
+                                                Offset, NULL, NULL, NULL, NULL)), 0);
 
                 status = UDFWriteFile__(Vcb, FileInfo, Offset, l, FALSE, Buf, &ReadBytes);
                 if(!OS_SUCCESS(status)) {
@@ -865,7 +865,7 @@ UDFReTagDirectory(
     PUDF_FILE_INFO curFileInfo;
     PDIR_INDEX_ITEM DirNdx;
     UDF_DIR_SCAN_CONTEXT ScanContext;
-    uint16 PartNum;
+    uint16 RefPartNum;
 
     ValidateFileInfo(FileInfo);
     PDIR_INDEX_HDR hDirNdx = FileInfo->Dloc->DirIndex;
@@ -892,8 +892,8 @@ UDFReTagDirectory(
     }
 
     ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
-    PartNum = (uint16)UDFGetPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
-    ASSERT(PartNum != -1);
+    RefPartNum = (uint16)UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
+    ASSERT(RefPartNum != -1);
 
     while((DirNdx = UDFDirIndexScan(&ScanContext, NULL))) {
 
@@ -906,9 +906,9 @@ UDFReTagDirectory(
         curFileInfo = DirNdx->FileInfo;
         // write modified
         UDFSetUpTag(Vcb, (tag*)Buf, (uint16)l,
-                  UDFPhysLbaToPart(Vcb, PartNum,
+                  UDFPhysLbaToPart(Vcb, RefPartNum,
                              UDFExtentOffsetToLba(Vcb, FileInfo->Dloc->DataLoc.Mapping,
-                                        Offset, NULL, NULL, NULL, NULL)));
+                                        Offset, NULL, NULL, NULL, NULL)), 0);
 
         if(curFileInfo && curFileInfo->FileIdent) {
             FileInfo->Dloc->FELoc.Modified = TRUE;

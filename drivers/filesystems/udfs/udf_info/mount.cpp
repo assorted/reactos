@@ -65,7 +65,7 @@ UDFPrepareXSpaceBitmap(
     int8* _XSBM;
     uint16 Ident;
     SIZE_T ReadBytes;
-    uint32 PartNum;
+    uint32 RefPartNum;
 
     if(!(XSpaceBitmap->extLength)) {
         *XSl = 0;
@@ -73,9 +73,9 @@ UDFPrepareXSpaceBitmap(
         return STATUS_SUCCESS;
     }
 
-    PartNum = UDFGetPartNumByPartNdx(Vcb, Vcb->PartitionMaps-1);
-    locAddr.partitionReferenceNum = (uint16)PartNum;
-    plen = UDFPartStart(Vcb, PartNum) + UDFPartLen(Vcb, PartNum);
+    RefPartNum = Vcb->PartitionMaps - 1;
+    locAddr.partitionReferenceNum = (uint16)RefPartNum;
+    plen = UDFPartStart(Vcb, RefPartNum) + UDFPartLen(Vcb, RefPartNum);
 
     BS = Vcb->BlockSize;
     LBS = Vcb->LBlockSize;
@@ -88,7 +88,9 @@ UDFPrepareXSpaceBitmap(
     case EXTENT_RECORDED_ALLOCATED: {
         locAddr.logicalBlockNum = XSpaceBitmap->extPosition;
         *XSl = min(XSpaceBitmap->extLength, *XSl);
-        TmpExt.extLength = XSpaceBitmap->extLength = *XSl;
+        UDFPrint(("XSpaceBitmap->extLength=%x, *XSl=%x\n", XSpaceBitmap->extLength, *XSl));
+        // TmpExt.extLength = XSpaceBitmap->extLength = *XSl;
+        TmpExt.extLength = XSpaceBitmap->extLength;
         TmpExt.extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
         if(TmpExt.extLocation == LBA_OUT_OF_EXTENT) {
             BrutePoint();
@@ -102,14 +104,14 @@ UDFPrepareXSpaceBitmap(
     case EXTENT_NOT_RECORDED_NOT_ALLOCATED: {
         // allocate space for bitmap
         if(!OS_SUCCESS(status = UDFAllocFreeExtent(Vcb, *XSl,
-               UDFPartStart(Vcb, PartNum), UDFPartEnd(Vcb, PartNum), XSBMExtInfo, EXTENT_FLAG_ALLOC_SEQUENTIAL) ))
+               UDFPartStart(Vcb, RefPartNum), UDFPartEnd(Vcb, RefPartNum), XSBMExtInfo, EXTENT_FLAG_ALLOC_SEQUENTIAL) ))
             return status;
         if(XSBMExtInfo->Mapping[1].extLength) {
             UDFPrint(("Can't allocate space for Freed Space bitmap\n"));
             *XSl = 0;
         } else {
             *XSl = (uint32)(XSBMExtInfo->Length);
-            XSpaceBitmap->extPosition = UDFPhysLbaToPart(Vcb, PartNum, XSBMExtInfo->Mapping[0].extLocation);
+            XSpaceBitmap->extPosition = UDFPhysLbaToPart(Vcb, RefPartNum, XSBMExtInfo->Mapping[0].extLocation);
         }
         break;
     }
@@ -172,7 +174,7 @@ UDFPrepareXSpaceBitmap(
     XSpaceBitmap->extLength = (*XSl + LBS -1) & ~(LBS-1);
     RtlZeroMemory(*XSBM, *XSl);
     XSDesc->descTag.tagIdent = TID_SPACE_BITMAP_DESC;
-    UDFSetUpTag(Vcb, &(XSDesc->descTag), 0, XSpaceBitmap->extPosition);
+    UDFSetUpTag(Vcb, &(XSDesc->descTag), 0, XSpaceBitmap->extPosition, 0);
     XSDesc->numOfBits = plen;
     XSDesc->numOfBytes = (*XSl)-sizeof(SPACE_BITMAP_DESC);
 
@@ -185,7 +187,7 @@ UDFPrepareXSpaceBitmap(
 OSSTATUS
 UDFUpdateXSpaceBitmaps(
     IN PVCB Vcb,
-    IN uint32 PartNum,
+    IN uint32 RefPartNum,
     IN PPARTITION_HEADER_DESC phd // partition header pointing to Bitmaps
     )
 {
@@ -201,13 +203,11 @@ UDFUpdateXSpaceBitmaps(
     int8* FSBM=NULL;
     uint32 USl, FSl;
     EXTENT_INFO FSBMExtInfo, USBMExtInfo;
-//    lb_addr locAddr;
     SIZE_T WrittenBytes;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
 
-    plen = UDFPartLen(Vcb, PartNum);
-//    locAddr.partitionReferenceNum = (uint16)PartNum;
+    plen = UDFPartLen(Vcb, RefPartNum);
     // prepare bitmaps for updating
 
     status =  UDFPrepareXSpaceBitmap(Vcb, &(phd->unallocatedSpaceBitmap), &USBMExtInfo, &USBM, &USl);
@@ -217,7 +217,7 @@ UDFUpdateXSpaceBitmaps(
         BrutePoint();
     }
 
-    pstart = UDFPartStart(Vcb, PartNum);
+    pstart = UDFPartStart(Vcb, RefPartNum);
     new_bm = Vcb->FSBM_Bitmap;
     old_bm = Vcb->FSBM_OldBitmap;
     bad_bm = Vcb->BSBM_Bitmap;
@@ -308,7 +308,7 @@ UDFUpdatePartDesc(
 
     for(i=0; i<Vcb->PartitionMaps; i++)
     {
-        if((UDFGetPartNumByPartNdx(Vcb,i) == p->partitionNumber) &&
+        if((UDFGetPartNumByPartRef(Vcb,i) == p->partitionNumber) &&
            (!strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR02) ||
             !strcmp((int8*)&(p->partitionContents.ident), PARTITION_CONTENTS_NSR03)))
         {
@@ -325,9 +325,9 @@ UDFUpdatePartDesc(
                 UDFPrint(("freedSpaceTable (part %d)\n", i));
             }
 #endif // UDF_DBG
-            UDFUpdateXSpaceBitmaps(Vcb, p->partitionNumber, phd);
+            UDFUpdateXSpaceBitmaps(Vcb, i, phd);
             PTag = (tag*)Buf;
-            UDFSetUpTag(Vcb, PTag, PTag->descCRCLength, PTag->tagLocation);
+            UDFSetUpTag(Vcb, PTag, PTag->descCRCLength + sizeof(tag), PTag->tagLocation, 0);
             UDFWriteSectors(Vcb, TRUE, PTag->tagLocation, 1, FALSE, Buf, &WrittenBytes);
         }
     }
@@ -443,7 +443,7 @@ UDFUpdateLogicalVolInt(
         sizeof(LogicalVolIntegrityDesc) +
         sizeof(uint32)*2*lvid->numOfPartitions +
         sizeof(LogicalVolIntegrityDescImpUse),
-        PTag->tagLocation);
+        PTag->tagLocation, 0);
 
     Vcb->IntegrityType = INTEGRITY_TYPE_OPEN; // make happy auto-dirty
     RC = UDFWriteSectors(Vcb, TRUE, PTag->tagLocation, len >> Vcb->BlockSizeBits, FALSE, (int8*)(lvid), &WrittenBytes);
@@ -652,7 +652,7 @@ UDFUpdateLogicalVol(
     RtlCopyMemory(lvd->logicalVolIdent, CS0, CUR_IDENT_SZ);
 
     lvd->descTag.tagSerialNum --;
-    UDFSetUpTag(Vcb, (tag*)lvd, lvd->descTag.descCRCLength, Lba.block);
+    UDFSetUpTag(Vcb, (tag*)lvd, lvd->descTag.descCRCLength + sizeof(tag), Lba.block, 0);
 
     status = UDFWriteSectors(Vcb, TRUE, Lba.block, 1, FALSE, (int8*)lvd, &WrittenBytes);
 
@@ -848,7 +848,7 @@ UDFUpdateVolIdent(
     RtlCopyMemory(pvoldesc->volIdent, CS0, CUR_IDENT_SZ);
 
     pvoldesc->descTag.tagSerialNum --;
-    UDFSetUpTag(Vcb, (tag*)pvoldesc, pvoldesc->descTag.descCRCLength, Lba.block);
+    UDFSetUpTag(Vcb, (tag*)pvoldesc, pvoldesc->descTag.descCRCLength + sizeof(tag), Lba.block, 0);
 
     status = UDFWriteSectors(Vcb, TRUE, Lba.block, 1, FALSE, (int8*)pvoldesc, &WrittenBytes);
 Err_SetVI:
@@ -864,7 +864,7 @@ UDFUpdateNonAllocated(
     IN PVCB Vcb
     )
 {
-    uint32 PartNum;
+    uint32 RefPartNum;
     uint32 i;
     uint32 plen, pstart, pend;
     int8* bad_bm;
@@ -886,9 +886,9 @@ UDFUpdateNonAllocated(
         UDFPrint(("NonAllocFileInfo in IN_ICB mode !!!\n"));
         return STATUS_SUCCESS;
     }
-    PartNum = UDFGetPartNumByPhysLba(Vcb, Vcb->NonAllocFileInfo->Dloc->FELoc.Mapping[0].extLocation);
-    pstart = UDFPartStart(Vcb, PartNum);
-    plen = UDFPartLen(Vcb, PartNum);
+    RefPartNum = UDFGetRefPartNumByPhysLba(Vcb, Vcb->NonAllocFileInfo->Dloc->FELoc.Mapping[0].extLocation);
+    pstart = UDFPartStart(Vcb, RefPartNum);
+    plen = UDFPartLen(Vcb, RefPartNum);
     pend = min(pstart + plen, Vcb->FSBM_BitCount);
 
     //BrutePoint();
@@ -1574,7 +1574,7 @@ UDFLoadBogusLogicalVol(
 OSSTATUS
 UDFAddXSpaceBitmap(
     IN PVCB Vcb,
-    IN uint32 PartNum,
+    IN uint32 RefPartNum,
     IN PSHORT_AD bm,
     IN ULONG bm_type
     )
@@ -1593,15 +1593,15 @@ UDFAddXSpaceBitmap(
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
     UDFPrint(("UDFAddXSpaceBitmap: at block=%x, partition=%d\n",
         bm->extPosition,
-        PartNum));
+        RefPartNum));
 
     if(!(Length = (bm->extLength & UDF_EXTENT_LENGTH_MASK))) return STATUS_SUCCESS;
-    i=UDFPartStart(Vcb, PartNum);
+    i=UDFPartStart(Vcb, RefPartNum);
     flags = bm->extLength >> 30;
     if(!flags /*|| flags == EXTENT_NOT_RECORDED_ALLOCATED*/) {
         tmp = (int8*)DbgAllocatePool(NonPagedPool, max(Length, Vcb->BlockSize));
         if(!tmp) return STATUS_INSUFFICIENT_RESOURCES;
-        locAddr.partitionReferenceNum = (uint16)PartNum;
+        locAddr.partitionReferenceNum = (uint16)RefPartNum;
         locAddr.logicalBlockNum = bm->extPosition;
         // read header of the Bitmap
         if(!OS_SUCCESS(status = UDFReadTagged(Vcb, tmp, lba = UDFPartLbaToPhys(Vcb, &(locAddr)),
@@ -1657,8 +1657,8 @@ err_addxsbm_1:
         }
         DbgFreePool(tmp);
 /*    } else if((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
-        i=Vcb->Partitions[PartNum].PartitionRoot;
-        lim = i + Vcb->Partitions[PartNum].PartitionLen;
+        i=Vcb->Partitions[RefPartNum].PartitionRoot;
+        lim = i + Vcb->Partitions[RefPartNum].PartitionLen;
         for(;i<lim;i++) {
             UDFSetUsedBit(Vcb->FSBM_Bitmap, i);
         }*/
@@ -1672,7 +1672,7 @@ err_addxsbm_1:
 OSSTATUS
 UDFVerifyXSpaceBitmap(
     IN PVCB Vcb,
-    IN uint32 PartNum,
+    IN uint32 RefPartNum,
     IN PSHORT_AD bm,
     IN ULONG bm_type
     )
@@ -1691,15 +1691,15 @@ UDFVerifyXSpaceBitmap(
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
 
-    UDFPrint((" UDFVerifyXSpaceBitmap: part %x\n", PartNum));
+    UDFPrint((" UDFVerifyXSpaceBitmap: part %x\n", RefPartNum));
 
     if(!(Length = (bm->extLength & UDF_EXTENT_LENGTH_MASK))) return STATUS_SUCCESS;
-//    i=UDFPartStart(Vcb, PartNum);
+//    i=UDFPartStart(Vcb, RefPartNum);
     flags = bm->extLength >> 30;
     if(!flags /*|| flags == EXTENT_NOT_RECORDED_ALLOCATED*/) {
         tmp = (int8*)DbgAllocatePool(NonPagedPool, max(Length, Vcb->BlockSize));
         if(!tmp) return STATUS_INSUFFICIENT_RESOURCES;
-        locAddr.partitionReferenceNum = (uint16)PartNum;
+        locAddr.partitionReferenceNum = (uint16)RefPartNum;
         locAddr.logicalBlockNum = bm->extPosition;
         // read header of the Bitmap
         if(!OS_SUCCESS(status = UDFReadTagged(Vcb, tmp, lba = UDFPartLbaToPhys(Vcb, &(locAddr)),
@@ -1755,8 +1755,8 @@ err_vfyxsbm_1:
         }*/
         DbgFreePool(tmp);
 /*    } else if((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
-        i=Vcb->Partitions[PartNum].PartitionRoot;
-        lim = i + Vcb->Partitions[PartNum].PartitionLen;
+        i=Vcb->Partitions[RefPartNum].PartitionRoot;
+        lim = i + Vcb->Partitions[RefPartNum].PartitionLen;
         for(;i<lim;i++) {
             UDFSetUsedBit(Vcb->FSBM_Bitmap, i);
         }*/
@@ -1770,7 +1770,7 @@ err_vfyxsbm_1:
 /*OSSTATUS
 UDFDelXSpaceBitmap(
     IN PVCB Vcb,
-    IN uint32 PartNum,
+    IN uint32 RefPartNum,
     IN PSHORT_AD bm
     )
 {
@@ -1789,7 +1789,7 @@ UDFDelXSpaceBitmap(
     if(!flags || flags == EXTENT_NOT_RECORDED_ALLOCATED) {
         tmp = (int8*)MyAllocatePool__(NonPagedPool, Length);
         if(!tmp) return STATUS_INSUFFICIENT_RESOURCES;
-        locAddr.partitionReferenceNum = (uint16)PartNum;
+        locAddr.partitionReferenceNum = (uint16)RefPartNum;
         locAddr.logicalBlockNum = bm->extPosition;
         if((!OS_SUCCESS(status = UDFReadTagged(Vcb, tmp, (j = UDFPartLbaToPhys(Vcb, &(locAddr))),
                              locAddr.logicalBlockNum, &Ident))) ||
@@ -1810,8 +1810,8 @@ UDFDelXSpaceBitmap(
         }
         MyFreePool__(tmp);
 //    } else if((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
-//        i=Vcb->Partitions[PartNum].PartitionRoot;
-//        lim = i + Vcb->Partitions[PartNum].PartitionLen;
+//        i=Vcb->Partitions[RefPartNum].PartitionRoot;
+//        lim = i + Vcb->Partitions[RefPartNum].PartitionLen;
 //        for(;i<lim;i++) {
 //            UDFSetUsedBit(Vcb->FSBM_Bitmap, i);
 //        }
@@ -1826,7 +1826,7 @@ UDFDelXSpaceBitmap(
 OSSTATUS
 UDFVerifyFreeSpaceBitmap(
     IN PVCB Vcb,
-    IN uint32 PartNdx,
+    IN uint32 RefPartNum,
     IN PPARTITION_HEADER_DESC phd, // partition header pointing to Bitmaps
     IN uint32 Lba                   // UnallocSpaceDesc
     )
@@ -1837,18 +1837,15 @@ UDFVerifyFreeSpaceBitmap(
     int8* AllocDesc;
     PEXTENT_MAP Extent;
     lb_addr locAddr;
-    uint32 PartNum;
-
-    PartNum = UDFGetPartNumByPartNdx(Vcb, PartNdx);
 
     UDFPrint(("UDFVerifyFreeSpaceBitmap:\n"));
     // read info for partition header (if any)
     if(phd) {
         // read unallocated Bitmap
-        if(!OS_SUCCESS(status = UDFVerifyXSpaceBitmap(Vcb, PartNum, &(phd->unallocatedSpaceBitmap), UDF_FSPACE_BM)))
+        if(!OS_SUCCESS(status = UDFVerifyXSpaceBitmap(Vcb, RefPartNum, &(phd->unallocatedSpaceBitmap), UDF_FSPACE_BM)))
             return status;
         // read freed Bitmap
-        if(!OS_SUCCESS(status = UDFVerifyXSpaceBitmap(Vcb, PartNum, &(phd->freedSpaceBitmap), UDF_ZSPACE_BM)))
+        if(!OS_SUCCESS(status = UDFVerifyXSpaceBitmap(Vcb, RefPartNum, &(phd->freedSpaceBitmap), UDF_ZSPACE_BM)))
             return status;
     }
     // read UnallocatedSpaceDesc & convert to Bitmap
@@ -1864,7 +1861,7 @@ UDFVerifyFreeSpaceBitmap(
         }
         UDFRegisterFsStructure(Vcb, Lba, Vcb->BlockSize);
         RtlCopyMemory((int8*)Extent, AllocDesc+sizeof(UNALLOC_SPACE_DESC), (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs+1) * sizeof(EXTENT_AD) );
-        locAddr.partitionReferenceNum = (uint16)PartNum;
+        locAddr.partitionReferenceNum = (uint16)RefPartNum;
         // read extent is recorded with relative addresses
         // so, we should convert it to suitable form
         for(i=0; Extent[i].extLength; i++) {
@@ -1874,6 +1871,11 @@ UDFVerifyFreeSpaceBitmap(
                 BrutePoint();
                 MyFreePool__(AllocDesc);
                 return STATUS_DISK_CORRUPT_ERROR;
+            }
+            if (Extent[i].extLocation > Vcb->LastPossibleLBA)
+            {
+                UDFPrint(("Bigger\n"));
+                // continue;
             }
             if((Extent[i].extLocation >> 30) == EXTENT_NEXT_EXTENT_ALLOCDESC) {
                 // load continuation
@@ -1915,7 +1917,7 @@ UDFVerifyFreeSpaceBitmap(
 OSSTATUS
 UDFBuildFreeSpaceBitmap(
     IN PVCB Vcb,
-    IN uint32 PartNdx,
+    IN uint32 RefPartNum,
     IN PPARTITION_HEADER_DESC phd, // partition header pointing to Bitmaps
     IN uint32 Lba                   // UnallocSpaceDesc
     )
@@ -1926,10 +1928,8 @@ UDFBuildFreeSpaceBitmap(
     int8* AllocDesc;
     PEXTENT_MAP Extent;
     lb_addr locAddr;
-    uint32 PartNum;
     BOOLEAN UnallocSpaceExtent = FALSE;
 
-    PartNum = UDFGetPartNumByPartNdx(Vcb, PartNdx);
     if(!(Vcb->FSBM_Bitmap)) {
         // init Bitmap buffer if necessary
         Vcb->FSBM_Bitmap = (int8*)DbgAllocatePool(NonPagedPool, (i = (Vcb->LastPossibleLBA+1+7)>>3) );
@@ -1962,10 +1962,10 @@ free_fsbm:
     // read info for partition header (if any)
     if(phd) {
         // read unallocated Bitmap
-        if(!OS_SUCCESS(status = UDFAddXSpaceBitmap(Vcb, PartNum, &(phd->unallocatedSpaceBitmap), UDF_FSPACE_BM)))
+        if(!OS_SUCCESS(status = UDFAddXSpaceBitmap(Vcb, RefPartNum, &(phd->unallocatedSpaceBitmap), UDF_FSPACE_BM)))
             return status;
         // read freed Bitmap
-        if(!OS_SUCCESS(status = UDFAddXSpaceBitmap(Vcb, PartNum, &(phd->freedSpaceBitmap), UDF_ZSPACE_BM)))
+        if(!OS_SUCCESS(status = UDFAddXSpaceBitmap(Vcb, RefPartNum, &(phd->freedSpaceBitmap), UDF_ZSPACE_BM)))
             return status;
     }
     // read UnallocatedSpaceDesc & convert to Bitmap
@@ -1980,16 +1980,21 @@ free_fsbm:
         }
         UDFRegisterFsStructure(Vcb, Lba, Vcb->BlockSize);
         RtlCopyMemory((int8*)Extent, AllocDesc+sizeof(UNALLOC_SPACE_DESC), (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs+1) * sizeof(EXTENT_AD) );
-        locAddr.partitionReferenceNum = (uint16)PartNum;
+        locAddr.partitionReferenceNum = (uint16)RefPartNum;
         // read extent is recorded with relative addresses
         // so, we should convert it to suitable form
-        for(i=0; Extent[i].extLength; i++) {
+        for (i = 0; i < ((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs; i++) {
             locAddr.logicalBlockNum = Extent[i].extLocation;
             Extent[i].extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
             if(Extent[i].extLocation == LBA_OUT_OF_EXTENT) {
                 BrutePoint();
                 MyFreePool__(AllocDesc);
                 return STATUS_DISK_CORRUPT_ERROR;
+            }
+            if (Extent[i].extLocation > Vcb->LastPossibleLBA)
+            {
+                UDFPrint(("Bigger\n"));
+                // continue;
             }
             if((Extent[i].extLocation >> 30) == EXTENT_NEXT_EXTENT_ALLOCDESC) {
                 // load continuation
@@ -3016,6 +3021,11 @@ check_NSR:
                 Buf = NULL;
             }
             try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
+        }
+        else
+        {
+            NSRDesc = VRS_NSR03_FOUND | VRS_NSR02_FOUND;
+            Vcb->NSRDesc = NSRDesc;
         }
 
         RC = UDFLoadPartition(DeviceObject,Vcb,&fileset);

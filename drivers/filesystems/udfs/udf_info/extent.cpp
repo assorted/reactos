@@ -963,7 +963,7 @@ sh_alloc_err:
             if(Tag) {
                 // Set up Tag for AllocDesc
                 Tag->tagIdent = TID_ALLOC_EXTENT_DESC;
-                UDFSetUpTag(Vcb, Tag, (uint16)TagLen, TagLoc);
+                UDFSetUpTag(Vcb, Tag, (uint16)TagLen, TagLoc, 0);
                 prevTagLoc = TagLoc;
             }
             if(!j) {
@@ -1139,7 +1139,7 @@ lad_alloc_err:
             if(Tag) {
                 // Set up Tag for AllocDesc
                 Tag->tagIdent = TID_ALLOC_EXTENT_DESC;
-                UDFSetUpTag(Vcb, Tag, (uint16)TagLen, TagLoc);
+                UDFSetUpTag(Vcb, Tag, (uint16)TagLen, TagLoc, 0);
                 prevTagLoc = TagLoc;
             }
             if(!j) {
@@ -1333,7 +1333,7 @@ UDFDiscardFESpace(
     PEXTENT_MAP Mapping2;
     uint32 i;
 
-    UDFPrint(("  DiscardFESpace\n"));
+    UDFPrint(("  UDFDiscardFESpace\n"));
     Mapping2 = Mapping;
     for(i=0;i<lim;i++, Mapping++) {
         // we should not discard allocated FEs
@@ -1430,7 +1430,7 @@ UDFGetCachedAllocation(
         UDFReleaseResource(&(Vcb->PreallocResource));
         return status;
     }
-    UDFPrint(("Get AllocationCache for %x\n", ParentLocation));
+    UDFPrint(("Get AllocationCache for %x lim %x\n", ParentLocation, lim));
 
     for(i=0; i<lim; i++) {
         if(AllocCache[i].ParentLocation == ParentLocation) {
@@ -1970,7 +1970,7 @@ UDFMarkNotAllocatedAsAllocated(
     if(i == (ULONG)-1) return STATUS_INVALID_PARAMETER;
     if((Extent[i].extLength >> 30) != EXTENT_NOT_RECORDED_NOT_ALLOCATED) return STATUS_SUCCESS;
 
-    uint32 PartNum = UDFGetPartNumByPhysLba(Vcb, Extent[0].extLocation);
+    uint32 PartNum = UDFGetRefPartNumByPhysLba(Vcb, Extent[0].extLocation);
     BOffs = (uint32)(Offset >> BSh);
     // length of existing Not-Alloc-Not-Rec frag
     sLen = (( (((uint32)Offset) & (LBS-1)) + Length+LBS-1) & ~(LBS-1)) >> BSh;
@@ -2139,7 +2139,7 @@ UDFMarkAllocatedAsNotXXX(
     flags = Extent[i].extLength >> 30;
     if(flags == target_flags) return STATUS_SUCCESS;
 
-//    uint32 PartNum = UDFGetPartNumByPhysLba(Vcb, Extent[0].extLocation);
+//    uint32 PartNum = UDFGetRefPartNumByPhysLba(Vcb, Extent[0].extLocation);
     BOffs = (uint32)(Offset >> BSh);
     // length of existing Alloc-(Not-)Rec frag (in sectors)
     sLen = (( (((uint32)Offset) & (LBS-1)) + Length+LBS-1) & ~(LBS-1)) >> BSh;
