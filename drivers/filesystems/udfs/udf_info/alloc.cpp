@@ -45,7 +45,7 @@ static const int8 bit_count_tab[] = {
 uint32
 UDFPhysLbaToPart(
     IN PVCB Vcb,
-    IN uint32 PartNum,
+    IN uint32 RefPartNum,
     IN uint32 Addr
     )
 {
@@ -53,8 +53,8 @@ UDFPhysLbaToPart(
     PUDFPartMap pm = Vcb->Partitions;
     uint32 i;
     // walk through partition maps to find suitable one...
-    for(i=PartNum; i<Vcb->PartitionMaps; i++, pm++) {
-        if(pm->PartitionNum == PartNum)
+    for(i=RefPartNum; i<Vcb->PartitionMaps; i++, pm++) {
+        if(pm->PartitionNum == UDFGetPartNumByPartRef(Vcb, RefPartNum))
             // wow! return relative address
             retval = (Addr - pm->PartitionRoot) >> Vcb->LB2B_Bits;
     }
@@ -64,7 +64,7 @@ UDFPhysLbaToPart(
         // validate return value
         lb_addr locAddr;
         locAddr.logicalBlockNum = retval;
-        locAddr.partitionReferenceNum = (uint16)PartNum;
+        locAddr.partitionReferenceNum = (uint16)RefPartNum;
         UDFPartLbaToPhys(Vcb, &locAddr);
     }
 #endif // UDF_DBG
@@ -73,7 +73,7 @@ UDFPhysLbaToPart(
 } // end UDFPhysLbaToPart()
 
 /*
-    This routine returns physycal Lba for partition-relative addr
+    This routine returns physical Lba for partition-relative addr
  */
 uint32
 __fastcall
@@ -164,7 +164,7 @@ UDFPartLbaToPhysCompat(
  */
 uint32
 __fastcall
-UDFGetPartNumByPhysLba(
+UDFGetRefPartNumByPhysLba(
     IN PVCB Vcb,
     IN uint32 Lba
     )
@@ -172,9 +172,11 @@ UDFGetPartNumByPhysLba(
     uint32 i=Vcb->PartitionMaps-1, root;
     PUDFPartMap pm = &(Vcb->Partitions[i]);
     // walk through the partition maps to find suitable one
-    for(;i!=0xffffffff;i--,pm--) {
-        if( ((root = pm->PartitionRoot) <= Lba) &&
-            ((root + pm->PartitionLen) > Lba) ) return (uint16)pm->PartitionNum;
+    for (; i != 0xffffffff; i--, pm--) {
+        if ( ((root = pm->PartitionRoot) <= Lba) &&
+             ((root + pm->PartitionLen) > Lba) )
+            // Unsure if this is correct
+            return (pm->PartitionNum >= Vcb->PartitionMaps ? i : (uint16)pm->PartitionNum);
     }
     return LBA_OUT_OF_EXTENT; // Lba doesn't belong to any partition
 } // end UDFGetPartNumByPhysLba()
@@ -187,14 +189,15 @@ uint32
 __fastcall
 UDFPartStart(
     PVCB Vcb,
-    uint32 PartNum
+    uint32 RefPartNum
     )
 {
     uint32 i;
-    if(PartNum == (uint32)-1) return 0;
-    if(PartNum == (uint32)-2) return Vcb->Partitions[0].PartitionRoot;
-    for(i=PartNum; i<Vcb->PartitionMaps; i++) {
-        if(Vcb->Partitions[i].PartitionNum == PartNum) return Vcb->Partitions[i].PartitionRoot;
+    if (RefPartNum == (uint32)-1) return 0;
+    if (RefPartNum == (uint32)-2) return Vcb->Partitions[0].PartitionRoot;
+    for (i = RefPartNum; i < Vcb->PartitionMaps; i++) {
+        if (Vcb->Partitions[i].PartitionNum == UDFGetPartNumByPartRef(Vcb, RefPartNum))
+            return Vcb->Partitions[i].PartitionRoot;
     }
     return 0;
 } // end UDFPartStart(
@@ -207,14 +210,14 @@ uint32
 __fastcall
 UDFPartEnd(
     PVCB Vcb,
-    uint32 PartNum
+    uint32 RefPartNum
     )
 {
     uint32 i;
-    if(PartNum == (uint32)-1) return Vcb->LastLBA;
-    if(PartNum == (uint32)-2) PartNum = Vcb->PartitionMaps-1;
-    for(i=PartNum; i<Vcb->PartitionMaps; i++) {
-        if(Vcb->Partitions[i].PartitionNum == PartNum)
+    if(RefPartNum == (uint32)-1) return Vcb->LastLBA;
+    if(RefPartNum == (uint32)-2) RefPartNum = Vcb->PartitionMaps-1;
+    for(i=RefPartNum; i<Vcb->PartitionMaps; i++) {
+        if(Vcb->Partitions[i].PartitionNum == UDFGetPartNumByPartRef(Vcb, RefPartNum))
             return (Vcb->Partitions[i].PartitionRoot +
                     Vcb->Partitions[i].PartitionLen);
     }
@@ -229,16 +232,16 @@ UDFPartEnd(
 uint32
 __fastcall
 UDFPartLen(
-    PVCB Vcb,
-    uint32 PartNum
+    PVCB Vcb, 
+    uint32 RefPartNum
     )
 {
-    if(PartNum == (uint32)-2) return UDFPartEnd(Vcb, -2) - UDFPartStart(Vcb, -2);
+    if (RefPartNum == (uint32)-2) return UDFPartEnd(Vcb, -2) - UDFPartStart(Vcb, -2);
 
     uint32 i;
-    if(PartNum == (uint32)-1) return Vcb->LastLBA;
-    for(i=PartNum; i<Vcb->PartitionMaps; i++) {
-        if(Vcb->Partitions[i].PartitionNum == PartNum)
+    if (RefPartNum == (uint32)-1) return Vcb->LastLBA;
+    for (i = RefPartNum; i < Vcb->PartitionMaps; i++) {
+        if (Vcb->Partitions[i].PartitionNum == UDFGetPartNumByPartRef(Vcb, RefPartNum))
             return Vcb->Partitions[i].PartitionLen;
     }
     return (Vcb->Partitions[i-1].PartitionRoot +
@@ -623,7 +626,7 @@ UDFMarkSpaceAsXXXNoProtect_(
             if(Vcb->Vat) {
                 // mark logical blocks in VAT as used
                 for(j=0;j<len;j++) {
-                    root = UDFPartStart(Vcb, UDFGetPartNumByPhysLba(Vcb, lba));
+                    root = UDFPartStart(Vcb, UDFGetRefPartNumByPhysLba(Vcb, lba));
                     if((Vcb->Vat[lba-root+j] == UDF_VAT_FREE_ENTRY) &&
                        (lba > Vcb->LastLBA)) {
                          Vcb->Vat[lba-root+j] = 0x7fffffff;
@@ -655,7 +658,7 @@ UDFMarkSpaceAsXXXNoProtect_(
                 // mark logical blocks in VAT as free
                 // this operation can decrease resulting VAT size
                 for(j=0;j<len;j++) {
-                    root = UDFPartStart(Vcb, UDFGetPartNumByPhysLba(Vcb, lba));
+                    root = UDFPartStart(Vcb, UDFGetRefPartNumByPhysLba(Vcb, lba));
                     Vcb->Vat[lba-root+j] = UDF_VAT_FREE_ENTRY;
                 }
             }

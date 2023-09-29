@@ -404,10 +404,8 @@ uint32    UDFPhysLbaToPart(IN PVCB Vcb,
 /*#define UDFPhysLbaToPart(Vcb, PartNum, Addr) \
     ((Addr - Vcb->Partitions[PartNum].PartitionRoot) >> Vcb->LB2B_Bits)*/
 // initialize Tag structure.
-void     UDFSetUpTag(IN PVCB Vcb,
-                     IN tag* Tag,
-                     IN uint16 DataLen,
-                     IN uint32 TagLoc);
+void
+UDFSetUpTag(IN PVCB Vcb, IN tag *Tag, IN uint16 DataLen, IN uint32 TagLoc, IN uint16 skip);
 // build content for AllocDesc sequence for specified extent
 OSSTATUS UDFBuildShortAllocDescs(IN PVCB Vcb,
                                  IN uint32 PartNum,
@@ -431,10 +429,9 @@ OSSTATUS UDFBuildFileEntry(IN PVCB Vcb,
                            OUT PFILE_ENTRY* FEBuff,
                            OUT uint32* FELen,
                            OUT PEXTENT_INFO FEExtInfo*/);
-// find partition containing given physical sector
-uint32
-__fastcall UDFGetPartNumByPhysLba(IN PVCB Vcb,
-                                IN uint32 Lba);
+// find reference partition number containing given physical sector
+uint32 __fastcall UDFGetRefPartNumByPhysLba(IN PVCB Vcb, IN uint32 Lba);
+
 // add given bitmap to existing one
 #define UDF_FSPACE_BM    0x00
 #define UDF_ZSPACE_BM    0x01
@@ -854,9 +851,7 @@ uint32
 __fastcall crc32(IN uint8* s,
             IN uint32 len);
 // calculate a 16-bit CRC checksum using ITU-T V.41 polynomial
-uint16
-__fastcall UDFCrc(IN uint8* Data,
-                IN SIZE_T Size);
+uint16 __fastcall UDFCrc(IN uint8 *Data, IN SIZE_T Size, IN uint16 Crc);
 // read the first block of a tagged descriptor & check it
 OSSTATUS UDFReadTagged(IN PVCB Vcb,
                        IN int8* Buf,
@@ -1021,7 +1016,7 @@ OSSTATUS UDFConvertFEToNonInICB(IN PVCB Vcb,
 OSSTATUS UDFConvertFEToExtended(IN PVCB Vcb,
                                 IN PUDF_FILE_INFO FileInfo);
 //
-#define UDFGetPartNumByPartNdx(Vcb, pi) (Vcb->Partitions[pi].PartitionNum)
+#define UDFGetPartNumByPartRef(Vcb, pi) (Vcb->Partitions[pi].PartitionNum)
 //
 uint32
 __fastcall UDFPartLen(PVCB Vcb,
