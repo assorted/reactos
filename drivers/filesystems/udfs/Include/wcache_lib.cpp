@@ -2531,7 +2531,8 @@ EO_WCache_W:
             lastPos = WCacheGetSortedListIndex(Cache->BlockCount, Cache->CachedBlocksList, Lba+d);
             block_array = Cache->FrameList[frame].Frame;
             if(!block_array) {
-                ASSERT(FALSE);
+                // write was non-cached, so skip this cache frame without asserting
+                // ASSERT(FALSE); 
                 BCount -= d;
                 Lba += d;
                 continue;
