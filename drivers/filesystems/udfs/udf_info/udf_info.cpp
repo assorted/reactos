@@ -707,7 +707,8 @@ UDFDOSName201(
     PWCHAR udfName = UdfName->Buffer;
     uint16 udfLen = UdfName->Length / sizeof(WCHAR);
 
-    uint16 index, dosIndex = 0;
+    int32 index;
+    uint16 dosIndex = 0;
     //uint16 extIndex = 0;
     BOOLEAN needsCRC = FALSE, isParent = FALSE;
     //BOOLEAN hasExt = FALSE, writingExt = FALSE;
