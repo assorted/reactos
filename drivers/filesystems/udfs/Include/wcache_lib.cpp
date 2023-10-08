@@ -1120,7 +1120,7 @@ WCacheUpdatePacket(
             (!read && WCacheSectorAddr(block_array,Lba0)) ) {
 
 #ifdef _NTDEF_
-            ASSERT((ULONG)WCacheSectorAddr(block_array,Lba0) & 0x80000000);
+            ASSERT((PVOID)WCacheSectorAddr(block_array,Lba0) >= MM_SYSTEM_RANGE_START);
 #endif //_NTDEF_
             if(!mod) {
                 ASSERT(read);
