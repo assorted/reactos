@@ -4953,13 +4953,22 @@ UDFCreateStreamDir__(
     }
     *_SDirInfo = SDirInfo;
     // do some init
-    ((PEXTENDED_FILE_ENTRY)(SDirInfo->Dloc->FileEntry))->icbTag.fileType = UDF_FILE_TYPE_STREAMDIR;
     ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->streamDirectoryICB.extLength = Vcb->LBlockSize;
     ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->streamDirectoryICB.extLocation.partitionReferenceNum = (uint16)PartNum;
     ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->streamDirectoryICB.extLocation.logicalBlockNum =
         UDFPhysLbaToPart(Vcb, PartNum, SDirInfo->Dloc->FELoc.Mapping[0].extLocation);
-    ((PEXTENDED_FILE_ENTRY)(SDirInfo->Dloc->FileEntry))->uniqueID =
-        ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->uniqueID;
+
+    if (SDirInfo->Dloc->FileEntry->tagIdent == TID_FILE_ENTRY) {
+        ((PFILE_ENTRY)(SDirInfo->Dloc->FileEntry))->icbTag.fileType = UDF_FILE_TYPE_STREAMDIR;
+        ((PFILE_ENTRY)(SDirInfo->Dloc->FileEntry))->uniqueID =
+            ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->uniqueID;
+    }
+    else {
+        ((PEXTENDED_FILE_ENTRY)(SDirInfo->Dloc->FileEntry))->icbTag.fileType = UDF_FILE_TYPE_STREAMDIR;
+        ((PEXTENDED_FILE_ENTRY)(SDirInfo->Dloc->FileEntry))->uniqueID =
+            ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->uniqueID;
+    }
+
     FileInfo->Dloc->FE_Flags |= (UDF_FE_FLAG_FE_MODIFIED | UDF_FE_FLAG_HAS_SDIR);
     // open & finalize linkage
     FileInfo->Dloc->SDirInfo = SDirInfo;
