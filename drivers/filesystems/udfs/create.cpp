@@ -253,6 +253,7 @@ UDFCommonCreate(
 //    ULONG                       i = 0;
 
     BOOLEAN                     StreamOpen = FALSE;
+    BOOLEAN                     StreamTargetOpen = FALSE;
     BOOLEAN                     StreamExists = FALSE;
     BOOLEAN                     RestoreVCBOpenCounter = FALSE;
     BOOLEAN                     RestoreShareAccess = FALSE;
@@ -818,17 +819,23 @@ op_vol_accs_dnd:
             //  during I/O operations), this field is meaningless from
             //  the FSD's perspective.
             if (!(PtrRelatedFCB->FCBFlags & UDF_FCB_DIRECTORY)) {
-                // we must have a directory as the "related" object
-                RC = STATUS_INVALID_PARAMETER;
-                AdPrint(("    Related object must be a directory\n"));
-                AdPrint(("    Flags %x\n", PtrRelatedFCB->FCBFlags));
-                _SEH2_TRY {
-                    AdPrint(("    ObjName %x, ", PtrRelatedFCB->FCBName->ObjectName));
-                    AdPrint(("    Name %S\n", PtrRelatedFCB->FCBName->ObjectName.Buffer));
-                } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-                    AdPrint(("    exception when printing name\n"));
-                } _SEH2_END;
-                try_return(RC);
+                if (UDFStreamsSupported(Vcb) && TargetObjectName.Length && (TargetObjectName.Buffer[0] == L':')) {
+                    StreamTargetOpen = TRUE;
+                }
+                else {
+                    // we must have a directory as the "related" object
+                    RC = STATUS_INVALID_PARAMETER;
+                    AdPrint(("    Related object must be a directory\n"));
+                    AdPrint(("    Flags %x\n", PtrRelatedFCB->FCBFlags));
+                    _SEH2_TRY {
+                        AdPrint(("    ObjName %x, ", PtrRelatedFCB->FCBName->ObjectName));
+                        AdPrint(("    Name %S\n", PtrRelatedFCB->FCBName->ObjectName.Buffer));
+                    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+                        AdPrint(("    exception when printing name\n"));
+                    } _SEH2_END;
+                    try_return(RC);
+                }
+
             }
 
             // So we have a directory, ensure that the name begins with
@@ -858,17 +865,19 @@ op_vol_accs_dnd:
                !NT_SUCCESS(RC MyAppendUnicodeStringToStringTag(&AbsolutePathName, &RelatedObjectName, MEM_USABS_TAG)))*/
             if(!NT_SUCCESS(RC = MyCloneUnicodeString(&AbsolutePathName, &RelatedObjectName)))
                 try_return(RC);
-            if(RelatedObjectName.Length &&
-                (RelatedObjectName.Buffer[ (RelatedObjectName.Length/sizeof(WCHAR)) - 1 ] != L'\\')) {
-                RC = MyAppendUnicodeToString(&AbsolutePathName, L"\\");
-                if(!NT_SUCCESS(RC)) try_return(RC);
-            }
-            if(!AbsolutePathName.Length ||
-                (AbsolutePathName.Buffer[ (AbsolutePathName.Length/sizeof(WCHAR)) - 1 ] != L'\\')) {
-                ASSERT(TargetObjectName.Buffer);
-                if(TargetObjectName.Length && TargetObjectName.Buffer[0] != L'\\') {
+            if (!StreamTargetOpen) {
+                if(RelatedObjectName.Length &&
+                    (RelatedObjectName.Buffer[ (RelatedObjectName.Length/sizeof(WCHAR)) - 1 ] != L'\\')) {
                     RC = MyAppendUnicodeToString(&AbsolutePathName, L"\\");
                     if(!NT_SUCCESS(RC)) try_return(RC);
+                }
+                if(!AbsolutePathName.Length ||
+                    (AbsolutePathName.Buffer[ (AbsolutePathName.Length/sizeof(WCHAR)) - 1 ] != L'\\')) {
+                    ASSERT(TargetObjectName.Buffer);
+                    if(TargetObjectName.Length && TargetObjectName.Buffer[0] != L'\\') {
+                        RC = MyAppendUnicodeToString(&AbsolutePathName, L"\\");
+                        if(!NT_SUCCESS(RC)) try_return(RC);
+                    }
                 }
             }
             //ASSERT(TargetObjectName.Buffer);
