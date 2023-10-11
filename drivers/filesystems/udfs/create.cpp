@@ -384,7 +384,6 @@ UDFCommonCreate(
 
         // Get the options supplied by the user
 
-#define OpenForBackup (RequestedOptions & FILE_OPEN_FOR_BACKUP_INTENT)
         // User specifies that returned object MUST be a directory.
         //  Lack of presence of this flag does not mean it *cannot* be a
         //  directory *unless* FileOnlyRequested is set (see below)
@@ -742,13 +741,6 @@ op_vol_accs_dnd:
         // we could mount blank R/RW media in order to allow
         // user-mode applications to get access with Write privileges
         ASSERT(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED);
-
-        // we should check appropriate privilege if OpenForBackup requested
-        if(OpenForBackup) {
-            if (!SeSinglePrivilegeCheck(SeExports->SeBackupPrivilege, UserMode)) {
-                try_return(RC = STATUS_PRIVILEGE_NOT_HELD);
-            }
-        }
 
         // The FSD might wish to implement the open-by-id option. The "id"
         //  is some unique numerical representation of the on-disk object.
