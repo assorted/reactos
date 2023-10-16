@@ -86,6 +86,11 @@ WCacheUpdatePacketComplete(
     IN BOOLEAN FreePacket = TRUE
     );
 
+BOOLEAN
+ValidateFrameBlocksList(
+    IN PW_CACHE Cache,
+    IN lba_t Lba);
+
 /*********************************************************************/
 ULONG WCache_random;
 
@@ -749,6 +754,7 @@ WCacheInitFrame(
     }
     ASSERT(Cache->FrameCount < Cache->MaxFrames);
     block_array = (PW_CACHE_ENTRY)MyAllocatePoolTag__(NonPagedPool, l = sizeof(W_CACHE_ENTRY) << Cache->BlocksPerFrameSh, MEM_WCFRM_TAG);
+    ASSERT(Cache->FrameList[frame].Frame == NULL);
     Cache->FrameList[frame].Frame = block_array;
 
     // Keep history !!!
@@ -789,6 +795,7 @@ WCacheRemoveFrame(
 #endif //DBG
 
     ASSERT(Cache->FrameCount <= Cache->MaxFrames);
+    ASSERT(Cache->FrameList[frame].BlockCount == 0);
     block_array = Cache->FrameList[frame].Frame;
 
     WCacheRemoveItemFromList(Cache->CachedFramesList, &(Cache->FrameCount), frame);
@@ -1467,6 +1474,7 @@ Try_Another_Frame:
         }
         // remove flushed blocks from all lists
         WCacheRemoveRangeFromList(List, &(Cache->BlockCount), firstLba, Cache->BlocksPerFrame);
+        ASSERT(ValidateFrameBlocksList(Cache, Lba));
         WCacheRemoveRangeFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), firstLba, Cache->BlocksPerFrame);
 
         WCacheRemoveFrame(Cache, Context, frame);
@@ -1515,6 +1523,7 @@ Try_Another_Block:
         WCacheFreePacket(Cache, frame, block_array, Lba-firstLba, PSs);
 
         WCacheRemoveRangeFromList(List, &(Cache->BlockCount), Lba, PSs);
+        ASSERT(ValidateFrameBlocksList(Cache, Lba));
         WCacheRemoveRangeFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba, PSs);
         // check if frame is empty
         if(!(Cache->FrameList[frame].BlockCount)) {
@@ -1709,7 +1718,9 @@ Try_Another_Frame:
         WCacheFlushBlocksRAM(Cache, Context, block_array, List, firstPos, lastPos, TRUE);
 
         WCacheRemoveRangeFromList(List, &(Cache->BlockCount), firstLba, Cache->BlocksPerFrame);
+        ASSERT(ValidateFrameBlocksList(Cache, firstLba));
         WCacheRemoveRangeFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), firstLba, Cache->BlocksPerFrame);
+        ASSERT(Cache->FrameList[frame].BlockCount == 0);
         WCacheRemoveFrame(Cache, Context, frame);
     }
 
@@ -1742,6 +1753,7 @@ Try_Another_Frame:
         }
         WCacheFlushBlocksRAM(Cache, Context, block_array, List, firstPos, lastPos, TRUE);
         WCacheRemoveRangeFromList(List, &(Cache->BlockCount), Lba, PSs);
+        ASSERT(ValidateFrameBlocksList(Cache, Lba));
         WCacheRemoveRangeFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba, PSs);
         // check if frame is empty
         if(!(Cache->FrameList[frame].BlockCount)) {
@@ -1792,6 +1804,7 @@ WCachePurgeAllRAM(
         WCacheFlushBlocksRAM(Cache, Context, block_array, List, firstPos, lastPos, TRUE);
 
         WCacheRemoveRangeFromList(List, &(Cache->BlockCount), firstLba, Cache->BlocksPerFrame);
+        ASSERT(ValidateFrameBlocksList(Cache, firstLba));
         WCacheRemoveRangeFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), firstLba, Cache->BlocksPerFrame);
         WCacheRemoveFrame(Cache, Context, frame);
     }
@@ -1940,6 +1953,7 @@ WCachePreReadPacket__(
                 if(WCacheSectorAddr(block_array,i)) {
                     continue;
                 }
+                ASSERT(block_array[i].Sector == NULL);
                 addr = block_array[i].Sector = (PCHAR)DbgAllocatePoolWithTag(CACHED_BLOCK_MEMORY_TYPE, BS, MEM_WCBUF_TAG);
                 if(!addr) {
                     BrutePoint();
@@ -1961,6 +1975,7 @@ WCachePreReadPacket__(
                 if(WCacheSectorAddr(block_array,i)) {
                     continue;
                 }
+                ASSERT(block_array[i].Sector == NULL);
                 addr = block_array[i].Sector = (PCHAR)DbgAllocatePoolWithTag(CACHED_BLOCK_MEMORY_TYPE, BS, MEM_WCBUF_TAG);
                 if(!addr) {
                     BrutePoint();
@@ -1997,8 +2012,10 @@ WCachePreReadPacket__(
     // we know the number of unread sectors if an error occured
     // so we can need to update BlockCount
     // return number of read bytes
-    if(sector_added)
+    if(sector_added) {
         WCacheInsertRangeToList(Cache->CachedBlocksList, &(Cache->BlockCount), Lba, n);
+        ASSERT(ValidateFrameBlocksList(Cache, Lba));
+    }
 
     return status;
 } // end WCachePreReadPacket__()
@@ -2167,6 +2184,8 @@ WCacheReadBlocks__(
 //                WCacheInsertRangeToList(Cache->CachedBlocksList, &(Cache->BlockCount), Lba, saved_BC - BCount);
                 BCount -= n;
                 Lba += saved_BC - BCount;
+                // If reading non-cached packet-size-aligned data, it is not added to the cache.
+                // Therefore, we reset the saved_BC variable to zero in this case.
                 saved_BC = BCount;
                 i += n;
                 Buffer += BS*n;
@@ -2195,6 +2214,7 @@ WCacheReadBlocks__(
             // split request if necessary
             if(saved_to_read > MaxR) {
                 WCacheInsertRangeToList(Cache->CachedBlocksList, &(Cache->BlockCount), Lba, saved_BC - BCount);
+                ASSERT(ValidateFrameBlocksList(Cache, Lba));
                 n = MaxR >> BSh;
                 do {
                     status = Cache->ReadProc(Context, Buffer, MaxR, i + (frame << Cache->BlocksPerFrameSh), &_ReadBytes, 0);
@@ -2204,6 +2224,8 @@ WCacheReadBlocks__(
                         BCount -= _ReadBytes >> BSh;
                         saved_to_read -= _ReadBytes;
                         Buffer += _ReadBytes;
+                        // Can the variable saved_BC be modified here? Most likely not. This requires debugging.
+                        ASSERT(FALSE);
                         saved_BC = BCount;
                         goto store_read_data_1;
                     }
@@ -2213,7 +2235,10 @@ WCacheReadBlocks__(
                     BCount -= n;
                     d -= n;
                 } while(saved_to_read > MaxR);
-                saved_BC = BCount;
+                // The variable saved_BC should not be modified, as it holds the original value of BCount
+                // and is used by WCacheInsertRangeToList below. Modifying it has led to memory leaks,
+                // causing WCacheFlushBlocksRAM to not release all sectors and to delete a block without freeing the memory.
+                //saved_BC = BCount; 
             }
             if(saved_to_read) {
                 status = Cache->ReadProc(Context, Buffer, saved_to_read, i + (frame << Cache->BlocksPerFrameSh), &_ReadBytes, 0);
@@ -2237,6 +2262,7 @@ store_read_data_1:
             Buffer -= (to_read - saved_to_read);
             i = saved_i;
             while(to_read - saved_to_read) {
+                ASSERT(block_array[i].Sector == NULL);
                 block_array[i].Sector = (PCHAR)DbgAllocatePoolWithTag(CACHED_BLOCK_MEMORY_TYPE, BS, MEM_WCBUF_TAG);
                 if(!block_array[i].Sector) {
                     BCount += to_read >> BSh;
@@ -2261,6 +2287,7 @@ EO_WCache_R:
     // so we can need to update BlockCount
     // return number of read bytes
     WCacheInsertRangeToList(Cache->CachedBlocksList, &(Cache->BlockCount), Lba, saved_BC - BCount);
+    ASSERT(ValidateFrameBlocksList(Cache, Lba));
 //    Cache->FrameList[frame].BlockCount -= BCount;
 EO_WCache_R2:
     if(!CachedOnly) {
@@ -2430,6 +2457,7 @@ WCacheWriteBlocks__(
               (Cache->Mode != WCACHE_MODE_R) &&
               (i < Cache->BlocksPerFrame) &&
               (!WCacheSectorAddr(block_array, i)) ) {
+            ASSERT(block_array[i].Sector == NULL);
             block_array[i].Sector = (PCHAR)DbgAllocatePoolWithTag(CACHED_BLOCK_MEMORY_TYPE, BS, MEM_WCBUF_TAG);
             if(!block_array[i].Sector) {
                 status = STATUS_INSUFFICIENT_RESOURCES;
@@ -2464,6 +2492,7 @@ WCacheWriteBlocks__(
                 // add previously written data to list
                 d = saved_BC - BCount;
                 WCacheInsertRangeToList(Cache->CachedBlocksList, &(Cache->BlockCount), Lba, d);
+                ASSERT(ValidateFrameBlocksList(Cache, Lba));
                 WCacheInsertRangeToList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba, d);
                 Lba += d;
                 saved_BC = BCount;
@@ -2491,6 +2520,7 @@ WCacheWriteBlocks__(
         while(BCount &&
               (i < Cache->BlocksPerFrame) &&
               (!WCacheSectorAddr(block_array, i)) ) {
+            ASSERT(block_array[i].Sector == NULL);
             block_array[i].Sector = (PCHAR)DbgAllocatePoolWithTag(CACHED_BLOCK_MEMORY_TYPE, BS, MEM_WCBUF_TAG);
             if(!block_array[i].Sector) {
                 status = STATUS_INSUFFICIENT_RESOURCES;
@@ -2513,6 +2543,7 @@ EO_WCache_W:
     // so we can need to update BlockCount
     // return number of read bytes
     WCacheInsertRangeToList(Cache->CachedBlocksList, &(Cache->BlockCount), Lba, saved_BC - BCount);
+    ASSERT(ValidateFrameBlocksList(Cache, Lba));
     WCacheInsertRangeToList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba, saved_BC - BCount);
 
     if(WriteThrough && !BCount) {
@@ -2662,6 +2693,7 @@ WCachePurgeAllRW(
         WCacheFreePacket(Cache, frame, block_array, Lba-firstLba, PSs);
 
         WCacheRemoveRangeFromList(List, &(Cache->BlockCount), Lba, PSs);
+        ASSERT(ValidateFrameBlocksList(Cache, Lba));
         WCacheRemoveRangeFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba, PSs);
         // check if frame is empty
         if(!(Cache->FrameList[frame].BlockCount)) {
@@ -3038,6 +3070,7 @@ WCacheDirect__(
             RtlZeroMemory(addr, BS);
         }
         // now add pointer to buffer to common storage
+        ASSERT(block_array[i].Sector == NULL);
         block_array[i].Sector = addr;
         WCacheInsertItemToList(Cache->CachedBlocksList, &(Cache->BlockCount), Lba);
         if(Modified) {
@@ -3045,6 +3078,7 @@ WCacheDirect__(
             WCacheSetModFlag(block_array, i);
         }
         Cache->FrameList[frame].BlockCount ++;
+        ASSERT(ValidateFrameBlocksList(Cache, Lba));
     } else {
         // block is not cached
         // just return pointer
@@ -3260,6 +3294,7 @@ WCCL_retry_1:
                 WCacheRemoveItemFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba);
                 // mark as non-cached & free pool
                 WCacheFreeSector(frame, Lba-firstLba);
+                ASSERT(ValidateFrameBlocksList(Cache, Lba));
                 // check if frame is empty
                 if(!Cache->FrameList[frame].BlockCount) {
                     WCacheRemoveFrame(Cache, Context, frame);
@@ -3291,6 +3326,7 @@ WCCL_retry_1:
                     WCacheRemoveItemFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba);
                 // mark as non-cached & free pool
                 WCacheFreeSector(frame, Lba-firstLba);
+                ASSERT(ValidateFrameBlocksList(Cache, Lba));
                 // check if frame is empty
                 if(!Cache->FrameList[frame].BlockCount) {
                     WCacheRemoveFrame(Cache, Context, frame);
@@ -3355,6 +3391,7 @@ WCachePurgeAllR(
                     WCacheRemoveItemFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba);
                 // mark as non-cached & free pool
                 WCacheFreeSector(frame, Lba-firstLba);
+                ASSERT(ValidateFrameBlocksList(Cache, Lba));
                 // check if frame is empty
                 if(!Cache->FrameList[frame].BlockCount) {
                     WCacheRemoveFrame(Cache, Context, frame);
@@ -3409,6 +3446,7 @@ WCachePurgeAllR(
             WCacheRemoveItemFromList(List, &(Cache->BlockCount), Lba);
             // mark as non-cached & free pool
             WCacheFreeSector(frame, Lba-firstLba);
+            ASSERT(ValidateFrameBlocksList(Cache, Lba));
             // check if frame is empty
             if(!Cache->FrameList[frame].BlockCount) {
                 WCacheRemoveFrame(Cache, Context, frame);
@@ -3567,6 +3605,7 @@ WCacheDiscardBlocks__(
                 WCacheRemoveItemFromList(Cache->CachedModifiedBlocksList, &(Cache->WriteCount), Lba);
             // mark as non-cached & free pool
             WCacheFreeSector(frame, Lba-firstLba);
+            ASSERT(ValidateFrameBlocksList(Cache, Lba));
             // check if frame is empty
             if(!Cache->FrameList[frame].BlockCount) {
                 WCacheRemoveFrame(Cache, Context, frame);
@@ -3652,3 +3691,20 @@ WCacheChFlags__(
     }
     return Flags;
 } // end WCacheSetMode__()
+
+BOOLEAN 
+ValidateFrameBlocksList(
+    IN PW_CACHE Cache,
+    IN lba_t Lba)
+{
+    ULONG Frame = Lba >> Cache->BlocksPerFrameSh;
+    lba_t FirstLba = Frame << Cache->BlocksPerFrameSh;
+    lba_t LastLba = FirstLba + Cache->BlocksPerFrame;
+    ULONG FirstPos = WCacheGetSortedListIndex(Cache->BlockCount, Cache->CachedBlocksList, FirstLba);
+    ULONG LastPos = WCacheGetSortedListIndex(Cache->BlockCount, Cache->CachedBlocksList, LastLba);
+
+    ULONG BlockCount = Cache->FrameList[Frame].BlockCount;
+    ULONG RangeSize = LastPos - FirstPos;
+
+    return (BlockCount == RangeSize);
+}
