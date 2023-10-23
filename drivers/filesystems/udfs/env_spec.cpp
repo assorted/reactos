@@ -186,7 +186,7 @@ UDFPhReadSynchronous(
     // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
 
-    if (CurIrql > PASSIVE_LEVEL) {
+    if (TRUE || CurIrql > PASSIVE_LEVEL) {
         irp = IoBuildAsynchronousFsdRequest(IRP_MJ_READ, DeviceObject, IoBuf,
                                                Length, &ROffset, &(Context->IosbToUse) );
         if (!irp) {
@@ -349,7 +349,7 @@ UDFPhWriteSynchronous(
     // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
 
-    if (CurIrql > PASSIVE_LEVEL) {
+    if (TRUE || CurIrql > PASSIVE_LEVEL) {
         irp = IoBuildAsynchronousFsdRequest(IRP_MJ_WRITE, DeviceObject, IoBuf,
                                                Length, &ROffset, &(Context->IosbToUse) );
         if (!irp) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
