@@ -575,6 +575,9 @@ UDFCommonRead(
 
         // Acquire the appropriate FCB resource shared
         if (PagingIo) {
+            // Don't offload jobs when doing paging IO - otherwise this can lead to
+            // deadlocks in CcCopyRead.
+            CanWait = true;
             // Try to acquire the FCB PagingIoResource shared
             if(!Res2Acq) {
                 if (!UDFAcquireResourceShared(&(NtReqFcb->PagingIoResource), CanWait)) {
