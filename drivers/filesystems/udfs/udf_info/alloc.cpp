@@ -593,7 +593,9 @@ retry_no_align:
         ASSERT(i <= SearchLim);
         if(align) {
             i = (i+PS-1) & ~(PS-1);
-            ASSERT(i <= SearchLim);
+            // we can't find suitable Packet-size aligned block
+            // the block will be found without any alignment at the next iteration
+            // ASSERT(i <= SearchLim);
             if(i >= SearchLim)
                 break;
         }
