@@ -449,8 +449,8 @@ WCacheFindFrameToRelease(
 #pragma warning(disable:4035)               // re-enable below
 #endif
 
+__inline
 ULONG
-//__fastcall
 WCacheGetSortedListIndex(
     IN ULONG BlockCount,      // number of items in array (pointed by List)
     IN lba_t* List,           // pointer to sorted (ASC) array of ULONGs
@@ -459,85 +459,6 @@ WCacheGetSortedListIndex(
 {
     if(!BlockCount)
         return 0;
-
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-
-    __asm push  ecx
-    __asm push  ebx
-    __asm push  edx
-    __asm push  esi
-    __asm push  edi
-//    left = 0;
-//    right = BlockCount - 1;
-//    pos = 0;
-    __asm xor   edx,edx                 // left
-    __asm mov   ebx,BlockCount
-    __asm dec   ebx                     // right
-    __asm xor   esi,esi                 // pos
-    __asm mov   edi,List                // List
-    __asm mov   ecx,Lba                 // Lba
-
-While_1:
-//    while(left != right) {
-    __asm cmp   edx,ebx
-    __asm jz    EO_while_1
-
-//        pos = (left + right) >> 1;
-    __asm lea   esi,[ebx+edx]
-    __asm shr   esi,1
-//        if(List[pos] == Lba)
-//            return pos;
-    __asm mov   eax,[edi+esi*4]
-    __asm cmp   eax,ecx
-    __asm jz    EO_while_2
-
-//        if(right - left == 1) {
-    __asm sub   ebx,edx
-    __asm cmp   ebx,1
-    __asm jne    NO_r_sub_l_eq_1
-//            if(List[pos+1] < Lba)      <=>        if(List[pos+1] >= Lba)
-//                return (pos+2);        <=>            break;
-//            break;                     <=>        return (pos+2);
-    __asm cmp   [edi+esi*4+4],ecx
-    __asm jae   EO_while_1
-    __asm add   esi,2
-    __asm jmp   EO_while_2
-//        }
-NO_r_sub_l_eq_1:
-//        if(List[pos] < Lba) {
-    __asm cmp   eax,ecx
-    __asm jae   Update_r
-//            left = pos;
-    __asm add   ebx,edx
-    __asm mov   edx,esi
-    __asm jmp   While_1
-//        } else {
-Update_r:
-//            right = pos;
-    __asm mov   ebx,esi
-    __asm jmp   While_1
-//        }
-//    }
-EO_while_1:
-//    if((List[pos] < Lba) && ((pos+1) <= BlockCount)) pos++;
-    __asm mov   eax,[edi+esi*4]
-    __asm cmp   eax,ecx
-    __asm jae   EO_while_2
-    __asm inc   esi
-    __asm cmp   esi,BlockCount
-    __asm jbe   EO_while_2
-    __asm dec   esi
-EO_while_2:
-//  return pos;
-    __asm mov   eax,esi
-
-    __asm pop   edi
-    __asm pop   esi
-    __asm pop   edx
-    __asm pop   ebx
-    __asm pop   ecx
-
-#else   // NO X86 optimization , use generic C/C++
 
     ULONG pos;
     ULONG left;
@@ -567,9 +488,6 @@ EO_while_2:
     if((List[pos] < Lba) && ((pos+1) <= BlockCount)) pos++;
 
     return pos;
-
-#endif // _X86_
-
 }
 
 #ifdef _MSC_VER

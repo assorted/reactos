@@ -146,36 +146,10 @@ UDFGetExtentLength(
     if(!Extent) return 0;
     int64 i=0;
 
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-
-    __asm push  ebx
-    __asm push  ecx
-    __asm push  esi
-
-    __asm lea   ebx,i
-    __asm mov   esi,Extent
-    __asm xor   ecx,ecx
-While_1:
-    __asm mov   eax,[esi+ecx*8]  // Extent[j].extLength
-    __asm and   eax,UDF_EXTENT_LENGTH_MASK
-    __asm jz    EO_While
-    __asm add   [ebx],eax
-    __asm adc   [ebx+4],0
-    __asm inc   ecx
-    __asm jmp   While_1
-EO_While:;
-    __asm pop   esi
-    __asm pop   ecx
-    __asm pop   ebx
-
-#else   // NO X86 optimization , use generic C/C++
-
     while(Extent->extLength) {
         i += (Extent->extLength & UDF_EXTENT_LENGTH_MASK);
         Extent++;
     }
-
-#endif // _X86_
 
     return i;
 } // UDFGetExtentLength()
@@ -227,33 +201,12 @@ UDFGetMappingLength(
     if(!Extent) return 0;
     uint32 i=0;
 
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-    __asm push  ebx
-
-    __asm mov   ebx,Extent
-    __asm xor   eax,eax
-While_1:
-    __asm mov   ecx,[ebx+eax*8]
-    __asm jecxz EO_While
-    __asm inc   eax
-    __asm jmp   While_1
-EO_While:
-    __asm inc   eax
-    __asm shl   eax,3
-    __asm mov   i,eax
-
-    __asm pop   ebx
-
-#else   // NO X86 optimization , use generic C/C++
-
     while(Extent->extLength) {
         i++;
         Extent++;
     }
     i++;
     i*=sizeof(EXTENT_MAP);
-
-#endif // _X86_
 
     return i; //  i*sizeof(EXTENT_MAP)
 } // end UDFGetMappingLength()
@@ -2640,6 +2593,7 @@ tail_cached:;
         if(!AlwaysInIcb) {
             // remove 1st entry pointing to FileEntry
             s = UDFGetMappingLength(ExtInfo->Mapping);
+            ASSERT(s > sizeof(EXTENT_MAP));
             RtlMoveMemory(&(ExtInfo->Mapping[0]), &(ExtInfo->Mapping[1]), s - sizeof(EXTENT_MAP));
             if(!MyReallocPool__((int8*)(ExtInfo->Mapping), s,
                           (int8**)&(ExtInfo->Mapping), s - sizeof(EXTENT_MAP) )) {

@@ -235,78 +235,28 @@ UDFDirIndexTrunc(
     return STATUS_SUCCESS;
 } // end UDFDirIndexTrunc()
 
-#if defined _X86_ && !defined UDF_LIMIT_DIR_SIZE
-#ifdef _MSC_VER
-#pragma warning(disable:4035)               // re-enable below
-#endif
 /*
     This routine returns pointer to DirIndex item with index i.
  */
-#if defined(_MSC_VER) && !defined(__clang__)
-__declspec (naked)
-#endif
 PDIR_INDEX_ITEM
 __fastcall
 UDFDirIndex(
-    IN PDIR_INDEX_HDR hDirNdx, // ECX
-    IN uint32 i                // EDX
+    IN PDIR_INDEX_HDR hDirNdx,
+    IN uint_di i
     )
 {
-#if defined(_MSC_VER) && !defined(__clang__)
-    __asm {
-        push ebx
-        push ecx
-        push edx
-
-//        mov  ebx,hDirNdx
-        mov  ebx,ecx
-        mov  ecx,edx
-        or   ebx,ebx
-        jz   EO_udi_err
-
-        mov  eax,ecx
-        shr  ecx,UDF_DIR_INDEX_FRAME_SH           ; ecx = j
-        mov  edx,[ebx]hDirNdx.FrameCount          ; edx = k
-        cmp  ecx,edx
-        jae  EO_udi_err
-
-        and  eax,(1 shl UDF_DIR_INDEX_FRAME_SH)-1 ; eax = i
-        dec  edx
-        cmp  ecx,edx
-        jb   No_check
-
-        cmp  eax,[ebx].LastFrameCount
-        jae  EO_udi_err
-No_check:
-        add  ebx,size DIR_INDEX_HDR      ; ((PDIR_INDEX_ITEM*)(hDirNdx+1))...
-        mov  ebx,[ebx+ecx*4]             ; ...[j]...
-        mov  edx,size DIR_INDEX_ITEM
-        mul  edx                         ; ...[i]...
-        add  eax,ebx                     ; &(...)
-        jmp  udi_OK
-EO_udi_err:
-        xor  eax,eax
-udi_OK:
-        pop  edx
-        pop  ecx
-        pop  ebx
-
-        ret
-    }
-#else
-    /* FIXME ReactOS */
+#ifdef UDF_LIMIT_DIR_SIZE
+    if( hDirNdx && (i < hDirNdx->LastFrameCount))
+        return &( (((PDIR_INDEX_ITEM*)(hDirNdx+1))[0])[i] );
+#else //UDF_LIMIT_DIR_SIZE
     uint_di j, k;
     if( hDirNdx &&
         ((j = (i >> UDF_DIR_INDEX_FRAME_SH)) < (k = hDirNdx->FrameCount) ) &&
         ((i = (i & (UDF_DIR_INDEX_FRAME-1))) < ((j < (k-1)) ? UDF_DIR_INDEX_FRAME : hDirNdx->LastFrameCount)) )
         return &( (((PDIR_INDEX_ITEM*)(hDirNdx+1))[j])[i] );
+#endif // UDF_LIMIT_DIR_SIZE
     return NULL;
-#endif
 }
-#ifdef _MSC_VER
-#pragma warning(default:4035)
-#endif
-#endif // _X86_
 
 /*
     This routine returns pointer to DirIndex'es frame & index inside it
