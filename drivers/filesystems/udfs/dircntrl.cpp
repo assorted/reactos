@@ -235,7 +235,7 @@ UDFQueryDirectory(
     BOOLEAN                     ReturnSingleEntry = FALSE;
     PUCHAR                      Buffer = NULL;
     BOOLEAN                     FirstTimeQuery = FALSE;
-    LONG                        NextMatch;
+    LONG                        NextMatch = 0;
     LONG                        PrevMatch = -1;
     ULONG                       CurrentOffset;
     ULONG                       BaseLength;
@@ -435,7 +435,7 @@ UDFQueryDirectory(
             // Caller has told us wherefrom to begin.
             // We may need to round this to an appropriate directory entry
             // entry alignment value.
-            NextMatch = pStackLocation->Parameters.QueryDirectory.FileIndex + 1;
+            NextMatch = pStackLocation->Parameters.QueryDirectory.FileIndex;
         } else if(IrpSp->Flags & SL_RESTART_SCAN) {
             NextMatch = 0;
         } else {
@@ -444,7 +444,7 @@ UDFQueryDirectory(
             // But, do not update the CCB CurrentByteOffset field if our reach
             // the end of the directory (or get an error reading the directory)
             // while performing the search.
-            NextMatch = Ccb->CurrentIndex + 1; // Last good index
+            NextMatch = Ccb->CurrentIndex; // Last good index
         }
 
         FNM_Flags |= (Ccb->CCBFlags & UDF_CCB_WILDCARD_PRESENT) ? UDF_FNM_FLAG_CONTAINS_WC : 0;
@@ -513,10 +513,6 @@ UDFQueryDirectory(
             FileNameBytes = DirInformation->FileNameLength;
 
             if ((BaseLength + FileNameBytes) > BytesRemainingInBuffer) {
-                // We haven't successfully transfered current data &
-                // later NextMatch will be incremented. Thus we should
-                // prevent loosing information in such a way:
-                if(NextMatch) NextMatch --;
                 // If this won't fit and we have returned a previous entry then just
                 // return STATUS_SUCCESS. Otherwise
                 // use a status code of STATUS_BUFFER_OVERFLOW.
@@ -610,7 +606,7 @@ try_exit:   NOTHING;
             }
 #endif // UDF_DBG
             // Remember to update the CurrentByteOffset field in the CCB if required.
-            if(Ccb) Ccb->CurrentIndex = PrevMatch;
+            if(Ccb) Ccb->CurrentIndex = NextMatch;
 
             if (AcquiredFCB) {
                 UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
