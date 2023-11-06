@@ -811,8 +811,15 @@ UDFPackDirectory__(
             // remove ImpUse field
             IUl = ((PFILE_IDENT_DESC)Buf)->lengthOfImpUse;
             curFileInfo = DirNdx->FileInfo;
+
+            // The code below contains an error.
+            // We cannot extend the current FILE_IDENT_DESC to the sector boundary
+            // because the descriptor of the next file is stored there,
+            // and it will be overwritten. This has led to file overwrites, so this feature is disabled.
+
             // align next entry
-            if((d = LBS - ((curOffset + (l - IUl) + DataLocOffset) & (LBS-1)) ) < sizeof(FILE_IDENT_DESC)) {
+            if (FALSE) {
+            // disabled if((d = LBS - ((curOffset + (l - IUl) + DataLocOffset) & (LBS-1)) ) < sizeof(FILE_IDENT_DESC)) {
 
                 // insufficient space at the end of last sector for
                 // next FileIdent's tag. fill it with ImpUse data
