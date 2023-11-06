@@ -324,7 +324,6 @@ UDFReadFileEntry(
     return STATUS_SUCCESS;
 } // UDFReadFileEntry()
 
-#if !defined (_X86_) || !defined (_MSC_VER)
 /*
     Decides if a Unicode character matches one of a list
     of ASCII characters.
@@ -332,6 +331,7 @@ UDFReadFileEntry(
     illegal characters above 0x0020 are in the ASCII subset of Unicode.
     Works very similarly to the standard C function strchr().
  */
+__inline
 BOOLEAN
 UDFUnicodeInString(
     IN uint8* string, // String to search through.
@@ -349,60 +349,20 @@ UDFUnicodeInString(
     }
     return(found);
 } // end UDFUnicodeInString()
-#endif // _X86_
 
 /*
     Decides whether character passed is an illegal character for a
     DOS file name.
 */
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable:4035)               // re-enable below
-#endif
-
-#ifdef _X86_
-#ifdef _MSC_VER
-__declspec (naked)
-#endif
-#endif // _X86_
 BOOLEAN
 __fastcall
 UDFIsIllegalChar(
-    IN WCHAR chr  // ECX
+    IN WCHAR chr
     )
 {
     // Genuine illegal char's for DOS.
-#if defined (_X86_) && defined (_MSC_VER)
-  _asm {
-    push ebx
-
-    xor  eax,eax
-//  mov  ax,chr
-    mov  ax,cx
-    or   ah,ah
-    jnz  ERR_IIC
-
-    lea  ebx,[valid_char_arr]
-    xlatb
-    jmp  short ERR_IIC2
-ERR_IIC:
-    mov  al,1
-ERR_IIC2:
-
-    pop  ebx
-    ret
-  }
-
-#else   // NO X86 optimization , use generic C/C++
-    /* FIXME */
-    //return ((ch < 0x20) || UDFUnicodeInString((uint8*)&valid_char_arr, ch));
     return ((chr < 0x20) || UDFUnicodeInString((uint8*)&valid_char_arr, chr));
-#endif // _X86_
 } // end UDFIsIllegalChar()
-
-#ifdef _MSC_VER
-#pragma warning(pop)  // re-enable warning #4035
-#endif
 
 /*
     Translate udfName to dosName using OSTA compliant.
@@ -4284,59 +4244,13 @@ UDFCompareFileInfo(
 /*
     This routine computes 32-bit hash based on CRC-32 from SSH
  */
-
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable:4035)               // re-enable below
-#endif
-
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-__declspec (naked)
-#endif // _X86_
 uint32
 __fastcall
 crc32(
-    IN uint8* s,  // ECX
-    IN uint32 len // EDX
+    IN uint8* s,
+    IN uint32 len
     )
 {
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-//    uint32 _Size = len;
-
-    __asm {
-        push  ebx
-        push  ecx
-        push  edx
-        push  esi
-
-        xor   eax,eax
-        mov   esi,ecx  // ESI <- s
-        mov   ecx,edx  // ECX <- len
-
-        jecxz EO_CRC
-
-        lea   ebx,[crc32_tab]
-        xor   edx,edx
-
-CRC_loop:
-
-        mov   dl,al
-        xor   dl,[esi]
-        shr   eax,8
-        xor   eax,[dword ptr ebx+edx*4]
-        inc   esi
-        loop  CRC_loop
-
-EO_CRC:
-
-        pop   esi
-        pop   edx
-        pop   ecx
-        pop   ebx
-
-        ret
-    }
-#else  // NO X86 optimization , use generic C/C++
     uint32 i;
     uint32 crc32val = 0;
 
@@ -4345,7 +4259,6 @@ EO_CRC:
             crc32_tab[(crc32val ^ (*s)) & 0xff] ^ (crc32val >> 8);
     }
     return crc32val;
-#endif // _X86_
 } // end crc32()
 
 /*
@@ -4355,76 +4268,21 @@ EO_CRC:
     The OSTA-UDF(tm) 1.50 standard states that using CRCs is mandatory.
     The polynomial used is: x^16 + x^12 + x^15 + 1
 */
-
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-__declspec (naked)
-#endif // _X86_
 uint16
 __fastcall
 UDFUnicodeCksum(
-    PWCHAR s, // ECX
-    uint32 n  // EDX
+    PWCHAR s,
+    uint32 n
     )
 {
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-//    uint32 _Size = n;
-
-    __asm {
-        push  ebx
-        push  ecx
-        push  edx
-        push  esi
-
-        xor   eax,eax
-        mov   esi,ecx
-        mov   ecx,edx
-
-        jecxz EO_uCRC
-
-        lea   ebx,[CrcTable]
-        xor   edx,edx
-
-uCRC_loop:
-
-        mov   dl,ah            // dl = (Crc >> 8)
-        xor   dl,[esi+1]       // dl = ((Crc >> 8) ^ (*s >> 8)) & 0xff
-        mov   ah,al
-        mov   al,dh            // ax = (Crc << 8)
-        xor   ax,[word ptr ebx+edx*2]  // ax = ...........
-
-        mov   dl,ah
-        xor   dl,[esi]
-        mov   ah,al
-        mov   al,dh
-        xor   ax,[word ptr ebx+edx*2]
-
-        inc   esi
-        inc   esi
-        loop  uCRC_loop
-
-EO_uCRC:
-
-        pop   esi
-        pop   edx
-        pop   ecx
-        pop   ebx
-
-        ret
-    }
-#else  // NO X86 optimization , use generic C/C++
     uint16 Crc = 0;
     while (n--) {
         Crc = CrcTable[(Crc >> 8 ^ (*s >> 8)) & 0xff] ^ (Crc << 8);
         Crc = CrcTable[(Crc >> 8 ^ (*s++ & 0xff)) & 0xff] ^ (Crc << 8);
     }
     return Crc;
-
-#endif // _X86_
 } // end UDFUnicodeCksum()
 
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-__declspec (naked)
-#endif // _X86_
 uint16
 __fastcall
 UDFUnicodeCksum150(
@@ -4432,77 +4290,6 @@ UDFUnicodeCksum150(
     uint32 n  // EDX
     )
 {
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-//    uint32 _Size = n;
-
-    __asm {
-        push  ebx
-        push  ecx
-        push  edx
-        push  esi
-        push  edi
-
-        xor   eax,eax
-        mov   esi,ecx
-        mov   ecx,edx
-        xor   edi,edi
-
-        jecxz EO_uCRC
-
-        //lea   ebx,[CrcTable]
-        xor   edx,edx
-        xor   ebx,ebx
-
-uCRC_loop:
-
-        mov   dl,ah            // dl = (Crc >> 8)
-        or    edi,edx          // if(*s & 0xff00) Use16 = TRUE;
-        xor   dl,[esi+1]       // dl = ((Crc >> 8) ^ (*s >> 8)) & 0xff
-        mov   ah,al
-        mov   al,0             // ax = (Crc << 8)
-        xor   ax,[word ptr CrcTable+edx*2]  // ax = ...........
-
-        mov   dl,ah
-        xor   dl,[esi]
-        mov   ah,al
-        mov   al,0
-        xor   ax,[word ptr CrcTable+edx*2]
-
-        or    edi,edi          // if(!Use16) {
-        jnz   use16_1
-
-        rol   eax,16
-
-        mov   bl,ah            // dl = (Crc >> 8)
-        xor   bl,[esi]         // dl = ((Crc >> 8) ^ (*s >> 8)) & 0xff
-        mov   ah,al
-        mov   al,0             // ax = (Crc << 8)
-        xor   ax,[word ptr CrcTable+ebx*2]  // ax = ...........
-
-        rol   eax,16
-use16_1:
-        inc   esi
-        inc   esi
-        loop  uCRC_loop
-
-EO_uCRC:
-
-        or    edi,edi          // if(!Use16) {
-        jnz   use16_2
-
-        rol   eax,16           // }
-use16_2:
-        and   eax,0xffff
-
-        pop   edi
-        pop   esi
-        pop   edx
-        pop   ecx
-        pop   ebx
-
-        ret
-    }
-#else  // NO X86 optimization , use generic C/C++
     uint16 Crc = 0;
     uint16 Crc2 = 0;
     BOOLEAN Use16 = FALSE;
@@ -4518,7 +4305,6 @@ use16_2:
         Crc = CrcTable[(Crc >> 8 ^ (*s++ & 0xff)) & 0xff] ^ (Crc << 8);
     }
     return Use16 ? Crc : Crc2;
-#endif // _X86_
 } // end UDFUnicodeCksum150()
 
 /*
@@ -4527,65 +4313,18 @@ use16_2:
     The OSTA-UDF(tm) 1.50 standard states that using CRCs is mandatory.
     The polynomial used is: x^16 + x^12 + x^15 + 1
 */
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-__declspec (naked)
-#endif // _X86_
 uint16
 __fastcall
 UDFCrc(
-    IN uint8* Data, // ECX
-    IN SIZE_T Size  // EDX
+    IN uint8* Data,
+    IN SIZE_T Size
     )
 {
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-//    uint32 _Size = Size;
-
-    __asm {
-        push  ebx
-        push  ecx
-        push  edx
-        push  esi
-
-        mov   esi,ecx
-        mov   ecx,edx
-        xor   eax,eax
-
-        jecxz EO_CRC
-
-        lea   ebx,[CrcTable]
-        xor   edx,edx
-
-CRC_loop:
-
-        mov   dl,ah
-        xor   dl,[esi]
-        mov   ah,al
-        mov   al,dh
-        xor   ax,[word ptr ebx+edx*2]
-        inc   esi
-        loop  CRC_loop
-
-EO_CRC:
-
-        pop   esi
-        pop   edx
-        pop   ecx
-        pop   ebx
-
-        ret
-    }
-#else  // NO X86 optimization , use generic C/C++
     uint16 Crc = 0;
     while (Size--)
         Crc = CrcTable[(Crc >> 8 ^ *Data++) & 0xff] ^ (Crc << 8);
     return Crc;
-#endif // _X86_
-
 } // end UDFCrc()
-
-#ifdef _MSC_VER
-#pragma warning(pop)    // re-enable warning #4035
-#endif
 
 /*
     Read the first block of a tagged descriptor & check it.

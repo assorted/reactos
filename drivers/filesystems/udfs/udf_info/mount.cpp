@@ -2948,38 +2948,13 @@ UDFLoadSparingTable(
 /*
     This routine checks if buffer is ZERO-filled
  */
+__inline
 BOOLEAN
 UDFCheckZeroBuf(
     IN int8* Buf,
     IN uint32 Length
     )
 {
-
-#if defined(_X86_) && defined(_MSC_VER) && !defined(__clang__)
-
-    BOOLEAN RC = FALSE;
-
-    uint32 len = Length;
-    __asm push  ecx
-    __asm push  edi
-
-    __asm mov   ecx,len
-    __asm mov   edi,Buf
-    __asm xor   eax,eax
-    __asm shr   ecx,2
-    __asm repe scasd
-    __asm jne   short not_all_zeros
-    __asm mov   RC,1
-
-not_all_zeros:
-
-    __asm pop   edi
-    __asm pop   ecx
-
-    return RC;
-
-#else // _X86_
-
     uint32* tmp = (uint32*)Buf;
     uint32 i;
 
@@ -2987,9 +2962,6 @@ not_all_zeros:
         if(tmp[i]) return FALSE;
     }
     return TRUE;
-
-#endif // _X86_
-
 } // end UDFCheckZeroBuf()
 
 /*

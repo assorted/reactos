@@ -240,13 +240,7 @@ __fastcall UDFDOSName100(IN OUT PUNICODE_STRING DosName,
                        IN BOOLEAN KeepIntact);
 
 // return length of bit-chain starting from Offs bit
-#ifdef _X86_
-SIZE_T
-__stdcall
-UDFGetBitmapLen(
-#else   // NO X86 optimization , use generic C/C++
 SIZE_T    UDFGetBitmapLen(
-#endif // _X86_
                          uint32* Bitmap,
                          SIZE_T Offs,
                          SIZE_T Lim);
@@ -1094,90 +1088,22 @@ OSSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,
 #define UDF_DIR_INDEX_FRAME_GRAN_MASK (UDF_DIR_INDEX_FRAME_GRAN-1)
 #define AlignDirIndex(n)   ((n+UDF_DIR_INDEX_FRAME_GRAN_MASK) & ~(UDF_DIR_INDEX_FRAME_GRAN_MASK))
 
-#if defined _X86_ && !defined UDF_LIMIT_DIR_SIZE
-
 PDIR_INDEX_ITEM
 __fastcall
 UDFDirIndex(
     IN PDIR_INDEX_HDR hDirNdx,
-    IN uint32 i
+    IN uint_di i
     );
-
-#else   // NO X86 optimization , use generic C/C++
-__inline PDIR_INDEX_ITEM UDFDirIndex(IN PDIR_INDEX_HDR hDirNdx,
-                                     IN uint_di i)
-{
-#ifdef UDF_LIMIT_DIR_SIZE
-    if( hDirNdx && (i < hDirNdx->LastFrameCount))
-        return &( (((PDIR_INDEX_ITEM*)(hDirNdx+1))[0])[i] );
-#else //UDF_LIMIT_DIR_SIZE
-    uint_di j, k;
-    if( hDirNdx &&
-        ((j = (i >> UDF_DIR_INDEX_FRAME_SH)) < (k = hDirNdx->FrameCount) ) &&
-        ((i = (i & (UDF_DIR_INDEX_FRAME-1))) < ((j < (k-1)) ? UDF_DIR_INDEX_FRAME : hDirNdx->LastFrameCount)) )
-        return &( (((PDIR_INDEX_ITEM*)(hDirNdx+1))[j])[i] );
-#endif // UDF_LIMIT_DIR_SIZE
-    return NULL;
-}
-#endif // _X86_
 
 #define UDFDirIndexGetLastIndex(di)  ((((di)->FrameCount - 1) << UDF_DIR_INDEX_FRAME_SH) + (di)->LastFrameCount)
 
 // arr - bit array,  bit - number of bit
-#ifdef _X86_
 
 #ifdef _CONSOLE
 #define CheckAddr(addr) {ASSERT((uint32)(addr) > 0x1000);}
 #else
 #define CheckAddr(addr) {ASSERT((uint32)(addr) & 0x80000000);}
 #endif
-
-#define UDFGetBit(arr, bit) UDFGetBit__((uint32*)(arr), bit)
-
-BOOLEAN
-__fastcall
-UDFGetBit__(
-    IN uint32* arr,
-    IN uint32 bit
-    );
-
-#define UDFSetBit(arr, bit) UDFSetBit__((uint32*)(arr), bit)
-
-void
-__fastcall
-UDFSetBit__(
-    IN uint32* arr,
-    IN uint32 bit
-    );
-
-#define UDFSetBits(arr, bit, bc) UDFSetBits__((uint32*)(arr), bit, bc)
-
-void
-UDFSetBits__(
-    IN uint32* arr,
-    IN uint32 bit,
-    IN uint32 bc
-    );
-
-#define UDFClrBit(arr, bit) UDFClrBit__((uint32*)(arr), bit)
-
-void
-__fastcall
-UDFClrBit__(
-    IN uint32* arr,
-    IN uint32 bit
-    );
-
-#define UDFClrBits(arr, bit, bc) UDFClrBits__((uint32*)(arr), bit, bc)
-
-void
-UDFClrBits__(
-    IN uint32* arr,
-    IN uint32 bit,
-    IN uint32 bc
-    );
-
-#else   // NO X86 optimization , use generic C/C++
 
 #define UDFGetBit(arr, bit) (    (BOOLEAN) ( ((((uint32*)(arr))[(bit)>>5]) >> ((bit)&31)) &1 )    )
 #define UDFSetBit(arr, bit) ( (((uint32*)(arr))[(bit)>>5]) |= (((uint32)1) << ((bit)&31)) )
@@ -1194,8 +1120,6 @@ UDFClrBits__(
     for(j=0;j<bc;j++) {          \
         UDFClrBit(arr, (bit)+j); \
 }}
-
-#endif // _X86_
 
 #define UDFGetUsedBit(arr,bit)      (!UDFGetBit(arr,bit))
 #define UDFGetFreeBit(arr,bit)      UDFGetBit(arr,bit)

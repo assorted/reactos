@@ -49,41 +49,16 @@ UDFPhysLbaToPart(
     IN uint32 Addr
     )
 {
+    uint32 retval = 0;
     PUDFPartMap pm = Vcb->Partitions;
-#if defined (_X86_) && defined (_MSC_VER) && !defined(__clang__)
-    uint32 retval;
-    __asm {
-        push ebx
-        push ecx
-        push edx
-
-        mov  ebx,Vcb
-        mov  edx,[ebx]Vcb.PartitionMaps
-        mov  ebx,pm
-        mov  ecx,PartNum
-        xor  eax,eax
-loop_pl2p:
-        cmp  ecx,edx
-        jae  short EO_pl2p
-        cmp  [ebx]pm.PartitionNum,cx
-        jne  short cont_pl2p
-        mov  eax,Addr
-        sub  eax,[ebx]pm.PartitionRoot
-        mov  ecx,Vcb
-        mov  ecx,[ecx]Vcb.LB2B_Bits
-        shr  eax,cl
-        jmp  short EO_pl2p
-cont_pl2p:
-        add  ebx,size UDFPartMap
-        inc  ecx
-        jmp  short loop_pl2p
-EO_pl2p:
-        mov  retval,eax
-
-        pop  edx
-        pop  ecx
-        pop  ebx
+    uint32 i;
+    // walk through partition maps to find suitable one...
+    for(i=PartNum; i<Vcb->PartitionMaps; i++, pm++) {
+        if(pm->PartitionNum == PartNum)
+            // wow! return relative address
+            retval = (Addr - pm->PartitionRoot) >> Vcb->LB2B_Bits;
     }
+
 #ifdef UDF_DBG
     {
         // validate return value
@@ -93,17 +68,8 @@ EO_pl2p:
         UDFPartLbaToPhys(Vcb, &locAddr);
     }
 #endif // UDF_DBG
+
     return retval;
-#else   // NO X86 optimization , use generic C/C++
-    uint32 i;
-    // walk through partition maps to find suitable one...
-    for(i=PartNum; i<Vcb->PartitionMaps; i++, pm++) {
-        if(pm->PartitionNum == PartNum)
-            // wow! return relative address
-            return (Addr - pm->PartitionRoot) >> Vcb->LB2B_Bits;
-    }
-    return 0;
-#endif // _X86_
 } // end UDFPhysLbaToPart()
 
 /*
@@ -267,44 +233,8 @@ UDFPartLen(
     uint32 PartNum
     )
 {
-
     if(PartNum == (uint32)-2) return UDFPartEnd(Vcb, -2) - UDFPartStart(Vcb, -2);
-/*#ifdef _X86_
-    uint32 ret_val;
-    __asm {
-        mov  ebx,Vcb
-        mov  eax,PartNum
-        cmp  eax,-1
-        jne  short NOT_last_gpl
-        mov  eax,[ebx]Vcb.LastLBA
-        jmp  short EO_gpl
-NOT_last_gpl:
-        mov  esi,eax
-        xor  eax,eax
-        mov  ecx,[ebx]Vcb.PartitionMaps
-        jecxz EO_gpl
 
-        mov  eax,esi
-        mov  edx,size UDFTrackMap
-        mul  edx
-        add  ebx,eax
-        mov  eax,esi
-gpl_loop:
-        cmp  [ebx]Vcb.PartitionMaps.PartitionNum,ax
-        je   short EO_gpl_1
-        add  ebx,size UDFTrackMap
-        inc  eax
-        cmp  eax,ecx
-        jb   short gpl_loop
-        sub  ebx,size UDFTrackMap
-EO_gpl_1:
-        mov  eax,[ebx]Vcb.PartitionMaps.PartitionLen
-        add  eax,[ebx]Vcb.PartitionMaps.PartitionRoot
-EO_gpl:
-        mov  ret_val,eax
-    }
-    return ret_val;
-#else   // NO X86 optimization , use generic C/C++*/
     uint32 i;
     if(PartNum == (uint32)-1) return Vcb->LastLBA;
     for(i=PartNum; i<Vcb->PartitionMaps; i++) {
@@ -313,186 +243,13 @@ EO_gpl:
     }
     return (Vcb->Partitions[i-1].PartitionRoot +
             Vcb->Partitions[i-1].PartitionLen);
-/*#endif // _X86_*/
 } // end UDFPartLen()
 
 /*
     This routine returns length of bit-chain starting from Offs bit in
     array Bitmap. Bitmap scan is limited with Lim.
  */
-
-#if defined (_X86_) && defined (_MSC_VER)
-
-__declspec (naked)
 SIZE_T
-__stdcall
-UDFGetBitmapLen(
-    uint32* Bitmap,
-    SIZE_T Offs,
-    SIZE_T Lim          // NOT included
-    )
-{
-  _asm {
-    push  ebp
-    mov   ebp, esp
-
-    push  ebx
-    push  ecx
-    push  edx
-    push  esi
-    push  edi
-
-    xor   edx,edx            // init bit-counter
-    mov   ebx,[ebp+0x08]     // set base pointer in EBX (Bitmap)
-    mov   esi,[ebp+0x0c]     // set Offs in ESI
-    mov   edi,[ebp+0x10]     // set Lim in EDI
-
-    // check if Lim <= Offs
-    cmp   esi,edi
-//    jb    start_count
-//    ja    exit_count
-//    inc   edx
-//    jmp   exit_count
-    jae   exit_count
-
-//start_count:
-
-    // set 1st bit number in CL
-    mov   ecx,esi
-    and   cl,0x1f
-    // make ESI uint32-index
-    shr   esi,5
-
-    // save last bit number in CH
-    mov   eax,edi
-    and   al,0x1f
-    mov   ch,al
-    // make EDI uint32-index of the last uint32
-    shr   edi,5
-
-    mov   eax,[ebx+esi*4]
-    shr   eax,cl
-    test  eax,1
-
-    jz    Loop_0
-
-    /* COUNT 1-BITS SECTION */
-Loop_1:
-
-    cmp   esi,edi
-    ja    exit_count      // must never happen
-    jb    non_last_1
-
-Loop_last_1:
-
-    cmp   cl,ch
-    jae   exit_count
-    // do we met 0 ?
-    test  eax,1
-    jz    exit_count
-    shr   eax,1
-    inc   edx
-    inc   cl
-    jmp   Loop_last_1
-
-non_last_1:
-
-    or    cl,cl
-    jnz   std_count_1
-    cmp   eax,-1
-    je    quick_count_1
-
-std_count_1:
-
-    cmp   cl,0x1f
-    ja    next_uint32_1
-    // do we met 0 ?
-    test  eax,1
-    jz    exit_count
-    shr   eax,1
-    inc   edx
-    inc   cl
-    jmp   std_count_1
-
-quick_count_1:
-
-    add   edx,0x20
-
-next_uint32_1:
-
-    inc   esi
-    mov   eax,[ebx+esi*4]
-    xor   cl,cl
-    jmp   Loop_1
-
-    /* COUNT 0-BITS SECTION */
-Loop_0:
-
-    cmp   esi,edi
-    ja    exit_count      // must never happen
-    jb    non_last_0
-
-Loop_last_0:
-
-    cmp   cl,ch
-    jae   exit_count
-    // do we met 1 ?
-    test  eax,1
-    jnz   exit_count
-    shr   eax,1
-    inc   edx
-    inc   cl
-    jmp   Loop_last_0
-
-non_last_0:
-
-    or    cl,cl
-    jnz   std_count_0
-    or    eax,eax
-    jz    quick_count_0
-
-std_count_0:
-
-    cmp   cl,0x1f
-    ja    next_uint32_0
-    // do we met 1 ?
-    test  eax,1
-    jnz   exit_count
-    shr   eax,1
-    inc   edx
-    inc   cl
-    jmp   std_count_0
-
-quick_count_0:
-
-    add   edx,0x20
-
-next_uint32_0:
-
-    inc   esi
-    mov   eax,[ebx+esi*4]
-    xor   cl,cl
-    jmp   Loop_0
-
-exit_count:
-
-    mov   eax,edx
-
-    pop   edi
-    pop   esi
-    pop   edx
-    pop   ecx
-    pop   ebx
-
-    pop   ebp
-
-    ret   0x0c
-  }
-
-#else   // NO X86 optimization , use generic C/C++
-
-SIZE_T
-__stdcall
 UDFGetBitmapLen(
     uint32* Bitmap,
     SIZE_T Offs,
@@ -540,11 +297,7 @@ While_3:
             }
         }
     }
-
     return len;
-
-#endif // _X86_
-
 } // end UDFGetBitmapLen()
 
 #ifndef UDF_READ_ONLY_BUILD
@@ -1194,266 +947,3 @@ UDFIsBlockAllocated(
 */
     return ret_val;
 } // end UDFIsBlockAllocated()
-
-#ifdef _X86_
-
-#ifdef _MSC_VER
-#pragma warning(disable:4035)               // re-enable below
-#endif
-
-#ifdef _MSC_VER
-__declspec (naked)
-#endif
-BOOLEAN
-__fastcall
-UDFGetBit__(
-    IN uint32* arr, // ECX
-    IN uint32 bit   // EDX
-    )
-{
-//    CheckAddr(arr);
-//    ASSERT(bit < 300000);
-#ifdef _MSC_VER
-    __asm {
-        push ebx
-        push ecx
-//        mov  eax,bit
-        mov  eax,edx
-        shr  eax,3
-        and  al,0fch
-        add  eax,ecx // eax+arr
-        mov  eax,[eax]
-        mov  cl,dl
-        ror  eax,cl
-        and  eax,1
-
-        pop  ecx
-        pop  ebx
-        ret
-    }
-#else
-/* FIXME ReactOS */
-    return ((BOOLEAN)(((((uint32*)(arr))[(bit)>>5]) >> ((bit)&31)) &1));
-#endif
-} // end UDFGetBit__()
-
-#ifdef _MSC_VER
-__declspec (naked)
-#endif
-void
-__fastcall
-UDFSetBit__(
-    IN uint32* arr, // ECX
-    IN uint32 bit   // EDX
-    )
-{
-//    CheckAddr(arr);
-//    ASSERT(bit < 300000);
-#ifdef _MSC_VER
-    __asm {
-        push eax
-        push ebx
-        push ecx
-//        mov  eax,bit
-        mov  eax,edx
-        shr  eax,3
-        and  al,0fch
-        add  eax,ecx // eax+arr
-        mov  ebx,1
-        mov  cl,dl
-        rol  ebx,cl
-        or   [eax],ebx
-
-        pop  ecx
-        pop  ebx
-        pop  eax
-        ret
-    }
-#else
-/* FIXME ReactOS */
-    (((uint32*)(arr))[(bit)>>5]) |= (((uint32)1) << ((bit)&31));
-#endif
-} // end UDFSetBit__()
-
-void
-UDFSetBits__(
-    IN uint32* arr,
-    IN uint32 bit,
-    IN uint32 bc
-    )
-{
-#if defined(_MSC_VER) && !defined(__clang__)
-    __asm {
-        push eax
-        push ebx
-        push ecx
-        push edx
-        push esi
-
-        mov  edx,bc
-        or   edx,edx
-        jz   short EO_sb_loop
-
-        mov  ecx,bit
-        mov  esi,arr
-
-        mov  ebx,1
-        rol  ebx,cl
-
-        mov  eax,ecx
-        shr  eax,3
-        and  al,0fch
-
-        test cl, 0x1f
-        jnz  short sb_loop_cont
-sb_loop_2:
-        cmp  edx,0x20
-        jb   short sb_loop_cont
-
-        mov  [dword ptr esi+eax],0xffffffff
-        sub  edx,0x20
-        jz   short EO_sb_loop
-        add  eax,4
-        add  ecx,0x20
-        jmp  short sb_loop_2
-
-sb_loop_cont:
-        or   [esi+eax],ebx
-
-        rol  ebx,1
-        inc  ecx
-        dec  edx
-        jz   short EO_sb_loop
-
-        test cl, 0x1f
-        jnz  short sb_loop_cont
-        add  eax,4
-        jmp  short sb_loop_2
-EO_sb_loop:
-        pop  esi
-        pop  edx
-        pop  ecx
-        pop  ebx
-        pop  eax
-    }
-#else
-/* FIXME ReactOS */
-    uint32 j;
-    for(j=0;j<bc;j++) {
-        UDFSetBit(arr, bit+j);
-    }
-#endif
-} // end UDFSetBits__()
-
-#ifdef _MSC_VER
-__declspec (naked)
-#endif
-void
-__fastcall
-UDFClrBit__(
-    IN uint32* arr, // ECX
-    IN uint32 bit   // EDX
-    )
-{
-//    CheckAddr(arr);
-//    ASSERT(bit < 300000);
-#ifdef _MSC_VER
-    __asm {
-        push eax
-        push ebx
-        push ecx
-//        mov  eax,bit
-        mov  eax,edx
-        shr  eax,3
-        and  al,0fch
-        add  eax,ecx // eax+arr
-        mov  ebx,0fffffffeh
-        mov  cl,dl
-        rol  ebx,cl
-        and  [eax],ebx
-
-        pop  ecx
-        pop  ebx
-        pop  eax
-        ret
-    }
-#else
-/* FIXME ReactOS */
-    (((uint32*)(arr))[(bit)>>5]) &= (~(((uint32)1) << ((bit)&31)));
-#endif
-} // end UDFClrBit__()
-
-void
-UDFClrBits__(
-    IN uint32* arr,
-    IN uint32 bit,
-    IN uint32 bc
-    )
-{
-#if defined(_MSC_VER) && !defined(__clang__)
-    __asm {
-        push eax
-        push ebx
-        push ecx
-        push edx
-        push esi
-
-        mov  edx,bc
-        or   edx,edx
-        jz   short EO_cp_loop
-
-        mov  ecx,bit
-        mov  esi,arr
-
-        mov  ebx,0xfffffffe
-        rol  ebx,cl
-
-        mov  eax,ecx
-        shr  eax,3
-        and  al,0fch
-
-        test cl, 0x1f
-        jnz  short cp_loop_cont
-cp_loop_2:
-        cmp  edx,0x20
-        jb   short cp_loop_cont
-
-        mov  [dword ptr esi+eax],0x00000000
-        sub  edx,0x20
-        jz   short EO_cp_loop
-        add  eax,4
-        add  ecx,0x20
-        jmp  short cp_loop_2
-
-cp_loop_cont:
-        and  [esi+eax],ebx
-
-        rol  ebx,1
-        inc  ecx
-        dec  edx
-        jz   short EO_cp_loop
-
-        test cl, 0x1f
-        jnz  short cp_loop_cont
-        add  eax,4
-        jmp  short cp_loop_2
-EO_cp_loop:
-        pop  esi
-        pop  edx
-        pop  ecx
-        pop  ebx
-        pop  eax
-    }
-#else
-/* FIXME ReactOS */
-    uint32 j;
-    for(j=0;j<bc;j++) {
-        UDFClrBit(arr, bit+j);
-    }
-#endif
-} // end UDFClrBits__()
-
-#ifdef _MSC_VER
-#pragma warning(default:4035)
-#endif
-#endif // _X86_
