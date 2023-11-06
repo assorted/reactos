@@ -514,6 +514,7 @@ UDFIndexDirectory(
     PFILE_IDENT_DESC FileId;
     uint32 Offset = 0;
 //    uint32 prevOffset = 0;
+    uint32 DelCount = 0;
     uint_di Count = 0;
     OSSTATUS status;
     int8* buff;
@@ -569,7 +570,7 @@ UDFIndexDirectory(
             DirPrint(("  badly aligned\n", Offset));
             if(Vcb->Modified) {
                 DirPrint(("  queue repack request\n"));
-                FileInfo->Dloc->DirIndex->DelCount = Vcb->PackDirThreshold+1;
+                DelCount = Vcb->PackDirThreshold+1;
             }
         }
 //        prevOffset = Offset;
@@ -598,6 +599,8 @@ UDFIndexDirectory(
         DbgFreePool(buff);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
+
+    hDirNdx->DelCount = DelCount;
 
     Offset = Count = 0;
     hDirNdx->DIFlags |= (ExtInfo->Offset ? UDF_DI_FLAG_INIT_IN_ICB : 0);
