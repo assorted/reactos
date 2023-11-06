@@ -978,9 +978,8 @@ UDFDoesOSAllowFileToBeTargetForRename__(
         if(UDFGetFileLinkCount(FileInfo) <= 1) {
             FileInfo->Fcb->NTRequiredFCB->NtReqFCBFlags |= UDF_NTREQ_FCB_DELETED;
         }
-    }
-    return RC;*/
-    return STATUS_ACCESS_DENIED;
+    }*/
+    return RC;
 
 } // end UDFDoesOSAllowFileToBeTargetForRename__()
 
