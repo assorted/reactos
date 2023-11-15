@@ -962,30 +962,35 @@ UDFCheckAccessRights(
 #ifdef UDF_READ_ONLY_BUILD
 treat_as_ro:
 #endif //UDF_READ_ONLY_BUILD
-        ACCESS_MASK  DesiredAccessMask = 0;
 
-        if(Fcb->Vcb->CompatFlags & UDF_VCB_IC_WRITE_IN_RO_DIR) {
-            if(Fcb->FCBFlags & UDF_FCB_DIRECTORY) {
-                DesiredAccessMask = (FILE_WRITE_EA |
-                                     DELETE);
-            } else {
-                DesiredAccessMask = (FILE_WRITE_DATA |
-                                     FILE_APPEND_DATA |
-                                     FILE_WRITE_EA |
-                                     DELETE);
-            }
-        } else {
-                DesiredAccessMask = (FILE_WRITE_DATA |
-                                     FILE_APPEND_DATA |
-                                     FILE_WRITE_EA |
-                                     FILE_DELETE_CHILD |
-                                     FILE_ADD_SUBDIRECTORY |
-                                     FILE_ADD_FILE |
-                                     DELETE);
+        //
+        //  Check the desired access for a read-only dirent.  AccessMask will contain
+        //  the flags we're going to allow.
+        //
+
+        ACCESS_MASK AccessMask = DELETE | READ_CONTROL | WRITE_OWNER | WRITE_DAC |
+                            SYNCHRONIZE | ACCESS_SYSTEM_SECURITY | FILE_READ_DATA |
+                            FILE_READ_EA | FILE_WRITE_EA | FILE_READ_ATTRIBUTES |
+                            FILE_WRITE_ATTRIBUTES | FILE_EXECUTE | FILE_LIST_DIRECTORY |
+                            FILE_TRAVERSE;
+
+        //
+        //  If this is a subdirectory also allow add file/directory and delete.
+        //
+
+        if (FlagOn(Fcb->FCBFlags, UDF_FCB_DIRECTORY)) {
+
+            AccessMask |= FILE_ADD_SUBDIRECTORY | FILE_ADD_FILE | FILE_DELETE_CHILD;
         }
-        if(DesiredAccess & DesiredAccessMask)
+
+        if (FlagOn(DesiredAccess, ~AccessMask)) {
+
+            AdPrint(("Cannot open readonly\n"));
+
             return STATUS_ACCESS_DENIED;
+        }
     }
+
 #ifdef UDF_ENABLE_SECURITY
     // Check Security
     // NOTE: we should not perform security check if an empty DesiredAccess
