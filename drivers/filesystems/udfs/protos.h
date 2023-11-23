@@ -350,7 +350,7 @@ extern NTSTATUS UDFGetPositionInformation(
 extern NTSTATUS UDFGetFileStreamInformation(
     IN PtrUDFFCB                  Fcb,
     IN PFILE_STREAM_INFORMATION   PtrBuffer,
- IN OUT PLONG                     PtrReturnedLength);
+ IN OUT PULONG                    PtrReturnedLength);
 
 extern NTSTATUS UDFSetBasicInformation(
     IN PtrUDFFCB                   Fcb,
