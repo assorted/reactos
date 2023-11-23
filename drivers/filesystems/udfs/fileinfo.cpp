@@ -272,7 +272,7 @@ UDFCommonFileInfo(
                 RC = UDFGetPositionInformation(FileObject, (PFILE_POSITION_INFORMATION)PtrSystemBuffer, &BufferLength);
                 break;
             case FileStreamInformation:
-                RC = UDFGetFileStreamInformation(Fcb, (PFILE_STREAM_INFORMATION) PtrSystemBuffer, &BufferLength);
+                RC = UDFGetFileStreamInformation(Fcb, (PFILE_STREAM_INFORMATION) PtrSystemBuffer, (PULONG)&BufferLength);
                 break;
             case FileAllInformation:
                 // The I/O Manager supplies the Mode, Access, and Alignment
@@ -939,7 +939,7 @@ NTSTATUS
 UDFGetFileStreamInformation(
     IN PtrUDFFCB                  Fcb,
     IN PFILE_STREAM_INFORMATION   PtrBuffer,
- IN OUT PLONG                     PtrReturnedLength
+ IN OUT PULONG                    PtrReturnedLength
     )
 {
     NTSTATUS        RC = STATUS_SUCCESS;
@@ -948,12 +948,19 @@ UDFGetFileStreamInformation(
     PVCB            Vcb;
     BOOLEAN         FcbAcquired = FALSE;
     uint_di         i;
-    LONG            l;
+    ULONG CurrentSize;
     PDIR_INDEX_HDR  hSDirIndex;
     PDIR_INDEX_ITEM SDirIndex;
+    PDIR_INDEX_ITEM DirNdx;
     PFILE_BOTH_DIR_INFORMATION NTFileInfo = NULL;
 
+    PFILE_STREAM_INFORMATION CurrentInfo = PtrBuffer;
+    PFILE_STREAM_INFORMATION Previous = NULL;
+
     AdPrint(("UDFGetFileStreamInformation\n"));
+
+    DECLARE_CONST_UNICODE_STRING(StreamPrefix, L":");
+    DECLARE_CONST_UNICODE_STRING(StreamSuffix, L":$DATA");
 
     _SEH2_TRY {
 
@@ -967,37 +974,82 @@ UDFGetFileStreamInformation(
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
         Vcb = Fcb->Vcb;
-        // Zero out the supplied buffer.
-        RtlZeroMemory(PtrBuffer, *PtrReturnedLength);
+
+        DirNdx = UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo), FileInfo->Index);
+        ASSERT(DirNdx);
+
+        NTFileInfo = (PFILE_BOTH_DIR_INFORMATION)MyAllocatePool__(NonPagedPool, sizeof(FILE_BOTH_DIR_INFORMATION)+UDF_NAME_LEN*sizeof(WCHAR));
+        if(!NTFileInfo) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+
+        RC = UDFFileDirInfoToNT(Vcb, DirNdx, NTFileInfo);
+
+        if(!NT_SUCCESS(RC)) {
+            try_return(RC);
+        }
+
+        CurrentSize = FIELD_OFFSET(FILE_STREAM_INFORMATION, StreamName) + StreamPrefix.Length + StreamSuffix.Length;
+
+        if (CurrentSize > *PtrReturnedLength) {
+            try_return(RC = STATUS_BUFFER_OVERFLOW);
+        }
+
+        CurrentInfo->NextEntryOffset = 0;
+        CurrentInfo->StreamNameLength = StreamPrefix.Length + StreamSuffix.Length;
+        CurrentInfo->StreamSize = NTFileInfo->EndOfFile;
+        CurrentInfo->StreamAllocationSize = NTFileInfo->AllocationSize;
+
+        RtlCopyMemory(&CurrentInfo->StreamName[0], StreamPrefix.Buffer, StreamPrefix.Length);
+        RtlCopyMemory(&CurrentInfo->StreamName[1], StreamSuffix.Buffer, StreamSuffix.Length);
+
+        Previous = CurrentInfo;
+        CurrentInfo = (PFILE_STREAM_INFORMATION)((ULONG_PTR)CurrentInfo + CurrentSize);
+
+        (*PtrReturnedLength) -= CurrentSize;
+
         if(!(SDirInfo = FileInfo->Dloc->SDirInfo) ||
              UDFIsSDirDeleted(SDirInfo) ) {
-            (*PtrReturnedLength) -= (sizeof(FILE_STREAM_INFORMATION) - sizeof(WCHAR));
+
             try_return(RC = STATUS_SUCCESS);
         }
 
         hSDirIndex = SDirInfo->Dloc->DirIndex;
-        NTFileInfo = (PFILE_BOTH_DIR_INFORMATION)MyAllocatePool__(NonPagedPool, sizeof(FILE_BOTH_DIR_INFORMATION)+UDF_NAME_LEN*sizeof(WCHAR));
-        if(!NTFileInfo) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
 
         for(i=2; (SDirIndex = UDFDirIndex(hSDirIndex,i)); i++) {
             if((SDirIndex->FI_Flags & UDF_FI_FLAG_FI_INTERNAL) ||
                 UDFIsDeleted(SDirIndex) ||
                 !SDirIndex->FName.Buffer )
                 continue;
-            // copy data to buffer
-            if(*PtrReturnedLength < (l = ((sizeof(FILE_STREAM_INFORMATION) - sizeof(WCHAR)) +
-                                           SDirIndex->FName.Length + 3) & (~3)) ) {
-                try_return(RC = STATUS_BUFFER_OVERFLOW);
+
+            CurrentSize = FIELD_OFFSET(FILE_STREAM_INFORMATION, StreamName) +
+                            StreamPrefix.Length + SDirIndex->FName.Length + StreamSuffix.Length;
+
+            if (CurrentSize > *PtrReturnedLength) {
+                RC = STATUS_BUFFER_OVERFLOW;
+                break;
             }
+
             RC = UDFFileDirInfoToNT(Vcb, SDirIndex, NTFileInfo);
 
-            PtrBuffer->NextEntryOffset = l;
-            PtrBuffer->StreamNameLength = SDirIndex->FName.Length;
-            PtrBuffer->StreamSize = NTFileInfo->EndOfFile;
-            PtrBuffer->StreamAllocationSize = NTFileInfo->AllocationSize;
-            RtlCopyMemory(&(PtrBuffer->StreamName), SDirIndex->FName.Buffer, SDirIndex->FName.Length);
-            *PtrReturnedLength -= l;
-            *((PCHAR*)(&PtrBuffer)) += l;
+            if(!NT_SUCCESS(RC)) {
+                try_return(RC);
+            }
+
+            CurrentInfo->NextEntryOffset = 0;
+            CurrentInfo->StreamNameLength = StreamPrefix.Length + SDirIndex->FName.Length + StreamSuffix.Length;
+            CurrentInfo->StreamSize = NTFileInfo->EndOfFile;
+            CurrentInfo->StreamAllocationSize = NTFileInfo->AllocationSize;
+
+            RtlCopyMemory(&CurrentInfo->StreamName[0], StreamPrefix.Buffer, StreamPrefix.Length);
+            RtlCopyMemory(&CurrentInfo->StreamName[1], SDirIndex->FName.Buffer, SDirIndex->FName.Length);
+            RtlCopyMemory(&CurrentInfo->StreamName[1 + SDirIndex->FName.Length / sizeof(WCHAR)], StreamSuffix.Buffer, StreamSuffix.Length);
+
+            if (Previous != NULL) {
+                Previous->NextEntryOffset = (ULONG_PTR)CurrentInfo - (ULONG_PTR)Previous;
+            }
+
+            Previous = CurrentInfo;
+            CurrentInfo = (PFILE_STREAM_INFORMATION)((ULONG_PTR)CurrentInfo + CurrentSize);
+            *PtrReturnedLength -= CurrentSize;
         }
 
 try_exit: NOTHING;
