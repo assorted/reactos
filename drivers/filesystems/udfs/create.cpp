@@ -259,6 +259,7 @@ UDFCommonCreate(
     BOOLEAN                     RestoreShareAccess = FALSE;
     PWCHAR                      TailNameBuffer = NULL;
     ULONG                       SNameIndex = 0;
+    DECLARE_CONST_UNICODE_STRING(StreamSuffix, L":$DATA");
 
     TmPrint(("UDFCommonCreate:\n"));
 
@@ -877,6 +878,16 @@ op_vol_accs_dnd:
             if(!NT_SUCCESS(RC))
                 try_return(RC);
 
+            // check for :$DATA suffix 
+            if (StreamTargetOpen && AbsolutePathName.Length > StreamSuffix.Length) {
+                UNICODE_STRING Tail;
+                Tail.Buffer = &AbsolutePathName.Buffer[(AbsolutePathName.Length - StreamSuffix.Length)/sizeof(WCHAR)];
+                Tail.Length = Tail.MaximumLength = StreamSuffix.Length;
+
+                if (RtlEqualUnicodeString(&Tail, &StreamSuffix, TRUE)) {
+                    AbsolutePathName.Length -= StreamSuffix.Length;
+                }
+            }
         } else {
         // ****************
         // Absolute open
