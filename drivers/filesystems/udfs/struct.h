@@ -394,7 +394,6 @@ typedef struct _UDFIrpContext {
 #define         UDF_IRP_CONTEXT_READ_ONLY           (0x00010000)
 #define         UDF_IRP_CONTEXT_RES1_ACQ            (0x01000000)
 #define         UDF_IRP_CONTEXT_RES2_ACQ            (0x02000000)
-#define         UDF_IRP_CONTEXT_FORCED_POST         (0x20000000)
 #define         UDF_IRP_CONTEXT_BUFFER_LOCKED       (0x40000000)
 #define         UDF_IRP_CONTEXT_NOT_FROM_ZONE       (0x80000000)
 
