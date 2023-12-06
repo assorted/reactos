@@ -327,9 +327,9 @@ UDFCommonClose(
 
         DirNdx = UDFGetDirIndexByFileInfo(fi);
         if(DirNdx) {
-            CurName.Buffer = UDFDirIndex(DirNdx,fi->Index)->FName.Buffer;
-            if(CurName.Buffer) {
-                AdPrint(("Closing file: %ws %8.8x\n", CurName.Buffer, FileObject));
+            CurName = UDFDirIndex(DirNdx,fi->Index)->FName;
+            if(CurName.Length) {
+                AdPrint(("Closing file: %wZ %8.8x\n", &CurName, FileObject));
             } else {
                 AdPrint(("Closing file: ??? \n"));
             }
