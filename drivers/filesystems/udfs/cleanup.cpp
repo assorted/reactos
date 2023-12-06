@@ -246,9 +246,9 @@ UDFCommonCleanup(
 #ifdef UDF_DBG
         DirNdx = UDFGetDirIndexByFileInfo(Fcb->FileInfo);
         if(DirNdx) {
-            CurName.Buffer = UDFDirIndex(DirNdx, Fcb->FileInfo->Index)->FName.Buffer;
-            if(CurName.Buffer) {
-                AdPrint(("Cleaning up file: %ws %8.8x\n", CurName.Buffer, FileObject));
+            CurName = UDFDirIndex(DirNdx, Fcb->FileInfo->Index)->FName;
+            if(CurName.Length) {
+                AdPrint(("Cleaning up file: %wZ %8.8x\n", &CurName, FileObject))
             } else {
                 AdPrint(("Cleaning up file: ??? \n"));
             }
