@@ -706,11 +706,6 @@ UDFCommonRead(
                 CanWait = TRUE;
             } else*/
 #endif
-            if(KeGetCurrentIrql() > PASSIVE_LEVEL) {
-                MmPrint(("    !PASSIVE_LEVEL\n"));
-                CanWait = FALSE;
-                PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_FORCED_POST;
-            }
             if(!CanWait && UDFIsFileCached__(Vcb, Fcb->FileInfo, ByteOffset.QuadPart, TruncatedLength, FALSE)) {
                 MmPrint(("    Locked => CanWait\n"));
                 CacheLocked = TRUE;
