@@ -2391,7 +2391,7 @@ UDFResizeExtent(
                     req_s = lim - s;
                     ASSERT(req_s);
                     if((lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, lba)) {
-                        s += UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s-1));
+                        s += UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s));
                     }
 /*                    for(s1=lba; (s<lim) && (s1<pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, s1); s1++) {
                         s++;
@@ -2463,7 +2463,7 @@ UDFResizeExtent(
                         UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
                         //ASSERT(req_s);
                         if((lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, lba)) {
-                            s += (d = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s-1)));
+                            s += (d = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s)));
                         }
     /*                    for(s1=lba; (s<lim) && (s1<pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, s1); s1++) {
                             s++;
