@@ -1371,7 +1371,7 @@ UDFGetFileLinkCount(
     // references (including SDir) - 1.
     // Thus we'll write to media UDF-required value, but return
     // cooked value to callers
-    d = UDFHasAStreamDir(FileInfo) ? 0 : 1;
+    d = UDFHasAStreamDir(FileInfo) ? 1 : 0;
     if(Ident == TID_FILE_ENTRY) {
         return ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->fileLinkCount + d;
     } else if(Ident == TID_EXTENDED_FILE_ENTRY) {
@@ -1404,7 +1404,7 @@ UDFSetFileLinkCount(
     // references (including SDir) - 1.
     // Thus we'll write to media UDF-required value, but return
     // cooked value to callers
-    d = UDFHasAStreamDir(FileInfo) ? 0 : 1;
+    d = UDFHasAStreamDir(FileInfo) ? 1 : 0;
     if(Ident == TID_FILE_ENTRY) {
         ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->fileLinkCount = LinkCount - d;
     } else if(Ident == TID_EXTENDED_FILE_ENTRY) {
