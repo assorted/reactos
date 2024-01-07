@@ -349,12 +349,18 @@ UDFCommonFileInfo(
                     }
                     ParentResourceAcquired = TRUE;
                 }
-                UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
+
                 if(!UDFAcquireResourceExclusive(&(NtReqFcb->MainResource), CanWait)) {
                     PostRequest = TRUE;
                     try_return(RC = STATUS_PENDING);
                 }
                 MainResourceAcquired = TRUE;
+
+                if(!UDFAcquireResourceExclusive(&(NtReqFcb->PagingIoResource), CanWait)) {
+                    PostRequest = TRUE;
+                    try_return(RC = STATUS_PENDING);
+                }
+                PagingIoResourceAcquired = TRUE;
             } else
             // The only operations that could conceivably proceed from this point
             // on are paging-IO read/write operations. For delete, link (rename),
@@ -467,7 +473,6 @@ try_exit:   NOTHING;
         }
 
         if(MainResourceAcquired) {
-            UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
             UDFReleaseResource(&(NtReqFcb->MainResource));
             MainResourceAcquired = FALSE;
         }
