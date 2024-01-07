@@ -3932,8 +3932,7 @@ retry_flush_FE:
         FileInfo->Dloc->AllocLoc.Modified = FALSE;
     } else {
 #if defined(UDF_DBG) && !defined(UDF_CHECK_UTIL)
-        if (FileInfo->Fcb->FCBFlags & UDF_FCB_DIRECTORY &&
-            FileInfo->Dloc->DataLoc.Mapping[0].extLength == (uint32)(EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30) &&
+        if (FileInfo->Dloc->DataLoc.Mapping[0].extLength == (uint32)(EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30) &&
             FileInfo->Dloc->DataLoc.Mapping[0].extLocation == 0) {
                 // This case occurs when DeletePending is set for directories. UDFUnlinkFile__ been called.
                 ASSERT(UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping) == 0);
