@@ -578,8 +578,8 @@ UDFFindMinSuitableExtent(
         align = TRUE;
     if(AllocFlags & EXTENT_FLAG_ALLOC_SEQUENTIAL)
         align = TRUE;
-    if(Length > (uint32)(UDF_MAX_EXTENT_LENGTH >> Vcb->BlockSizeBits))
-        Length = (UDF_MAX_EXTENT_LENGTH >> Vcb->BlockSizeBits);
+    if(Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->BlockSizeBits))
+        Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->BlockSizeBits);
     // align Length according to _Logical_ block size & convert it to BCount
     i = (1<<Vcb->LB2B_Bits)-1;
     Length = (Length+i) & ~i;
@@ -981,11 +981,12 @@ UDFAllocFreeExtent_(
 
     LBS = Vcb->LBlockSize;
     BSh = Vcb->BlockSizeBits;
+    uint32 MaxExtentLength = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS);
     blen = (uint32)(((Length+LBS-1) & ~((int64)LBS-1)) >> BSh);
     ExtInfo->Mapping = NULL;
     ExtInfo->Offset = 0;
 
-    ASSERT(blen <= (uint32)(UDF_MAX_EXTENT_LENGTH >> BSh));
+    ASSERT(blen <= (uint32)(MaxExtentLength >> BSh));
 
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
 
@@ -998,7 +999,6 @@ UDFAllocFreeExtent_(
         Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchStart,
                                                                SearchLim, &len, AllocFlags);
 
-//        ASSERT(len <= (uint32)(UDF_MAX_EXTENT_LENGTH >> BSh));
         if(len >= blen) {
             // complete search
             Ext.extLength = blen<<BSh;

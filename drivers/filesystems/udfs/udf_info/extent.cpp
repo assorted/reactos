@@ -1824,6 +1824,7 @@ UDFMarkAllocatedAsRecorded(
     uint32 BS = Vcb->BlockSize;
     uint32 LBS = Vcb->LBlockSize;
     uint32 BSh = Vcb->BlockSizeBits;
+    uint32 MaxExtentLength = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS);
     BOOLEAN TryPack = TRUE;
 #ifdef UDF_DBG
     int64 check_size;
@@ -1849,7 +1850,7 @@ UDFMarkAllocatedAsRecorded(
         if(i &&
            ((Extent[i-1].extLength >> 30) == EXTENT_RECORDED_ALLOCATED) &&
            (lba == (Extent[i-1].extLocation + ((len = Extent[i-1].extLength & UDF_EXTENT_LENGTH_MASK) >> BSh))) &&
-           ((len + (Extent[i].extLength & UDF_EXTENT_LENGTH_MASK)) <= UDF_MAX_EXTENT_LENGTH) &&
+           ((len + (Extent[i].extLength & UDF_EXTENT_LENGTH_MASK)) <= MaxExtentLength) &&
            (i == ((UDFGetMappingLength(Extent) / sizeof(EXTENT_MAP)) - 2)) &&
            TRUE) {
             // make optimization for sequentially written files
@@ -2251,7 +2252,7 @@ UDFResizeExtent(
     SIZE_T LBS = Vcb->LBlockSize;
     BSh = Vcb->BlockSizeBits;
     PS = Vcb->WriteBlockSize >> Vcb->BlockSizeBits;
-    uint32 MaxGrow = (UDF_MAX_EXTENT_LENGTH & ~(LBS-1));
+    uint32 MaxGrow = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS);
     BOOLEAN Sequential = FALSE;
 
     ASSERT(PartNum < 3);
@@ -2371,9 +2372,9 @@ UDFResizeExtent(
                     pe=UDFPartEnd(Vcb,PartNum);
                     // maximum frag length
                     if(Sequential) {
-                        lim = (((uint32)UDF_MAX_EXTENT_LENGTH) >> BSh) & ~(PS-1);
+                        lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, PS) >> BSh;
                     } else {
-                        lim = (((uint32)UDF_MAX_EXTENT_LENGTH) >> BSh) & ~(LBS-1);
+                        lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS) >> BSh;
                     }
                     // required last extent length
                     req_s = s + (uint32)( (((Length + LBS - 1) & ~(LBS-1)) -
@@ -2444,9 +2445,9 @@ UDFResizeExtent(
                     pe=UDFPartEnd(Vcb,PartNum);
                     // maximum frag length
                     if(Sequential) {
-                        lim = (((uint32)UDF_MAX_EXTENT_LENGTH) >> BSh) & ~(PS-1);
+                        lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, PS) >> BSh;
                     } else {
-                        lim = (((uint32)UDF_MAX_EXTENT_LENGTH) >> BSh) & ~(LBS-1);
+                        lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS) >> BSh;
                     }
                     // required last extent length
                     req_s = s + (uint32)( (((Length + LBS - 1) & ~(LBS-1)) -
@@ -2753,6 +2754,9 @@ UDFPackMapping(
     uint32 i, j, l;
     uint32 LastLba, LastType, OldLen;
     uint32 OldSize, NewSize;
+    uint32 LBS = Vcb->LBlockSize;
+    uint32 MaxExtentLength = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS);
+
 #ifdef UDF_DBG
     int64 check_size;
 #endif //UDF_DBG
@@ -2779,7 +2783,7 @@ UDFPackMapping(
            ((OldMap[i].extLocation == LastLba + OldLen) ||
             (!OldMap[i].extLocation && !LastLba && (LastType == EXTENT_NOT_RECORDED_NOT_ALLOCATED)))
             &&
-           (l + (OldMap[i].extLength & UDF_EXTENT_LENGTH_MASK) <= UDF_MAX_EXTENT_LENGTH)) {
+           (l + (OldMap[i].extLength & UDF_EXTENT_LENGTH_MASK) <= MaxExtentLength)) {
             // we can pack two blocks in one
             l += OldMap[i].extLength & UDF_EXTENT_LENGTH_MASK;
             NewSize -= sizeof(EXTENT_MAP);
@@ -2818,7 +2822,7 @@ UDFPackMapping(
            ((OldMap[i].extLocation == LastLba + OldLen) ||
             (!OldMap[i].extLocation && !LastLba && (LastType == EXTENT_NOT_RECORDED_NOT_ALLOCATED)))
             &&
-           ((NewMap[j].extLength & UDF_EXTENT_LENGTH_MASK) + (OldMap[i].extLength & UDF_EXTENT_LENGTH_MASK) <= UDF_MAX_EXTENT_LENGTH)) {
+           ((NewMap[j].extLength & UDF_EXTENT_LENGTH_MASK) + (OldMap[i].extLength & UDF_EXTENT_LENGTH_MASK) <= MaxExtentLength)) {
             NewMap[j].extLength += OldMap[i].extLength & UDF_EXTENT_LENGTH_MASK;
         } else {
             j++;
