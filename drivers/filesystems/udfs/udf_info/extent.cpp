@@ -980,7 +980,7 @@ sh_alloc_err:
             len2 = len + sizeof(SHORT_AD);
             // we have more than 1 SHORT_AD that we can't fit in current block
             // so we shall set up pointer to the next block
-            ((PSHORT_AD)((*Buff)+BufOffs))->extLength = /*LBS*/ len2 + sizeof(ALLOC_EXT_DESC) |
+            ((PSHORT_AD)((*Buff)+BufOffs))->extLength = /*LBS*/ (len2 + sizeof(ALLOC_EXT_DESC)) |
                 (((uint32)EXTENT_NEXT_EXTENT_ALLOCDESC) << 30) ;
             ((PSHORT_AD)((*Buff)+BufOffs))->extPosition = TagLoc =
                 UDFPhysLbaToPart(Vcb, PartNum,
