@@ -508,8 +508,6 @@ typedef struct _UDF_ALLOCATION_CACHE_ITEM {
 #define UDF_INVALID_LINK_COUNT      0xffff
 #define UDF_MAX_LINK_COUNT          0x7fff
 
-#define UDF_MAX_EXTENT_LENGTH       (UDF_EXTENT_LENGTH_MASK & ~(2048-1))
-
 #define UDF_MAX_READ_REVISION       0x0260
 #define UDF_MAX_WRITE_REVISION      0x0201
 
