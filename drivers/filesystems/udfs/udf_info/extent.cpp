@@ -286,6 +286,20 @@ UDFMergeMappings(
     return NewExt;
 } // end UDFMergeMappings()
 
+PSHORT_AD
+GetNextAllocDesc(
+    IN PSHORT_AD AllocDesc,
+    IN uint32 AllocDescsCount,
+    IN uint32 ExtentIndex
+    )
+{
+    if (ExtentIndex < AllocDescsCount) {
+        return &AllocDesc[ExtentIndex];
+    }
+
+    return NULL;
+}
+
 /*
     This routine builds file mapping according to ShortAllocDesc (SHORT_AD)
     array
@@ -294,15 +308,13 @@ PEXTENT_MAP
 UDFShortAllocDescToMapping(
     IN PVCB Vcb,
     IN uint32 PartNum,
-    IN PSHORT_AD AllocDesc,
-    IN uint32 AllocDescLength,
+    IN PSHORT_AD AllocDescs,
+    IN uint32 AllocDescsLength,
     IN uint32 SubCallCount,
     OUT PEXTENT_INFO AllocLoc
     )
 {
-    uint32 i, lim, l, len, type;
-//    uint32 BSh;
-    PEXTENT_MAP Extent, Extent2, AllocMap;
+    PEXTENT_MAP AllocMap;
     EXTENT_AD AllocExt;
     PALLOC_EXT_DESC NextAllocDesc;
     lb_addr locAddr;
@@ -310,40 +322,74 @@ UDFShortAllocDescToMapping(
     EXTENT_INFO NextAllocLoc;
     BOOLEAN w2k_compat = FALSE;
 
-    ExtPrint(("UDFShortAllocDescToMapping: len=%x\n", AllocDescLength));
+    ExtPrint(("UDFShortAllocDescToMapping: len=%x\n", AllocDescsLength));
 
     if(SubCallCount > ALLOC_DESC_MAX_RECURSE) return NULL;
 
     locAddr.partitionReferenceNum = (uint16)PartNum;
-//    BSh = Vcb->BlockSizeBits;
-    l = ((lim = (AllocDescLength/sizeof(SHORT_AD))) + 1 ) * sizeof(EXTENT_AD);
-    Extent = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool, l, MEM_EXTMAP_TAG);
-    if(!Extent) return NULL;
 
     NextAllocLoc.Offset = 0;
 
-    for(i=0;i<lim;i++) {
-        type = AllocDesc[i].extLength >> 30;
-        len  = AllocDesc[i].extLength & UDF_EXTENT_LENGTH_MASK;
-        ExtPrint(("ShExt: type %x, loc %x, len %x\n", type, AllocDesc[i].extPosition, len));
+    uint32 AllocDescsCount = AllocDescsLength / sizeof(SHORT_AD);
+    uint32 AllocDescsIndex = 0;
+    PSHORT_AD AllocDesc = NULL;
+    uint32 ExtentLength = (AllocDescsCount + 1) * sizeof(SHORT_AD);
+
+    PEXTENT_MAP Extent = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool, ExtentLength, MEM_EXTMAP_TAG);
+    if (!Extent) {
+        return NULL;
+    }
+
+    // set terminator
+    Extent[AllocDescsLength/sizeof(SHORT_AD)].extLength = 0;
+    Extent[AllocDescsLength/sizeof(SHORT_AD)].extLocation = 0;
+
+    PEXTENT_MAP ExtentNext = Extent;
+
+    while ((AllocDesc = GetNextAllocDesc(AllocDescs, AllocDescsCount, AllocDescsIndex))) {
+
+        uint32 type = AllocDesc->extLength >> 30;
+        uint32 len  = AllocDesc->extLength & UDF_EXTENT_LENGTH_MASK;
+        ExtPrint(("ShExt: type %x, loc %x, len %x\n", type, AllocDesc->extPosition, len));
+
         if(type == EXTENT_NEXT_EXTENT_ALLOCDESC) {
+
+            ExtentNext[AllocDescsIndex].extLength = 0;
+            ExtentNext[AllocDescsIndex].extLocation = 0;
+
+            if (ExtentNext && ExtentNext != Extent) {
+                UDFCheckSpaceAllocation(Vcb, 0, ExtentNext, AS_USED); // check if used
+                // and merge this 2 mappings into 1
+                Extent = UDFMergeMappings(Extent, ExtentNext);
+
+                MyFreePool__(ExtentNext);
+                ExtentNext = NULL;
+                MyFreePool__(NextAllocDesc);
+                NextAllocDesc = NULL;
+            }
+
             // read next frag of allocation descriptors if encountered
             if(len < sizeof(ALLOC_EXT_DESC)) {
+                MyFreePool__(ExtentNext);
                 MyFreePool__(Extent);
                 return NULL;
             }
+
             NextAllocDesc = (PALLOC_EXT_DESC)MyAllocatePoolTag__(NonPagedPool, len, MEM_ALLOCDESC_TAG);
             if(!NextAllocDesc) {
+                MyFreePool__(ExtentNext);
                 MyFreePool__(Extent);
                 return NULL;
             }
+
             // record information about this frag
-            locAddr.logicalBlockNum = AllocDesc[i].extPosition;
+            locAddr.logicalBlockNum = AllocDesc->extPosition;
             AllocExt.extLength = len;
             AllocExt.extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
             if(AllocExt.extLocation == LBA_OUT_OF_EXTENT) {
                 UDFPrint(("bad address\n"));
                 MyFreePool__(NextAllocDesc);
+                MyFreePool__(ExtentNext);
                 MyFreePool__(Extent);
                 return NULL;
             }
@@ -352,6 +398,7 @@ UDFShortAllocDescToMapping(
             NextAllocLoc.Length = len;
             if(!AllocMap) {
                 MyFreePool__(NextAllocDesc);
+                MyFreePool__(ExtentNext);
                 MyFreePool__(Extent);
                 return NULL;
             }
@@ -363,6 +410,7 @@ UDFShortAllocDescToMapping(
             {
                 MyFreePool__(AllocMap);
                 MyFreePool__(NextAllocDesc);
+                MyFreePool__(ExtentNext);
                 MyFreePool__(Extent);
                 return NULL;
             }
@@ -375,75 +423,71 @@ UDFShortAllocDescToMapping(
                 UDFPrint(("NextAllocDesc->lengthAllocDescs = %x\n", NextAllocDesc->lengthAllocDescs));
                 UDFPrint(("len = %x\n", len));
                 MyFreePool__(NextAllocDesc);
+                MyFreePool__(ExtentNext);
                 MyFreePool__(Extent);
                 return NULL;
             }
-            // perform recursive call to obtain mapping
-            NextAllocLoc.Flags = 0;
-            Extent2 = UDFShortAllocDescToMapping(Vcb, PartNum, (PSHORT_AD)(NextAllocDesc+1),
-                                      NextAllocDesc->lengthAllocDescs, SubCallCount+1, AllocLoc);
-            if(!Extent2) {
-                MyFreePool__(NextAllocDesc);
-                MyFreePool__(Extent);
-                return NULL;
-            }
-            UDFCheckSpaceAllocation(Vcb, 0, Extent2, AS_USED); // check if used
-            // and merge this 2 mappings into 1
-            Extent[i].extLength = 0;
-            Extent[i].extLocation = 0;
-            Extent = UDFMergeMappings(Extent, Extent2);
 
-            if(NextAllocLoc.Flags & EXTENT_FLAG_2K_COMPAT) {
-                ExtPrint(("w2k-compat\n"));
-                AllocLoc->Flags |= EXTENT_FLAG_2K_COMPAT;
-            }
+            // Setting pointers to the beginning of the next descriptor
+            AllocDescs = (PSHORT_AD)(NextAllocDesc+1);
+            AllocDescsCount = NextAllocDesc->lengthAllocDescs / sizeof(SHORT_AD);
+            AllocDescsIndex = 0;
 
-            MyFreePool__(Extent2);
-            return Extent;
+            uint32 ExtentNextLength = (AllocDescsCount + 1) * sizeof(EXTENT_AD);
+            ExtentNext = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool, ExtentNextLength, MEM_EXTMAP_TAG);
+
+            // set terminator
+            ExtentNext[AllocDescsCount].extLength = 0;
+            ExtentNext[AllocDescsCount].extLocation = 0;
         }
-        //
+        else {
 #ifdef UDF_CHECK_EXTENT_SIZE_ALIGNMENT
-        ASSERT(!(len & (Vcb->LBlockSize-1) ));
+            ASSERT(!(len & (Vcb->LBlockSize-1) ));
 #endif //UDF_CHECK_EXTENT_SIZE_ALIGNMENT
-        if(len & (Vcb->LBlockSize-1)) {
-            w2k_compat = TRUE;
-        }
-        Extent[i].extLength = (len+Vcb->LBlockSize-1) & ~(Vcb->LBlockSize-1);
-        locAddr.logicalBlockNum = AllocDesc[i].extPosition;
-        // Note: for compatibility Adaptec DirectCD we check 'len' here
-        //       That strange implementation records bogus extLocation in terminal entries
-        if(type != EXTENT_NOT_RECORDED_NOT_ALLOCATED && len) {
-            Extent[i].extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
-            if(Extent[i].extLocation == LBA_OUT_OF_EXTENT) {
-                UDFPrint(("bad address (2)\n"));
-                MyFreePool__(Extent);
-                return NULL;
+            if(len & (Vcb->LBlockSize-1)) {
+                w2k_compat = TRUE;
             }
-        } else {
-            Extent[i].extLocation = 0;
-        }
-        if(!len) {
-            // some UDF implementations set strange AllocDesc sequence length,
-            // but terminates it with zeros in proper place, so handle
-            // this case
-            ASSERT(i>=(lim-1));
-            ASSERT(!Extent[i].extLength);
-            Extent[i].extLocation = 0;
-            if(/*!SubCallCount &&*/ w2k_compat) {
-                ExtPrint(("w2k-compat\n"));
-                AllocLoc->Flags |= EXTENT_FLAG_2K_COMPAT;
+            ExtentNext[AllocDescsIndex].extLength = (len+Vcb->LBlockSize-1) & ~(Vcb->LBlockSize-1);
+            locAddr.logicalBlockNum = AllocDesc->extPosition;
+            // Note: for compatibility Adaptec DirectCD we check 'len' here
+            //       That strange implementation records bogus extLocation in terminal entries
+            if(type != EXTENT_NOT_RECORDED_NOT_ALLOCATED && len) {
+                ExtentNext[AllocDescsIndex].extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
+                if(ExtentNext[AllocDescsIndex].extLocation == LBA_OUT_OF_EXTENT) {
+                    UDFPrint(("bad address (2)\n"));
+                    MyFreePool__(NextAllocDesc);
+                    MyFreePool__(ExtentNext);
+                    MyFreePool__(Extent);
+                    return NULL;
+                }
+            } else {
+                ExtentNext[AllocDescsIndex].extLocation = 0;
             }
-            return Extent;
+            if(!len) {
+                // some UDF implementations set strange AllocDesc sequence length,
+                // but terminates it with zeros in proper place, so handle
+                // this case
+                ASSERT(AllocDescsIndex>=(AllocDescsCount-1));
+                ASSERT(!ExtentNext[AllocDescsIndex].extLength);
+                Extent[AllocDescsIndex].extLocation = 0;
+                break;
+            }
+            ExtentNext[AllocDescsIndex].extLength |= (type << 30);
+            ++AllocDescsIndex;
         }
-        Extent[i].extLength |= (type << 30);
     }
-    // set terminator
-    Extent[i].extLength = 0;
-    Extent[i].extLocation = 0;
+
+    if (ExtentNext && ExtentNext != Extent) {
+        UDFCheckSpaceAllocation(Vcb, 0, ExtentNext, AS_USED); // check if used
+        // and merge this 2 mappings into 1
+        Extent = UDFMergeMappings(Extent, ExtentNext);
+
+        MyFreePool__(ExtentNext);
+        MyFreePool__(NextAllocDesc);
+    }
 
     if(/*!SubCallCount &&*/ w2k_compat) {
         ExtPrint(("w2k-compat\n"));
-        AllocLoc->Flags |= EXTENT_FLAG_2K_COMPAT;
     }
 
     return Extent;
