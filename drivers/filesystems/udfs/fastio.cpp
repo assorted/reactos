@@ -435,7 +435,7 @@ BOOLEAN NTAPI UDFAcqLazyWrite(
     // lazy-writer thread id in the NT_REQ_FCB structure for identification
     // when an actual write request is received by the FSD.
     // Note: The lazy-writer typically always supplies WAIT set to TRUE.
-    if (!UDFAcquireResourceExclusive(&(NtReqFcb->PagingIoResource), Wait))
+    if (!UDFAcquireResourceExclusive(&(NtReqFcb->MainResource), Wait))
         return FALSE;
 
     // Now, set the lazy-writer thread id.
@@ -485,7 +485,7 @@ UDFRelLazyWrite(
     NtReqFcb->LazyWriterThreadID = 0;
 
     // Release the acquired resource.
-    UDFReleaseResource(&(NtReqFcb->PagingIoResource));
+    UDFReleaseResource(&(NtReqFcb->MainResource));
 
     IoSetTopLevelIrp( NULL );
     return;
@@ -1051,7 +1051,7 @@ UDFFastIoAcqCcFlush(
 
 #define NtReqFcb ((PtrUDFNTRequiredFCB)(FileObject->FsContext))
 
-//    UDFAcquireResourceExclusive(&(NtReqFcb->MainResource), TRUE);
+    UDFAcquireResourceExclusive(&(NtReqFcb->MainResource), TRUE);
     UDFAcquireResourceExclusive(&(NtReqFcb->PagingIoResource), TRUE);
 //    ASSERT(!(NtReqFcb->AcqFlushCount));
     NtReqFcb->AcqFlushCount++;
@@ -1099,7 +1099,7 @@ UDFFastIoRelCcFlush(
 
     NtReqFcb->AcqFlushCount--;
     UDFReleaseResource(&(NtReqFcb->PagingIoResource));
-//    UDFReleaseResource(&(NtReqFcb->MainResource));
+    UDFReleaseResource(&(NtReqFcb->MainResource));
 
 #undef NtReqFcb
 
