@@ -986,9 +986,23 @@ ioctl_do_default:
 
             // make sure volume is Sync'ed BEFORE sending unsafe IOCTL
             if(Vcb && UnsafeIoctl) {
+                if(AcquiredVcb) {
+                    UDFReleaseResource(&(Vcb->VCBResource));
+                    AcquiredVcb = FALSE;
+                }
+                UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
+                AcquiredVcb = TRUE;
                 UDFFlushLogicalVolume(NULL, NULL, Vcb, 0);
+                UDFReleaseResource(&(Vcb->VCBResource));
+                AcquiredVcb = FALSE;
                 UDFPrint(("  sync'ed\n"));
             }
+
+            if(AcquiredVcb) {
+                UDFReleaseResource(&(Vcb->VCBResource));
+                AcquiredVcb = FALSE;
+            }
+
             // Invoke the lower level driver in the chain.
             //PtrNextIoStackLocation = IoGetNextIrpStackLocation(Irp);
             //*PtrNextIoStackLocation = *IrpSp;
