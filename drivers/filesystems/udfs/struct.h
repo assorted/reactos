@@ -201,11 +201,12 @@ typedef struct _UDFContextControlBlock {
 
 typedef struct _UDFNTRequiredFCB {
 
-    FSRTL_COMMON_FCB_HEADER             CommonFCBHeader;
+    FSRTL_ADVANCED_FCB_HEADER           CommonFCBHeader;
     SECTION_OBJECT_POINTERS             SectionObject;
     FILE_LOCK                           FileLock;
     ERESOURCE                           MainResource;
     ERESOURCE                           PagingIoResource;
+    FAST_MUTEX                          AdvancedFCBHeaderMutex;
     // we will maintain some time information here to make our life easier
     LARGE_INTEGER                       CreationTime;
     LARGE_INTEGER                       LastAccessTime;

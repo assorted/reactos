@@ -201,6 +201,18 @@ DriverEntry(
             // initialize the IRP major function table, and the fast I/O table
             UDFInitializeFunctionPointers(DriverObject);
 
+            //  Initialize the filter callbacks we use
+
+            FS_FILTER_CALLBACKS FilterCallbacks;
+            RtlZeroMemory(&FilterCallbacks, sizeof(FS_FILTER_CALLBACKS));
+
+            FilterCallbacks.SizeOfFsFilterCallbacks = sizeof(FS_FILTER_CALLBACKS);
+            FilterCallbacks.PreAcquireForSectionSynchronization = UDFFilterCallbackAcquireForCreateSection;
+
+            RC = FsRtlRegisterFileSystemFilterCallbacks(DriverObject, &FilterCallbacks);
+            if (!NT_SUCCESS(RC))
+                try_return(RC);
+
             UDFGlobalData.CPU_Count = KeNumberProcessors;
 
             // create a device object representing the driver itself
@@ -543,7 +555,9 @@ UDFInitializeFunctionPointers(
     PtrFastIoDispatch->FastIoUnlockAllByKey     =  (unsigned char (__stdcall *)(struct _FILE_OBJECT *,
         PVOID ,unsigned long,struct _IO_STATUS_BLOCK *,struct _DEVICE_OBJECT *))UDFFastUnlockAllByKey;     //  UnlockAllByKey
 
-    PtrFastIoDispatch->AcquireFileForNtCreateSection = UDFFastIoAcqCreateSec;
+    //  This callback has been replaced by UDFFilterCallbackAcquireForCreateSection
+
+    PtrFastIoDispatch->AcquireFileForNtCreateSection = NULL;
     PtrFastIoDispatch->ReleaseFileForNtCreateSection = UDFFastIoRelCreateSec;
 
 //    PtrFastIoDispatch->FastIoDeviceControl = UDFFastIoDeviceControl;
