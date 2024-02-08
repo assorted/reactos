@@ -5519,7 +5519,7 @@ UDFConvertFEToExtended(
     ExFileEntry->lengthExtendedAttr = FileEntry->lengthExtendedAttr;
     ExFileEntry->lengthAllocDescs = FileEntry->lengthAllocDescs;
     RtlCopyMemory(ExFileEntry+1, FileEntry+1, FileEntry->lengthExtendedAttr);
-    RtlCopyMemory((int8*)(ExFileEntry+1)+FileEntry->lengthExtendedAttr, (int8*)(ExFileEntry+1)+FileEntry->lengthExtendedAttr, FileEntry->lengthAllocDescs);
+    RtlCopyMemory((int8*)(ExFileEntry+1)+FileEntry->lengthExtendedAttr, (int8*)(FileEntry+1)+FileEntry->lengthExtendedAttr, FileEntry->lengthAllocDescs);
 
     if((((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
 
