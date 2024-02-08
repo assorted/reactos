@@ -173,6 +173,11 @@ UDFCommonClose(
             FileObject = IrpSp->FileObject;
             ASSERT(FileObject);
 
+            //  No work to do for unopened file objects.
+            if (!FileObject->FsContext) {
+                try_return(RC = STATUS_SUCCESS);
+            }
+
             // Get the FCB and CCB pointers
             Ccb = (PtrUDFCCB)(FileObject->FsContext2);
             ASSERT(Ccb);

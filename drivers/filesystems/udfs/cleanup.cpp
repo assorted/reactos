@@ -166,6 +166,12 @@ UDFCommonCleanup(
         if(!IrpSp) try_return(RC = STATUS_INVALID_PARAMETER);
 
         FileObject = IrpSp->FileObject;
+        ASSERT(FileObject);
+
+        //  No work to do for unopened file objects.
+        if (!FileObject->FsContext) {
+            try_return(RC = STATUS_SUCCESS);
+        }
 
         // Get the FCB and CCB pointers
         Ccb = (PtrUDFCCB)(FileObject->FsContext2);
