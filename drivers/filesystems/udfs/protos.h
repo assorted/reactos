@@ -711,6 +711,11 @@ extern NTSTATUS UDFWCacheErrorHandler(
     IN PWCACHE_ERROR_CONTEXT ErrorInfo
     );
 
+extern NTSTATUS NTAPI UDFFilterCallbackAcquireForCreateSection(
+    IN PFS_FILTER_CALLBACK_DATA CallbackData,
+    IN PVOID *CompletionContext
+    );
+
 /*************************************************************************
 * Prototypes for the file NameSup.cpp
 *************************************************************************/

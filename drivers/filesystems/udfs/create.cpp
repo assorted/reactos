@@ -2551,9 +2551,13 @@ UDFInitializeFCB(
             UDFDeleteResource(&(PtrNewFcb->NTRequiredFCB->MainResource));
             return status;
         }
+
+        ExInitializeFastMutex(&PtrNewFcb->NTRequiredFCB->AdvancedFCBHeaderMutex);
+
         // Fill NT required Fcb part
         PtrNewFcb->NTRequiredFCB->CommonFCBHeader.Resource = &(PtrNewFcb->NTRequiredFCB->MainResource);
         PtrNewFcb->NTRequiredFCB->CommonFCBHeader.PagingIoResource = &(PtrNewFcb->NTRequiredFCB->PagingIoResource);
+        FsRtlSetupAdvancedHeader(&PtrNewFcb->NTRequiredFCB->CommonFCBHeader, &PtrNewFcb->NTRequiredFCB->AdvancedFCBHeaderMutex);
         // Itialize byte-range locks support structure
         FsRtlInitializeFileLock(&(PtrNewFcb->NTRequiredFCB->FileLock),NULL,NULL);
         // Init reference counter
