@@ -483,6 +483,11 @@ try_exit:   NOTHING;
             ParentResourceAcquired = FALSE;
         }
 
+        if(AcquiredVcb) {
+            AcquiredVcb = FALSE;
+            UDFReleaseResource(&(Vcb->VCBResource));
+        }
+
         // Post IRP if required
         if(PostRequest) {
 
@@ -506,10 +511,6 @@ try_exit:   NOTHING;
                 } else
                 if(NT_SUCCESS(RC)) {
                     if(FunctionalityRequested == FileDispositionInformation) {
-                        if(AcquiredVcb) {
-                            AcquiredVcb = FALSE;
-                            UDFReleaseResource(&(Vcb->VCBResource));
-                        }
                         UDFRemoveFromDelayedQueue(Fcb);
                     }
 #endif //UDF_DELAYED_CLOSE
@@ -521,9 +522,6 @@ try_exit:   NOTHING;
                 UDFReleaseIrpContext(PtrIrpContext);
             } // can we complete the IRP ?
 
-        }
-        if(AcquiredVcb) {
-            UDFReleaseResource(&(Vcb->VCBResource));
         }
     } _SEH2_END;// end of "__finally" processing
 
