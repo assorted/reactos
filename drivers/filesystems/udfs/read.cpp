@@ -733,6 +733,20 @@ UDFCommonRead(
                 try_return(RC = STATUS_INVALID_USER_BUFFER);
             }
 
+            if (ByteOffset.QuadPart >= NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart) {
+                ULONG Length = (ULONG)min(ReadLength, min(ByteOffset.QuadPart + ReadLength, NtReqFcb->CommonFCBHeader.FileSize.QuadPart) - NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart);
+                RtlZeroMemory(SystemBuffer, Length);
+                NumberBytesRead = Length;
+                UDFUnlockCallersBuffer(PtrIrpContext, Irp, SystemBuffer);
+                try_return(STATUS_SUCCESS);
+            }
+
+            if (ByteOffset.QuadPart + ReadLength > NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart) {
+                ULONG Addon = (ULONG)(min(ByteOffset.QuadPart + ReadLength, NtReqFcb->CommonFCBHeader.FileSize.QuadPart) - NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart);
+                RtlZeroMemory((PUCHAR)SystemBuffer + (NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart - ByteOffset.QuadPart), Addon);
+                TruncatedLength = (ULONG)(NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart - ByteOffset.QuadPart);
+            }
+
             RC = UDFReadFile__(Vcb, Fcb->FileInfo, ByteOffset.QuadPart, TruncatedLength,
                            CacheLocked, (PCHAR)SystemBuffer, &NumberBytesRead);
 /*                // AFAIU, CacheManager wants this:
