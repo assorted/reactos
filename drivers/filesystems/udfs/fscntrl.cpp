@@ -579,6 +579,7 @@ UDFMountVolume(
 
         Vcb->MountPhErrorCount = 0;
 
+#ifdef UDF_USE_WCACHE
         // Initialize internal cache
         Mode = WCACHE_MODE_ROM;
         RC = WCacheInit__(&(Vcb->FastCache),
@@ -604,6 +605,7 @@ UDFMountVolume(
                           UDFUpdateVAT,
                           UDFWCacheErrorHandler);
         if(!NT_SUCCESS(RC)) try_return(RC);
+#endif //UDF_USE_WCACHE
 
         RC = UDFVInit(Vcb);
         if(!NT_SUCCESS(RC)) try_return(RC);
