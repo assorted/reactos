@@ -878,7 +878,7 @@ extern PVOID UDFGetCallersBuffer(
 extern NTSTATUS UDFLockCallersBuffer(
     PtrUDFIrpContext PtrIrpContext,
     PIRP    Irp,
-    BOOLEAN IsReadOperation,
+    LOCK_OPERATION LockOperation,
     uint32  Length);
 
 extern NTSTATUS UDFUnlockCallersBuffer(

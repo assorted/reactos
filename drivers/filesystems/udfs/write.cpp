@@ -333,7 +333,7 @@ UDFCommonWrite(
 #endif
             // Forward the request to the lower level driver
             // Lock the callers buffer
-            if (!NT_SUCCESS(RC = UDFLockCallersBuffer(PtrIrpContext, Irp, TRUE, WriteLength))) {
+            if (!NT_SUCCESS(RC = UDFLockCallersBuffer(PtrIrpContext, Irp, IoReadAccess, WriteLength))) {
                 try_return(RC);
             }
             SystemBuffer = UDFGetCallersBuffer(PtrIrpContext, Irp);
@@ -890,7 +890,7 @@ UDFCommonWrite(
             PerfPrint(("UDFCommonWrite: Physical write %x bytes at %x\n", TruncatedLength, ByteOffset.LowPart));
 
             // Lock the callers buffer
-            if (!NT_SUCCESS(RC = UDFLockCallersBuffer(PtrIrpContext, Irp, TRUE, TruncatedLength))) {
+            if (!NT_SUCCESS(RC = UDFLockCallersBuffer(PtrIrpContext, Irp, IoReadAccess, TruncatedLength))) {
                 try_return(RC);
             }
 
@@ -947,7 +947,7 @@ try_exit:   NOTHING;
             // Lock the callers buffer here. Then invoke a common routine to
             // perform the post operation.
             if (!(IrpSp->MinorFunction & IRP_MN_MDL)) {
-                RC = UDFLockCallersBuffer(PtrIrpContext, Irp, FALSE, WriteLength);
+                RC = UDFLockCallersBuffer(PtrIrpContext, Irp, IoReadAccess, WriteLength);
                 ASSERT(NT_SUCCESS(RC));
             }
             if(PagingIo) {

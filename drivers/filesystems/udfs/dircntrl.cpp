@@ -594,7 +594,7 @@ try_exit:   NOTHING;
                 UDFReleaseResource(&(NtReqFcb->MainResource));
             }
             // Map the users buffer and then post the request.
-            RC = UDFLockCallersBuffer(PtrIrpContext, Irp, TRUE, BufferLength);
+            RC = UDFLockCallersBuffer(PtrIrpContext, Irp, IoWriteAccess, BufferLength);
             ASSERT(NT_SUCCESS(RC));
 
             RC = UDFPostRequest(PtrIrpContext, Irp);
