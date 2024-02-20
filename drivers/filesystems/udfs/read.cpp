@@ -422,7 +422,7 @@ UDFCommonRead(
 
             // Forward the request to the lower level driver
             // Lock the callers buffer
-            if (!NT_SUCCESS(RC = UDFLockCallersBuffer(PtrIrpContext, Irp, TRUE, ReadLength))) {
+            if (!NT_SUCCESS(RC = UDFLockCallersBuffer(PtrIrpContext, Irp, IoWriteAccess, ReadLength))) {
                 try_return(RC);
             }
             SystemBuffer = UDFGetCallersBuffer(PtrIrpContext, Irp);
@@ -723,7 +723,7 @@ UDFCommonRead(
                     PtrResourceAcquired2 = &(NtReqFcb->PagingIoResource);
             }
 
-            RC = UDFLockCallersBuffer(PtrIrpContext, Irp, TRUE, TruncatedLength);
+            RC = UDFLockCallersBuffer(PtrIrpContext, Irp, IoWriteAccess, TruncatedLength);
             if(!NT_SUCCESS(RC)) {
                 try_return(RC);
             }
@@ -797,7 +797,7 @@ try_exit:   NOTHING;
             // Lock the callers buffer here. Then invoke a common routine to
             // perform the post operation.
             if (!(IrpSp->MinorFunction & IRP_MN_MDL)) {
-                RC = UDFLockCallersBuffer(PtrIrpContext, Irp, TRUE, ReadLength);
+                RC = UDFLockCallersBuffer(PtrIrpContext, Irp, IoWriteAccess, ReadLength);
                 ASSERT(NT_SUCCESS(RC));
             }
             if(PagingIo) {
@@ -934,7 +934,7 @@ NTSTATUS
 UDFLockCallersBuffer(
     PtrUDFIrpContext  PtrIrpContext,
     PIRP              Irp,
-    BOOLEAN           IsReadOperation,
+    LOCK_OPERATION    LockOperation,
     uint32            Length
     )
 {
@@ -985,7 +985,7 @@ UDFLockCallersBuffer(
 #ifndef POST_LOCK_PAGES
             _SEH2_TRY {
                 MmPrint(("    MmProbeAndLockPages()\n"));
-                MmProbeAndLockPages(PtrMdl, Irp->RequestorMode, (IsReadOperation ? IoWriteAccess:IoReadAccess));
+                MmProbeAndLockPages(PtrMdl, Irp->RequestorMode, LockOperation);
             } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
                 MmPrint(("    MmProbeAndLockPages() failed\n"));
                 Irp->MdlAddress = NULL;
