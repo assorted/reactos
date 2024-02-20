@@ -779,18 +779,13 @@ extern OSSTATUS UDFDoDismountSequence(IN PVCB Vcb,
                                       IN BOOLEAN Eject);
 
 // read physical sectors
-/*OSSTATUS UDFReadSectors(IN PVCB Vcb,
+OSSTATUS UDFReadSectors(IN PVCB Vcb,
                         IN BOOLEAN Translate,// Translate Logical to Physical
                         IN ULONG Lba,
                         IN ULONG BCount,
                         IN BOOLEAN Direct,
                         OUT PCHAR Buffer,
-                        OUT PULONG ReadBytes);*/
-#define UDFReadSectors(Vcb, Translate, Lba, BCount, Direct, Buffer, ReadBytes)                 \
-    (( WCacheIsInitialized__(&((Vcb)->FastCache)) && (KeGetCurrentIrql() < DISPATCH_LEVEL)) ?              \
-        (WCacheReadBlocks__(&((Vcb)->FastCache), Vcb, Buffer, Lba, BCount, ReadBytes, Direct)) : \
-        (UDFTRead(Vcb, Buffer, ((SIZE_T)(BCount))<<((Vcb)->BlockSizeBits), Lba, ReadBytes, 0)))
-
+                        OUT PSIZE_T ReadBytes);
 
 // read data inside physical sector
 extern OSSTATUS UDFReadInSector(IN PVCB Vcb,

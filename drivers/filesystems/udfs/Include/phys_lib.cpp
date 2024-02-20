@@ -3875,22 +3875,22 @@ sync_cache:
 /*
     This routine reads physical sectors
  */
-/*OSSTATUS
+OSSTATUS
 UDFReadSectors(
     IN PVCB Vcb,
     IN BOOLEAN Translate,       // Translate Logical to Physical
     IN uint32 Lba,
     IN uint32 BCount,
+    IN BOOLEAN Direct,
     OUT int8* Buffer,
     OUT PSIZE_T ReadBytes
     )
 {
-
     if(Vcb->FastCache.ReadProc && (KeGetCurrentIrql() < DISPATCH_LEVEL)) {
-        return WCacheReadBlocks__(&(Vcb->FastCache), Vcb, Buffer, Lba, BCount, ReadBytes);
+        return WCacheReadBlocks__(&Vcb->FastCache, Vcb, Buffer, Lba, BCount, ReadBytes, Direct);
     }
     return UDFTRead(Vcb, Buffer, BCount*Vcb->BlockSize, Lba, ReadBytes);
-} // end UDFReadSectors()*/
+} // end UDFReadSectors()
 
 #ifdef _BROWSE_UDF_
 
@@ -3914,13 +3914,13 @@ UDFReadInSector(
     SIZE_T _ReadBytes;
 
     (*ReadBytes) = 0;
-    if(WCacheIsInitialized__(&(Vcb->FastCache)) && (KeGetCurrentIrql() < DISPATCH_LEVEL)) {
-        status = WCacheDirect__(&(Vcb->FastCache), Vcb, Lba, FALSE, &tmp_buff, Direct);
+    if(Vcb->FastCache.ReadProc && (KeGetCurrentIrql() < DISPATCH_LEVEL)) {
+        status = WCacheDirect__(&Vcb->FastCache, Vcb, Lba, FALSE, &tmp_buff, Direct);
         if(OS_SUCCESS(status)) {
             (*ReadBytes) += l;
             RtlCopyMemory(Buffer, tmp_buff+i, l);
         }
-        if(!Direct) WCacheEODirect__(&(Vcb->FastCache), Vcb);
+        if(!Direct) WCacheEODirect__(&Vcb->FastCache, Vcb);
     } else {
         if(Direct) {
             return STATUS_INVALID_PARAMETER;
@@ -4038,20 +4038,13 @@ UDFWriteSectors(
 #endif //_BROWSE_UDF_
         return status;
     }
-/*    void* buffer;
-    OSSTATUS status;
-    SIZE_T _ReadBytes;
-    (*WrittenBytes) = 0;
-    buffer = DbgAllocatePool(NonPagedPool, Vcb->WriteBlockSize);
-    if(!buffer) return STATUS_INSUFFICIENT_RESOURCES;
-    status = UDFTRead(Vcb, Buffer, BCount<<Vcb->BlockSizeBits, (Lba&~(Vcb->WriteBlockSize-1), _WrittenBytes);*/
-#ifdef UDF_DBG
+
     status = UDFTWrite(Vcb, Buffer, BCount<<Vcb->BlockSizeBits, Lba, WrittenBytes);
     ASSERT(OS_SUCCESS(status));
+#ifdef _BROWSE_UDF_
+    UDFClrZeroBits(Vcb->ZSBM_Bitmap, Lba, BCount);
+#endif //_BROWSE_UDF_
     return status;
-#else // UDF_DBG
-    return UDFTWrite(Vcb, Buffer, BCount<<Vcb->BlockSizeBits, Lba, WrittenBytes);
-#endif // UDF_DBG
 } // end UDFWriteSectors()
 
 OSSTATUS
@@ -4086,7 +4079,7 @@ UDFWriteInSector(
 
     (*WrittenBytes) = 0;
 #ifdef _BROWSE_UDF_
-    if(WCacheIsInitialized__(&(Vcb->FastCache)) && (KeGetCurrentIrql() < DISPATCH_LEVEL)) {
+    if(Vcb->FastCache.WriteProc && (KeGetCurrentIrql() < DISPATCH_LEVEL)) {
 #endif //_BROWSE_UDF_
         status = WCacheDirect__(&(Vcb->FastCache), Vcb, Lba, TRUE, &tmp_buff, Direct);
         if(OS_SUCCESS(status)) {
