@@ -818,11 +818,6 @@ UDFDoDismountSequence(
         }*/
     }
     UDFReleaseResource(&(Vcb->IoResource));
-    // unregister shutdown notification
-    if(Vcb->ShutdownRegistered) {
-        IoUnregisterShutdownNotification(Vcb->VCBDeviceObject);
-        Vcb->ShutdownRegistered = FALSE;
-    }
     // allow media change checks (this will lead to dismount)
     // ... and make it Read-Only...  :-\~
     Vcb->VCBFlags &= ~UDF_VCB_FLAGS_MEDIA_LOCKED;

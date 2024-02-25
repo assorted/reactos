@@ -126,6 +126,10 @@ UDFCommonShutdown(
 
     UDFPrint(("UDFCommonShutdown\n"));
 
+    // Initialize an event for doing calls down to our target device objects.
+    KEVENT Event;
+    KeInitializeEvent(&Event, NotificationEvent, FALSE);
+
     _SEH2_TRY {
         // First, get a pointer to the current I/O stack location
         IrpSp = IoGetCurrentIrpStackLocation(Irp);
@@ -164,58 +168,119 @@ UDFCommonShutdown(
             Link = Link->Flink;
             ASSERT(Link != Link->Flink);
 
+            if(Vcb->VCBFlags & UDF_VCB_FLAGS_SHUTDOWN) {
+                continue;
+            }
+
+#ifdef UDF_DELAYED_CLOSE
+            UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
+            UDFPrint(("    UDFCommonShutdown:     set UDF_VCB_FLAGS_NO_DELAYED_CLOSE\n"));
+            Vcb->VCBFlags |= UDF_VCB_FLAGS_NO_DELAYED_CLOSE;
+            UDFReleaseResource(&(Vcb->VCBResource));
+#endif //UDF_DELAYED_CLOSE
+
+            if(Vcb->RootDirFCB && Vcb->RootDirFCB->FileInfo) {
+                UDFPrint(("    UDFCommonShutdown:     UDFCloseAllSystemDelayedInDir\n"));
+                RC = UDFCloseAllSystemDelayedInDir(Vcb, Vcb->RootDirFCB->FileInfo);
+                ASSERT(OS_SUCCESS(RC));
+            }
+
+#ifdef UDF_DELAYED_CLOSE
+            UDFCloseAllDelayed(Vcb);
+#endif //UDF_DELAYED_CLOSE
+
+            // disable Eject Waiter
+            UDFStopEjectWaiter(Vcb);
+            // Acquire Vcb resource
+            UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
+
+            ASSERT(!Vcb->OverflowQueueCount);
+
+            {
+            _SEH2_TRY {
+
+                IO_STATUS_BLOCK Iosb;
+
+                PIRP NewIrp = IoBuildSynchronousFsdRequest(IRP_MJ_SHUTDOWN,
+                                                           Vcb->TargetDeviceObject,
+                                                           NULL,
+                                                           0,
+                                                           NULL,
+                                                           &Event,
+                                                           &Iosb);
+
+                if (NewIrp != NULL) {
+
+                    if (NT_SUCCESS(IoCallDriver( Vcb->TargetDeviceObject, NewIrp ))) {
+
+                        (VOID) KeWaitForSingleObject(&Event,
+                                                     Executive,
+                                                     KernelMode,
+                                                     FALSE,
+                                                     NULL);
+
+                        KeClearEvent(&Event);
+                    }
+                }
+
+            } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+
+            } _SEH2_END;
+            }
+
+            ASSERT(!Vcb->OverflowQueueCount);
+
             if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_SHUTDOWN)) {
 
-#ifdef UDF_DELAYED_CLOSE
-                UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
-                UDFPrint(("    UDFCommonShutdown:     set UDF_VCB_FLAGS_NO_DELAYED_CLOSE\n"));
-                Vcb->VCBFlags |= UDF_VCB_FLAGS_NO_DELAYED_CLOSE;
-                UDFReleaseResource(&(Vcb->VCBResource));
-#endif //UDF_DELAYED_CLOSE
-
-                // Note: UDFCloseAllDelayed() doesn't acquire DelayedCloseResource if
-                // GlobalDataResource is already acquired. Thus for now we should
-                // release GlobalDataResource and re-acquire it later.
-                UDFReleaseResource( &(UDFGlobalData.GlobalDataResource) );
-                if(Vcb->RootDirFCB && Vcb->RootDirFCB->FileInfo) {
-                    UDFPrint(("    UDFCommonShutdown:     UDFCloseAllSystemDelayedInDir\n"));
-                    RC = UDFCloseAllSystemDelayedInDir(Vcb, Vcb->RootDirFCB->FileInfo);
-                    ASSERT(OS_SUCCESS(RC));
+                UDFDoDismountSequence(Vcb, Buf, FALSE);
+                if(Vcb->VCBFlags & UDF_VCB_FLAGS_REMOVABLE_MEDIA) {
+                    // let drive flush all data before reset
+                    delay.QuadPart = -10000000; // 1 sec
+                    KeDelayExecutionThread(KernelMode, FALSE, &delay);
                 }
-
-#ifdef UDF_DELAYED_CLOSE
-                UDFCloseAllDelayed(Vcb);
-//                UDFReleaseResource(&(UDFGlobalData.DelayedCloseResource));
-#endif //UDF_DELAYED_CLOSE
-
-                // re-acquire GlobalDataResource
-                UDFAcquireResourceExclusive(&(UDFGlobalData.GlobalDataResource), TRUE);
-
-                // disable Eject Waiter
-                UDFStopEjectWaiter(Vcb);
-                // Acquire Vcb resource
-                UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
-
-                ASSERT(!Vcb->OverflowQueueCount);
-
-                if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_SHUTDOWN)) {
-
-                    UDFDoDismountSequence(Vcb, Buf, FALSE);
-                    if(Vcb->VCBFlags & UDF_VCB_FLAGS_REMOVABLE_MEDIA) {
-                        // let drive flush all data before reset
-                        delay.QuadPart = -10000000; // 1 sec
-                        KeDelayExecutionThread(KernelMode, FALSE, &delay);
-                    }
-                    Vcb->VCBFlags |= (UDF_VCB_FLAGS_SHUTDOWN |
-                                      UDF_VCB_FLAGS_VOLUME_READ_ONLY);
-                }
-
-                UDFReleaseResource(&(Vcb->VCBResource));
+                Vcb->VCBFlags |= (UDF_VCB_FLAGS_SHUTDOWN |
+                                  UDF_VCB_FLAGS_VOLUME_READ_ONLY);
             }
+
+            UDFReleaseResource(&(Vcb->VCBResource));
         }
+
         // Once we have processed all the mounted logical volumes, we can release
         // all acquired global resources and leave (in peace :-)
         UDFReleaseResource( &(UDFGlobalData.GlobalDataResource) );
+
+        // Now, delete any device objects, etc. we may have created
+        if (UDFGlobalData.UDFDeviceObject) {
+            IoDeleteDevice(UDFGlobalData.UDFDeviceObject);
+            UDFGlobalData.UDFDeviceObject = NULL;
+        }
+
+        IoUnregisterFileSystem(UDFGlobalData.UDFDeviceObject_CD);
+        if (UDFGlobalData.UDFDeviceObject_CD) {
+            IoDeleteDevice(UDFGlobalData.UDFDeviceObject_CD);
+            UDFGlobalData.UDFDeviceObject_CD = NULL;
+        }
+#ifdef UDF_HDD_SUPPORT
+        IoUnregisterFileSystem(UDFGlobalData.UDFDeviceObject_HDD);
+        if (UDFGlobalData.UDFDeviceObject_HDD) {
+            IoDeleteDevice(UDFGlobalData.UDFDeviceObject_HDD);
+            UDFGlobalData.UDFDeviceObject_HDD = NULL;
+        }
+#endif // UDF_HDD_SUPPORT
+
+        // free up any memory we might have reserved for zones/lookaside
+        //  lists
+        if (UDFGlobalData.UDFFlags & UDF_DATA_FLAGS_ZONES_INITIALIZED) {
+            UDFDestroyZones();
+        }
+
+        // delete the resource we may have initialized
+        if (UDFGlobalData.UDFFlags & UDF_DATA_FLAGS_RESOURCE_INITIALIZED) {
+            // un-initialize this resource
+            UDFDeleteResource(&(UDFGlobalData.GlobalDataResource));
+            UDFClearFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
+        }
+
         RC = STATUS_SUCCESS;
 
 try_exit: NOTHING;
