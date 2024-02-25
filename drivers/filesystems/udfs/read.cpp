@@ -892,8 +892,7 @@ UDFGetCallersBuffer(
     // If an MDL is supplied, use it.
     if(Irp->MdlAddress) {
         MmPrint(("    UDFGetCallersBuffer: MmGetSystemAddressForMdl(Irp->MdlAddress) MDL=%x\n", Irp->MdlAddress));
-//        ReturnedBuffer = MmGetSystemAddressForMdlSafe(Irp->MdlAddress, NormalPagePriority);
-        ReturnedBuffer = MmGetSystemAddressForMdlSafer(Irp->MdlAddress);
+        ReturnedBuffer = MmGetSystemAddressForMdlSafe(Irp->MdlAddress, NormalPagePriority);
     } else
     if (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_BUFFER_LOCKED) {
         // Free buffer
@@ -919,8 +918,8 @@ UDFGetCallersBuffer(
                 return NULL;
             } _SEH2_END;
 
-            MmPrint(("    MmGetSystemAddressForMdlSafer()\n"));
-        ReturnedBuffer = MmGetSystemAddressForMdlSafer(PtrIrpContext->PtrMdl);
+            MmPrint(("    MmGetSystemAddressForMdlSafe()\n"));
+        ReturnedBuffer = MmGetSystemAddressForMdlSafe(PtrIrpContext->PtrMdl, NormalPagePriority);
 #endif //POST_LOCK_PAGES
     } else {
         MmPrint(("    UDFGetCallersBuffer: Irp->UserBuffer\n"));

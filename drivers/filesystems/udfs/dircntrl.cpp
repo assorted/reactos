@@ -332,7 +332,7 @@ UDFQueryDirectory(
         // calling thread, or in the context of a worker thread, here is
         // a general way of determining what we should use.
         if(Irp->MdlAddress) {
-            Buffer = (PUCHAR) MmGetSystemAddressForMdlSafer(Irp->MdlAddress);
+            Buffer = (PUCHAR) MmGetSystemAddressForMdlSafe(Irp->MdlAddress, NormalPagePriority);
             if(!Buffer)
                 try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         } else {
