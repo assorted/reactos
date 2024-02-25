@@ -1286,7 +1286,7 @@ UDFCommonDispatch(
                 break;
             case IRP_MJ_CLOSE:
                 // Invoke the common close routine
-                RC = UDFCommonClose(PtrIrpContext, Irp);
+                RC = UDFCommonClose(PtrIrpContext, Irp, TRUE);
                 break;
             case IRP_MJ_DIRECTORY_CONTROL:
                 // Invoke the common directory control routine
