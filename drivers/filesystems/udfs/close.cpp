@@ -562,6 +562,7 @@ UDFCleanUpFcbChain(
 //                    NtReqFcb->NtReqFCBFlags &= ~UDF_NTREQ_FCB_VALID;
                     // Unitialize byte-range locks support structure
                     FsRtlUninitializeFileLock(&(NtReqFcb->FileLock));
+                    FsRtlTeardownPerStreamContexts(&NtReqFcb->CommonFCBHeader);
                     // Remove resources
                     UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
                     UDFReleaseResource(&(NtReqFcb->MainResource));

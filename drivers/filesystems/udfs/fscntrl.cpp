@@ -726,12 +726,6 @@ try_raw_mount:
         UDFInterlockedDecrement((PLONG)&(Vcb->VCBOpenCount));
         Vcb->TotalAllocUnits = UDFGetTotalSpace(Vcb);
         Vcb->FreeAllocUnits = UDFGetFreeSpace(Vcb);
-        // Register shutdown routine
-        if(!Vcb->ShutdownRegistered) {
-            UDFPrint(("UDFMountVolume: Register shutdown routine\n"));
-            IoRegisterShutdownNotification(Vcb->VCBDeviceObject);
-            Vcb->ShutdownRegistered = TRUE;
-        }
 
         // unlock media
         if(RemovableMedia) {
@@ -1442,11 +1436,6 @@ UDFCleanupVCB(
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
     } _SEH2_END;
-
-    if(Vcb->ShutdownRegistered && Vcb->VCBDeviceObject) {
-        IoUnregisterShutdownNotification(Vcb->VCBDeviceObject);
-        Vcb->ShutdownRegistered = FALSE;
-    }
 
     MyFreeMemoryAndPointer(Vcb->Partitions);
     MyFreeMemoryAndPointer(Vcb->LVid);

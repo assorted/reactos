@@ -108,7 +108,6 @@ typedef struct _UDFVolumeControlBlock {
     // for each mounted volume, we create a device object. Here then
     //  is a back pointer to that device object
     PDEVICE_OBJECT                      VCBDeviceObject;
-    BOOLEAN                             ShutdownRegistered;
     // We also retain a pointer to the physical device object on which we
     // have mounted ourselves. The I/O Manager passes us a pointer to this
     // device object when requesting a mount operation.
