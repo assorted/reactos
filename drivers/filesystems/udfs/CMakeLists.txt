@@ -18,7 +18,6 @@ list(APPEND SOURCE
     env_spec.cpp
     fastio.cpp
     fileinfo.cpp
-    filter.cpp
     flush.cpp
     fscntrl.cpp
     lockctrl.cpp
