@@ -332,17 +332,15 @@ UDFPhWriteSynchronous(
     ROffset.QuadPart = Offset;
     (*WrittenBytes) = 0;
 
-/*    IoBuf = ExAllocatePool(NonPagedPool, Length);
-    if (!IoBuf) return STATUS_INSUFFICIENT_RESOURCES;
-    RtlCopyMemory(IoBuf, Buffer, Length);*/
-    IoBuf = Buffer;
-
-/*    if(Flags & PH_TMP_BUFFER) {
+   // Utilizing a temporary buffer to circumvent the situation where the IO buffer contains TransitionPage pages.
+   // This typically occurs during IRP_NOCACHE. Otherwise, an assert occurs within IoBuildAsynchronousFsdRequest.
+    if(Flags & PH_TMP_BUFFER) {
         IoBuf = Buffer;
     } else {
         IoBuf = DbgAllocatePool(NonPagedPool, Length);
+        if (!IoBuf) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
         RtlCopyMemory(IoBuf, Buffer, Length);
-    }*/
+    }
 
     Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
     if (!Context) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
@@ -392,8 +390,7 @@ UDFPhWriteSynchronous(
 try_exit: NOTHING;
 
     if(Context) MyFreePool__(Context);
-//    if(IoBuf) ExFreePool(IoBuf);
-//    if(IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
+    if(IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
     if(!NT_SUCCESS(RC)) {
         UDFPrint(("WriteError\n"));
     }
