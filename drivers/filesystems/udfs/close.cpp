@@ -95,7 +95,7 @@ UDFClose(
         PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
         ASSERT(PtrIrpContext);
 
-        RC = UDFCommonClose(PtrIrpContext, Irp);
+        RC = UDFCommonClose(PtrIrpContext, Irp, FALSE);
 
     } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
 
@@ -136,7 +136,8 @@ UDFClose(
 NTSTATUS
 UDFCommonClose(
     PtrUDFIrpContext PtrIrpContext,
-    PIRP             Irp
+    PIRP             Irp,
+    BOOLEAN          CanWait
     )
 {
     NTSTATUS                RC = STATUS_SUCCESS;
@@ -252,10 +253,9 @@ UDFCommonClose(
 #endif //UDF_DELAYED_CLOSE
 
         if(Irp) {
-            // We should post actual procesing if this is a recursive call
-            if((PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_NOT_TOP_LEVEL) ||
-               (Fcb->NTRequiredFCB->AcqFlushCount)) {
-                AdPrint(("   post NOT_TOP_LEVEL Irp\n"));
+            // We should post actual procesing if the caller does not want to block
+            if (!CanWait) {
+                AdPrint(("   post Close Irp\n"));
                 PostRequest = TRUE;
                 try_return(RC = STATUS_SUCCESS);
             }
@@ -683,7 +683,7 @@ UDFDoDelayedClose(
     IrpContext->Fcb->IrpContextLite = NULL;
     MyFreePool__(NextIrpContextLite);
     IrpContext->Fcb->FCBFlags &= ~UDF_FCB_DELAY_CLOSE;
-    UDFCommonClose(IrpContext,NULL);
+    UDFCommonClose(IrpContext,NULL, TRUE);
 } // end UDFDoDelayedClose()
 
 /*

@@ -75,7 +75,8 @@ PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonClose(
 PtrUDFIrpContext            PtrIrpContext,
-PIRP                        Irp);
+PIRP                        Irp,
+BOOLEAN                     CanWait);
 
 #define UDF_CLOSE_NTREQFCB_DELETED 0x01
 #define UDF_CLOSE_FCB_DELETED      0x02
