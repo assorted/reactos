@@ -254,7 +254,7 @@ UDFCommonRead(
 
     BOOLEAN                 CanWait = FALSE;
     BOOLEAN                 PagingIo = FALSE;
-    BOOLEAN                 NonBufferedIo = FALSE;
+    BOOLEAN                 NonCachedIo = FALSE;
     BOOLEAN                 SynchronousIo = FALSE;
 
     TmPrint(("UDFCommonRead: irp %x\n", Irp));
@@ -343,13 +343,13 @@ UDFCommonRead(
 
         CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
         PagingIo = (Irp->Flags & IRP_PAGING_IO) ? TRUE : FALSE;
-        NonBufferedIo = (Irp->Flags & IRP_NOCACHE) ? TRUE : FALSE;
+        NonCachedIo = (Irp->Flags & IRP_NOCACHE) ? TRUE : FALSE;
         SynchronousIo = (FileObject->Flags & FO_SYNCHRONOUS_IO) ? TRUE : FALSE;
         UDFPrint(("    Flags: %s %s %s %s\n",
                       CanWait ? "W" : "w", PagingIo ? "Pg" : "pg",
-                      NonBufferedIo ? "NBuf" : "buff", SynchronousIo ? "Snc" : "Asc"));
+                      NonCachedIo ? "NonCached" : "Cached", SynchronousIo ? "Snc" : "Asc"));
 
-        if(!NonBufferedIo &&
+        if(!NonCachedIo &&
            (Fcb->NodeIdentifier.NodeType != UDF_NODE_TYPE_VCB)) {
             if(UDFIsAStream(Fcb->FileInfo)) {
                 UDFNotifyFullReportChange( Vcb, Fcb->FileInfo,
@@ -449,7 +449,7 @@ UDFCommonRead(
         // that the offsets will be set correctly by the VMM. You should not
         // attempt to acquire any FSD resources either.
         if(Fcb->FCBFlags & UDF_FCB_PAGE_FILE) {
-            NonBufferedIo = TRUE;
+            NonCachedIo = TRUE;
         }
 
         if(ByteOffset.HighPart == -1) {
@@ -535,7 +535,7 @@ UDFCommonRead(
         //       have an image section that has been initialized.
 #define UDF_REQ_NOT_VIA_CACHE_MGR(ptr)  (!MmIsRecursiveIoFault() && ((ptr)->ImageSectionObject != NULL))
 
-        if(NonBufferedIo &&
+        if(NonCachedIo &&
            (NtReqFcb->SectionObject.DataSectionObject != NULL)) {
             if(!PagingIo) {
 
@@ -588,7 +588,7 @@ UDFCommonRead(
             }
         } else {
             // Try to acquire the FCB MainResource shared
-            if(NonBufferedIo) {
+            if(NonCachedIo) {
                 if(!Res2Acq) {
                     if(!UDFAcquireSharedWaitForExclusive(&(NtReqFcb->PagingIoResource), CanWait)) {
                         try_return(RC = STATUS_PENDING);
@@ -620,7 +620,7 @@ UDFCommonRead(
             NtReqFcb->CommonFCBHeader.IsFastIoPossible = FastIoIsQuestionable;*/
 
 #ifdef UDF_DISABLE_SYSTEM_CACHE_MANAGER
-        NonBufferedIo = TRUE;
+        NonCachedIo = TRUE;
 #endif
 
         if(Fcb && Fcb->FileInfo && Fcb->FileInfo->Dloc) {
@@ -628,7 +628,7 @@ UDFCommonRead(
         }
 
         //  Branch here for cached vs non-cached I/O
-        if (!NonBufferedIo) {
+        if (!NonCachedIo) {
 
             if(FileObject->Flags & FO_WRITE_THROUGH) {
                 CanWait = TRUE;
@@ -684,7 +684,7 @@ UDFCommonRead(
 
         } else {
 
-            MmPrint(("    Read NonBufferedIo\n"));
+            MmPrint(("    Read NonCachedIo\n"));
 
 #if 1
             if((ULONG_PTR)TopIrp == FSRTL_MOD_WRITE_TOP_LEVEL_IRP) {

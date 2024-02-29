@@ -140,7 +140,7 @@ UDFCommonWrite(
 
     BOOLEAN                 CanWait = FALSE;
     BOOLEAN                 PagingIo = FALSE;
-    BOOLEAN                 NonBufferedIo = FALSE;
+    BOOLEAN                 NonCachedIo = FALSE;
     BOOLEAN                 SynchronousIo = FALSE;
     BOOLEAN                 IsThisADeferredWrite = FALSE;
     BOOLEAN                 WriteToEOF = FALSE;
@@ -237,11 +237,11 @@ UDFCommonWrite(
 
         CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
         PagingIo = (Irp->Flags & IRP_PAGING_IO) ? TRUE : FALSE;
-        NonBufferedIo = (Irp->Flags & IRP_NOCACHE) ? TRUE : FALSE;
+        NonCachedIo = (Irp->Flags & IRP_NOCACHE) ? TRUE : FALSE;
         SynchronousIo = (FileObject->Flags & FO_SYNCHRONOUS_IO) ? TRUE : FALSE;
         UDFPrint(("    Flags: %s; %s; %s; %s; Irp(W): %8.8x\n",
                       CanWait ? "Wt" : "nw", PagingIo ? "Pg" : "np",
-                      NonBufferedIo ? "NBuf" : "buff", SynchronousIo ? "Snc" : "Asc",
+                      NonCachedIo ? "NonCached" : "Cached", SynchronousIo ? "Snc" : "Asc",
                       Irp->Flags));
 
         NtReqFcb = Fcb->NTRequiredFCB;
@@ -255,7 +255,7 @@ UDFCommonWrite(
             Res2Acq = PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_RES2_ACQ;
         }
 
-        if(!NonBufferedIo &&
+        if(!NonCachedIo &&
            (Fcb->NodeIdentifier.NodeType != UDF_NODE_TYPE_VCB)) {
             if((Fcb->NodeIdentifier.NodeType != UDF_NODE_TYPE_VCB) &&
                 UDFIsAStream(Fcb->FileInfo)) {
@@ -359,7 +359,7 @@ UDFCommonWrite(
         }
 
         // back pressure for very smart and fast system cache ;)
-        if(!NonBufferedIo) {
+        if(!NonCachedIo) {
             // cached IO
             if(Vcb->VerifyCtx.QueuedCount ||
                Vcb->VerifyCtx.ItemCount >= UDF_MAX_VERIFY_CACHE) {
@@ -381,7 +381,7 @@ UDFCommonWrite(
 
         IsThisADeferredWrite = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_DEFERRED_WRITE) ? TRUE : FALSE;
 
-        if (!NonBufferedIo) {
+        if (!NonCachedIo) {
             MmPrint(("    CcCanIWrite()\n"));
             if (!CcCanIWrite(FileObject, WriteLength, CanWait, IsThisADeferredWrite)) {
                 // Cache Manager and/or the VMM does not want us to perform
@@ -397,7 +397,7 @@ UDFCommonWrite(
         // If the write request is directed to a page file,
         // send the request directly to the disk
         if (Fcb->FCBFlags & UDF_FCB_PAGE_FILE) {
-            NonBufferedIo = TRUE;
+            NonCachedIo = TRUE;
         }
 
         // We can continue. Check whether this write operation is targeted
@@ -462,7 +462,7 @@ UDFCommonWrite(
         // information though the purge will probably fail if the file has been
         // mapped into some process' virtual address space
         // WARNING !!! we should not flush data beyond valid data length
-        if ( NonBufferedIo &&
+        if ( NonCachedIo &&
             !PagingIo &&
              NtReqFcb->SectionObject.DataSectionObject &&
              TruncatedLength &&
@@ -534,7 +534,7 @@ UDFCommonWrite(
             CanWait = true;
             // PagingIoResource is already acquired exclusive
             // on LazyWrite condition (see UDFAcqLazyWrite())
-            ASSERT(NonBufferedIo);
+            ASSERT(NonCachedIo);
             if(!IsThisADeferredWrite) {
                 if(!Res2Acq) {
                     // Try to acquire the FCB PagingIoResource exclusive
@@ -547,7 +547,7 @@ UDFCommonWrite(
             }
         } else {
             // Try to acquire the FCB MainResource shared
-            if(NonBufferedIo) {
+            if(NonCachedIo) {
                 if(!Res2Acq) {
                     if(!UDFAcquireResourceExclusive(&(NtReqFcb->PagingIoResource), CanWait)) {
                     //if(!UDFAcquireSharedWaitForExclusive(&(NtReqFcb->PagingIoResource), CanWait)) {
@@ -732,14 +732,14 @@ UDFCommonWrite(
         }
 
 #ifdef UDF_DISABLE_SYSTEM_CACHE_MANAGER
-        NonBufferedIo = TRUE;
+        NonCachedIo = TRUE;
 #endif
         if(Fcb && Fcb->FileInfo && Fcb->FileInfo->Dloc) {
             AdPrint(("UDFCommonWrite: DataLoc %x, Mapping %x\n", Fcb->FileInfo->Dloc->DataLoc, Fcb->FileInfo->Dloc->DataLoc.Mapping));
         }
 
         //  Branch here for cached vs non-cached I/O
-        if (!NonBufferedIo) {
+        if (!NonCachedIo) {
 
             // The caller wishes to perform cached I/O. Initiate caching if
             // this is the first cached I/O operation using this file object
@@ -828,7 +828,7 @@ UDFCommonWrite(
 
         } else {
 
-            MmPrint(("    Write NonBufferedIo\n"));
+            MmPrint(("    Write NonCachedIo\n"));
 
             // We needn't call CcZeroData here (like in Fat driver)
             // 'cause we've already done it above
@@ -925,24 +925,24 @@ try_exit:   NOTHING;
             WCacheEODirect__(&(Vcb->FastCache), Vcb);
         }
 
-        // Release any resources acquired here ...
-        if(PtrResourceAcquired2) {
-            UDFReleaseResource(PtrResourceAcquired2);
-        }
-        if(PtrResourceAcquired) {
-            if(NtReqFcb &&
-               (PtrResourceAcquired ==
-                &(NtReqFcb->MainResource))) {
-                UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-            }
-            UDFReleaseResource(PtrResourceAcquired);
-        }
-        if(VcbAcquired) {
-            UDFReleaseResource(&(Vcb->VCBResource));
-        }
-
         // Post IRP if required
         if(RC == STATUS_PENDING) {
+
+            // Release any resources acquired here ...
+            if(PtrResourceAcquired2) {
+                UDFReleaseResource(PtrResourceAcquired2);
+            }
+            if(PtrResourceAcquired) {
+                if(NtReqFcb &&
+                   (PtrResourceAcquired ==
+                    &(NtReqFcb->MainResource))) {
+                    UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
+                }
+                UDFReleaseResource(PtrResourceAcquired);
+            }
+            if(VcbAcquired) {
+                UDFReleaseResource(&(Vcb->VCBResource));
+            }
 
             // Lock the callers buffer here. Then invoke a common routine to
             // perform the post operation.
@@ -993,8 +993,28 @@ try_exit:   NOTHING;
                         NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart =
                             min(NtReqFcb->CommonFCBHeader.FileSize.QuadPart,
                                 ByteOffset.QuadPart + NumberBytesWritten);
+
+                        if (NonCachedIo && CcIsFileCached(FileObject)) {
+                            CcSetFileSizes(FileObject, (PCC_FILE_SIZES)&NtReqFcb->CommonFCBHeader.AllocationSize);
+                        }
                     }
                 }
+            }
+
+            // Release any resources acquired here ...
+            if(PtrResourceAcquired2) {
+                UDFReleaseResource(PtrResourceAcquired2);
+            }
+            if(PtrResourceAcquired) {
+                if(NtReqFcb &&
+                   (PtrResourceAcquired ==
+                    &(NtReqFcb->MainResource))) {
+                    UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
+                }
+                UDFReleaseResource(PtrResourceAcquired);
+            }
+            if(VcbAcquired) {
+                UDFReleaseResource(&(Vcb->VCBResource));
             }
 
             // If the request failed, and we had done some nasty stuff like
