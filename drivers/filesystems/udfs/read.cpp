@@ -733,18 +733,35 @@ UDFCommonRead(
                 try_return(RC = STATUS_INVALID_USER_BUFFER);
             }
 
-            if (ByteOffset.QuadPart >= NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart) {
-                ULONG Length = (ULONG)min(ReadLength, min(ByteOffset.QuadPart + ReadLength, NtReqFcb->CommonFCBHeader.FileSize.QuadPart) - NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart);
-                RtlZeroMemory(SystemBuffer, Length);
-                NumberBytesRead = Length;
-                UDFUnlockCallersBuffer(PtrIrpContext, Irp, SystemBuffer);
-                try_return(STATUS_SUCCESS);
-            }
+            // Start by zeroing any part of the read after Valid Data
 
-            if (ByteOffset.QuadPart + ReadLength > NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart) {
-                ULONG Addon = (ULONG)(min(ByteOffset.QuadPart + ReadLength, NtReqFcb->CommonFCBHeader.FileSize.QuadPart) - NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart);
-                RtlZeroMemory((PUCHAR)SystemBuffer + (NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart - ByteOffset.QuadPart), Addon);
-                TruncatedLength = (ULONG)(NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart - ByteOffset.QuadPart);
+            LARGE_INTEGER ValidDataLength = NtReqFcb->CommonFCBHeader.ValidDataLength;
+
+            if (ByteOffset.QuadPart + TruncatedLength > ValidDataLength.QuadPart) {
+
+                if (ByteOffset.QuadPart < ValidDataLength.QuadPart) {
+
+                    ULONG LBS = Vcb->LBlockSize;
+                    ULONG ZeroingOffset = ((ValidDataLength.QuadPart - ByteOffset.QuadPart) + (LBS - 1)) & ~(LBS - 1);
+
+                    // If the offset is at or above the byte count, no harm: just means
+                    // that the read ends in the last sector and the zeroing will be
+                    // done at completion.
+
+                    if (TruncatedLength > ZeroingOffset) {
+
+                        RtlZeroMemory((PUCHAR)SystemBuffer + ZeroingOffset, TruncatedLength - ZeroingOffset);
+                    }
+                } else {
+
+                    //  All we have to do now is sit here and zero the
+                    //  user's buffer, no reading is required.
+
+                    RtlZeroMemory(SystemBuffer, TruncatedLength);
+                    NumberBytesRead = TruncatedLength;
+                    UDFUnlockCallersBuffer(PtrIrpContext, Irp, SystemBuffer);
+                    try_return(STATUS_SUCCESS);
+                }
             }
 
             RC = UDFReadFile__(Vcb, Fcb->FileInfo, ByteOffset.QuadPart, TruncatedLength,
