@@ -1150,6 +1150,14 @@ PFILE_OBJECT                FileObject
       UDFPurgeCacheEx_(NtReqFcb, Offset, Length, CanWait, Vcb, FileObject)
 //#endif //ALLOW_SPARSE
 
+BOOLEAN
+UDFZeroData (
+    IN PVCB Vcb,
+    IN PFILE_OBJECT FileObject,
+    IN ULONG StartingZero,
+    IN ULONG ByteCount,
+    IN BOOLEAN CanWait
+    );
 
 
 #endif  // _UDF_PROTOS_H_

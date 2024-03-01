@@ -1183,14 +1183,7 @@ UDFFastIoCopyWrite (
         AdPrint(("    Verify queue overflow -> UDFFastIoCopyWrite() = FALSE\n"));
         return FALSE;
     }
-    if(Fcb->NTRequiredFCB->SectionObject.DataSectionObject &&
-       Length >= 0x10000 &&
-       FileOffset->LowPart &&
-       !(FileOffset->LowPart & 0x00ffffff)) {
 
-        MmPrint(("    no FastIo 16Mb\n"));
-        return FALSE;
-    }
     return FsRtlCopyWrite(FileObject, FileOffset, Length, Wait, LockKey, Buffer, IoStatus, DeviceObject);
 
 } // end UDFFastIoCopyWrite()
