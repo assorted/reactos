@@ -703,10 +703,11 @@ UDFCommonWrite(
                     if(ZeroBlock) {
                         NtReqFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
                         ThPrint(("    UDFZeroDataEx(1)\n"));
-                        UDFZeroDataEx(NtReqFcb,
-                                      OldVDL,
-                                      /*ByteOffset.QuadPart*/ NtReqFcb->CommonFCBHeader.FileSize.QuadPart - OldVDL,
-                                      CanWait, Vcb, FileObject);
+                        UDFZeroData(Vcb,
+                                    FileObject,
+                                    OldVDL,
+                                    NtReqFcb->CommonFCBHeader.FileSize.QuadPart - OldVDL,
+                                    CanWait);
 #ifdef UDF_DBG
                         ZeroBlockDone = TRUE;
 #endif //UDF_DBG
@@ -759,10 +760,11 @@ UDFCommonWrite(
 
             if(ZeroBlock && !ZeroBlockDone) {
                 ThPrint(("    UDFZeroDataEx(2)\n"));
-                UDFZeroDataEx(NtReqFcb,
-                              OldVDL,
-                              /*ByteOffset.QuadPart*/ ByteOffset.QuadPart + TruncatedLength - OldVDL,
-                              CanWait, Vcb, FileObject);
+                UDFZeroData(Vcb,
+                            FileObject,
+                            OldVDL,
+                            ByteOffset.QuadPart + TruncatedLength - OldVDL,
+                            CanWait);
                 if(ByteOffset.LowPart & (PAGE_SIZE-1)) {
                 }
             }
@@ -782,22 +784,6 @@ UDFCommonWrite(
                 RC = STATUS_INVALID_PARAMETER;
 
                 try_return(RC);
-            }
-
-            if(NtReqFcb->SectionObject.DataSectionObject &&
-               TruncatedLength >= 0x10000 &&
-               ByteOffset.LowPart &&
-               !(ByteOffset.LowPart & 0x00ffffff)) {
-
-                //if(WinVer_Id() < WinVer_2k) {
-                    //LARGE_INTEGER flush_offs;
-                    //flush_offs.QuadPart = ByteOffset.QuadPart - 0x100*0x10000;
-                    MmPrint(("    CcFlushCache() 16Mb\n"));
-                    //CcFlushCache(&(NtReqFcb->SectionObject), &ByteOffset, 0x100*0x10000, &(Irp->IoStatus));
-
-                    // there was a nice idea: flush just previous part. But it doesn't work
-                    CcFlushCache(&(NtReqFcb->SectionObject), NULL, 0, &(Irp->IoStatus));
-                //}
             }
 
             // This is a regular run-of-the-mill cached I/O request. Let the
@@ -839,10 +825,11 @@ UDFCommonWrite(
 #ifdef UDF_DBG
                     ASSERT(!ZeroBlockDone);
 #endif //UDF_DBG
-                    UDFZeroDataEx(NtReqFcb,
-                                 OldVDL,
-                                 /*ByteOffset.QuadPart*/ ByteOffset.QuadPart - OldVDL,
-                                 CanWait, Vcb, FileObject);
+                    UDFZeroData(Vcb,
+                                FileObject,
+                                OldVDL,
+                                ByteOffset.QuadPart - OldVDL,
+                                CanWait);
             }
             if(OldVDL < (ByteOffset.QuadPart + TruncatedLength)) {
                 NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart = ByteOffset.QuadPart + TruncatedLength;
@@ -1241,5 +1228,67 @@ UDFPurgeCacheEx_(
         BrutePoint();
     } _SEH2_END;
 } // end UDFPurgeCacheEx_()
+
+BOOLEAN
+UDFZeroData (
+    IN PVCB Vcb,
+    IN PFILE_OBJECT FileObject,
+    IN ULONG StartingZero,
+    IN ULONG ByteCount,
+    BOOLEAN CanWait
+    )
+
+/*++
+
+    **** Temporary function - Remove when CcZeroData is capable of handling
+    non sector aligned requests.
+
+--*/
+{
+    LARGE_INTEGER ZeroStart = {0,0};
+    LARGE_INTEGER BeyondZeroEnd = {0,0};
+
+    BOOLEAN Finished;
+
+    PAGED_CODE();
+
+    ULONG LBS = Vcb->LBlockSize;
+
+    ZeroStart.LowPart = (StartingZero + (LBS - 1)) & ~(LBS - 1);
+
+    //
+    //  Detect overflow if we were asked to zero in the last sector of the file,
+    //  which must be "zeroed" already (or we're in trouble).
+    //
+    
+    if (StartingZero != 0 && ZeroStart.LowPart == 0) {
+        
+        return TRUE;
+    }
+
+    //
+    //  Note that BeyondZeroEnd can take the value 4gb.
+    //
+    
+    BeyondZeroEnd.QuadPart = ((ULONGLONG) StartingZero + ByteCount + (LBS - 1))
+                             & (~((LONGLONG) LBS - 1));
+
+    //
+    //  If we were called to just zero part of a sector we are in trouble.
+    //
+    
+    if ( ZeroStart.QuadPart == BeyondZeroEnd.QuadPart ) {
+
+        return TRUE;
+    }
+
+    Finished = CcZeroData( FileObject,
+                           &ZeroStart,
+                           &BeyondZeroEnd,
+                           CanWait );
+
+    return Finished;
+}
+
 
 #endif //UDF_READ_ONLY_BUILD
