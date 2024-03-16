@@ -522,10 +522,11 @@ DiscardDelete:
 
                 if( (OldFileSize = NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart) <
                     (NewFileSize = NtReqFcb->CommonFCBHeader.FileSize.QuadPart)) {
-/*                    UDFZeroDataEx(NtReqFcb,
-                                  OldFileSize,
-                                  NewFileSize - OldFileSize,
-                                  TRUE, Vcb, FileObject);*/
+                    UDFZeroData(Vcb,
+                                FileObject,
+                                OldFileSize,
+                                NewFileSize - OldFileSize,
+                                TRUE);
 
                     NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart = NewFileSize;
                 }
