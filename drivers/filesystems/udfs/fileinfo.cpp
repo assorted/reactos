@@ -1087,6 +1087,34 @@ UDFSetBasicInformation(
 
     _SEH2_TRY {
 
+        // If the user is specifying -1 for a field, that means
+        // we should leave that field unchanged, even if we might
+        // have otherwise set it ourselves.  We'll set the Ccb flag
+        // saying that the user set the field so that we
+        // don't do our default updating.
+
+        // We set the field to 0 then so we know not to actually
+        // set the field to the user-specified (and in this case,
+        // illegal) value.
+
+        if (PtrBuffer->LastWriteTime.QuadPart == -1) {
+
+            SetFlag(Ccb->CCBFlags, UDF_CCB_WRITE_TIME_SET);
+            PtrBuffer->LastWriteTime.QuadPart = 0;
+        }
+
+        if (PtrBuffer->LastAccessTime.QuadPart == -1) {
+
+            SetFlag(Ccb->CCBFlags, UDF_CCB_ACCESS_TIME_SET);
+            PtrBuffer->LastAccessTime.QuadPart = 0;
+        }
+
+        if (PtrBuffer->CreationTime.QuadPart == -1) {
+
+            SetFlag(Ccb->CCBFlags, UDF_CCB_CREATE_TIME_SET);
+            PtrBuffer->CreationTime.QuadPart = 0;
+        }
+
         // Obtain a pointer to the directory entry associated with
         // the FCB being modifed. The directory entry is obviously
         // part of the data associated with the parent directory that
