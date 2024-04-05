@@ -149,7 +149,7 @@ UDFCommonFileInfo(
             break;
         case FSRTL_FAST_IO_TOP_LEVEL_IRP:
             UDFPrint(("  FSRTL_FAST_IO_TOP_LEVEL_IRP\n"));
-            BrutePoint()
+            BrutePoint();
             break;
         case NULL:
             UDFPrint(("  NULL TOP_LEVEL_IRP\n"));
