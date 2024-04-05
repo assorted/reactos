@@ -284,7 +284,7 @@ UDFPhWriteSynchronous(
 {
     NTSTATUS            RC = STATUS_SUCCESS;
     LARGE_INTEGER       ROffset;
-    PUDF_PH_CALL_CONTEXT Context;
+    PUDF_PH_CALL_CONTEXT Context = NULL;
     PIRP                irp;
 //    LARGE_INTEGER       timeout;
     KIRQL               CurIrql = KeGetCurrentIrql();
