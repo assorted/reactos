@@ -2472,14 +2472,29 @@ UDFInvalidateVolumes(
         Irp->IoStatus.Status = STATUS_PRIVILEGE_NOT_HELD;
         return STATUS_PRIVILEGE_NOT_HELD;
     }
-    //  Try to get a pointer to the device object from the handle passed in.
-    if (IrpSp->Parameters.FileSystemControl.InputBufferLength != sizeof( HANDLE )) {
-        UDFPrintErr(("UDFInvalidateVolumes: STATUS_INVALID_PARAMETER\n"));
-        Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
-        return STATUS_INVALID_PARAMETER;
-    }
 
-    Handle = *((PHANDLE) Irp->AssociatedIrp.SystemBuffer);
+    //  Try to get a pointer to the device object from the handle passed in.
+#ifdef _WIN64
+    if (IoIs32bitProcess(Irp)) {
+        if (IrpSp->Parameters.FileSystemControl.InputBufferLength != sizeof(UINT32)) {
+            UDFPrintErr(("UDFInvalidateVolumes: STATUS_INVALID_PARAMETER\n"));
+            Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
+            return STATUS_INVALID_PARAMETER;
+        }
+
+        Handle = (HANDLE)LongToHandle((*(UINT32*)Irp->AssociatedIrp.SystemBuffer));
+    } else {
+#endif
+        if (IrpSp->Parameters.FileSystemControl.InputBufferLength != sizeof(HANDLE)) {
+            UDFPrintErr(("UDFInvalidateVolumes: STATUS_INVALID_PARAMETER\n"));
+            Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
+            return STATUS_INVALID_PARAMETER;
+        }
+
+        Handle = *(HANDLE*)Irp->AssociatedIrp.SystemBuffer;
+#ifdef _WIN64
+    }
+#endif
 
     RC = ObReferenceObjectByHandle( Handle,
                                     0,
