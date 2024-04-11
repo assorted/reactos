@@ -273,20 +273,23 @@ UDFFileDirInfoToNT(
             NTFileInfo->LastWriteTime.QuadPart  = NtReqFcb->LastWriteTime.QuadPart;
             NTFileInfo->LastAccessTime.QuadPart = NtReqFcb->LastAccessTime.QuadPart;
             NTFileInfo->ChangeTime.QuadPart     = NtReqFcb->ChangeTime.QuadPart;
-//            NTFileInfo->AllocationSize.QuadPart = NtReqFcb->CommonFCBHeader.AllocationSize.QuadPart;
-            NTFileInfo->AllocationSize.QuadPart = FileDirNdx->AllocationSize;
-/*            FileDirNdx->FileSize =
-            NTFileInfo->EndOfFile.QuadPart = NtReqFcb->CommonFCBHeader.FileSize.QuadPart;*/
-            NTFileInfo->EndOfFile.QuadPart = FileDirNdx->FileSize;
+
+            NTFileInfo->AllocationSize.QuadPart = UDFGetFileAllocationSize(Vcb, FileDirNdx->FileInfo);
+            NTFileInfo->EndOfFile.QuadPart = UDFGetFileSize(FileDirNdx->FileInfo);
+
             if(FileDirNdx->FI_Flags & UDF_FI_FLAG_SYS_ATTR) {
                 UDFPrint(("    SYS_ATTR\n"));
                 NTFileInfo->FileAttributes = FileDirNdx->SysAttr;
                 goto get_name_only;
             }
+
             FileDirNdx->CreationTime   = NTFileInfo->CreationTime.QuadPart;
             FileDirNdx->LastWriteTime  = NTFileInfo->LastWriteTime.QuadPart;
             FileDirNdx->LastAccessTime = NTFileInfo->LastAccessTime.QuadPart;
             FileDirNdx->ChangeTime     = NTFileInfo->ChangeTime.QuadPart;
+            FileDirNdx->AllocationSize = NTFileInfo->AllocationSize.QuadPart;
+            FileDirNdx->FileSize       = NTFileInfo->EndOfFile.QuadPart;
+
             goto get_attr_only;
         }
         ASSERT(FileEntry);
