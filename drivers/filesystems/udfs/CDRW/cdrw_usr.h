@@ -1824,4 +1824,24 @@ typedef struct _GET_DISK_LAYOUT_USER_OUT {
 
 #pragma pack(pop)
 
+#define MAXIMUM_NUMBER_TRACKS_LARGE 0xAA
+
+typedef struct _CDROM_TOC_LARGE {
+
+    //
+    // Header
+    //
+
+    UCHAR Length[2];  // add two bytes for this field
+    UCHAR FirstTrack;
+    UCHAR LastTrack;
+
+    //
+    // Track data
+    //
+
+    TRACK_DATA TrackData[MAXIMUM_NUMBER_TRACKS_LARGE];
+
+} CDROM_TOC_LARGE;
+
 #endif //__CDRW_PUBLIC_H__
