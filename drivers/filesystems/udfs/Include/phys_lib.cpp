@@ -2389,11 +2389,11 @@ UDFUseStandard(
     )
 {
     OSSTATUS                RC = STATUS_SUCCESS;
-    PREAD_TOC_USER_OUT      toc = (PREAD_TOC_USER_OUT)MyAllocatePool__(NonPagedPool,max(Vcb->BlockSize, sizeof(READ_TOC_USER_OUT)) );
-    PGET_LAST_SESSION_USER_OUT LastSes = (PGET_LAST_SESSION_USER_OUT)MyAllocatePool__(NonPagedPool,sizeof(GET_LAST_SESSION_USER_OUT) );
+    CDROM_TOC_LARGE*        toc = (CDROM_TOC_LARGE*)MyAllocatePool__(NonPagedPool, sizeof(CDROM_TOC_LARGE));
+    CDROM_TOC_SESSION_DATA* LastSes = (CDROM_TOC_SESSION_DATA*)MyAllocatePool__(NonPagedPool, sizeof(CDROM_TOC_SESSION_DATA));
     uint32                  LocalTrackCount;
-//    uint32                  LocalTocLength;
     uint32                  TocEntry;
+    void*                   TempBuffer = NULL;
 #ifdef _BROWSE_UDF_
     uint32                  OldTrkNum;
     uint32                  TrkNum;
@@ -2412,18 +2412,36 @@ UDFUseStandard(
         if(!toc || !LastSes) {
             try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        RtlZeroMemory(toc,sizeof(READ_TOC_TOC));
+        RtlZeroMemory(toc, sizeof(CDROM_TOC_LARGE));
 
-        Vcb->VCBFlags |= UDF_VCB_FLAGS_USE_STD;
+        CDROM_READ_TOC_EX Command;
 
-        RC = UDFPhSendIOCTL(IOCTL_CDROM_READ_TOC,DeviceObject,
-            toc,sizeof(READ_TOC_USER_OUT),
-            toc,sizeof(READ_TOC_USER_OUT),
-            TRUE,NULL );
+        RtlZeroMemory(&Command, sizeof(Command));
 
-        if((RC == STATUS_DEVICE_NOT_READY) || (RC == STATUS_NO_MEDIA_IN_DEVICE)) {
-            try_return(RC);
+        RC = UDFPhSendIOCTL(IOCTL_CDROM_READ_TOC_EX,
+                            DeviceObject,
+                            &Command,
+                            sizeof(Command),
+                            toc,
+                            sizeof(CDROM_TOC_LARGE),
+                            TRUE,
+                            NULL);
+
+        if(!NT_SUCCESS(RC)) {
+
+            // try using the MSF mode
+            Command.Msf = 1;
+
+            RC = UDFPhSendIOCTL(IOCTL_CDROM_READ_TOC_EX,
+                                DeviceObject,
+                                &Command,
+                                sizeof(Command),
+                                toc,
+                                sizeof(CDROM_TOC_LARGE),
+                                TRUE,
+                                NULL);
         }
+
 #ifdef UDF_FORMAT_MEDIA
         if(fms->opt_media == MT_none) {
             try_return(RC = STATUS_NO_MEDIA_IN_DEVICE);
@@ -2478,48 +2496,45 @@ UDFUseStandard(
         Vcb->PhDeviceType = FILE_DEVICE_CD_ROM;
 #endif //_CONSOLE
 
-        LocalTrackCount = toc->Tracks.Last_TrackSes - toc->Tracks.First_TrackSes + 1;
-//        LocalTocLength = PtrOffset( toc, &(toc->TrackData[LocalTrackCount + 1]) );  /* FIXME ReactOS Assume PtrOffset is not changing it's arguments? */
+        LocalTrackCount = toc->LastTrack - toc->FirstTrack + 1;
 
         // Get out if there is an immediate problem with the TOC.
-        if(toc->Tracks.First_TrackSes > toc->Tracks.Last_TrackSes) {
+        if(toc->LastTrack - toc->FirstTrack >= MAXIMUM_NUMBER_TRACKS_LARGE) {
             try_return(RC = STATUS_DISK_CORRUPT_ERROR);
         }
 
 #ifdef _BROWSE_UDF_
-        Vcb->LastTrackNum=toc->Tracks.Last_TrackSes;
-        Vcb->FirstTrackNum=toc->Tracks.First_TrackSes;
+        Vcb->LastTrackNum = toc->LastTrack;
+        Vcb->FirstTrackNum = toc->FirstTrack;
         // some devices report LastTrackNum=0 for full disks
         Vcb->LastTrackNum = max(Vcb->LastTrackNum, Vcb->FirstTrackNum);
 
-        RC = UDFReallocTrackMap(Vcb, MAXIMUM_NUMBER_OF_TRACKS+1);
-/*        if(Vcb->TrackMap) {
-            MyFreePool__(Vcb->TrackMap);
-            Vcb->TrackMap = NULL;
-        }
-        Vcb->TrackMap = (PUDFTrackMap)
-            MyAllocatePool__(NonPagedPool, (MAXIMUM_NUMBER_OF_TRACKS+1)*sizeof(UDFTrackMap));
-        if(!Vcb->TrackMap) {
-            MyFreePool__(toc);
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-        RtlZeroMemory(Vcb->TrackMap,(MAXIMUM_NUMBER_OF_TRACKS+1)*sizeof(UDFTrackMap));
-*/
+        RC = UDFReallocTrackMap(Vcb, MAXIMUM_NUMBER_TRACKS_LARGE+1);
+
         if(!OS_SUCCESS(RC)) {
             BrutePoint();
             try_return(RC);
         }
         // find 1st and last session
-        RC = UDFPhSendIOCTL(IOCTL_CDROM_GET_LAST_SESSION,DeviceObject,
-            LastSes,sizeof(GET_LAST_SESSION_USER_OUT),
-            LastSes,sizeof(GET_LAST_SESSION_USER_OUT),
-            TRUE,NULL );
+        RC = UDFPhSendIOCTL(IOCTL_CDROM_GET_LAST_SESSION,
+            DeviceObject,
+            NULL,
+            0,
+            LastSes,
+            sizeof(CDROM_TOC_SESSION_DATA),
+            TRUE,
+            NULL);
 
         if(OS_SUCCESS(RC)) {
-            TrkNum = LastSes->LastSes_1stTrack.TrackNum;
-            Vcb->LastSession = LastSes->Sessions.First_TrackSes;
+
+            TrkNum = LastSes->TrackData[0].TrackNumber;
+
+            Vcb->FirstLBA = 0;
+            SwapCopyUchar4(&Vcb->FirstLBA, &LastSes->TrackData[0].Address);
+
+            Vcb->LastSession = LastSes->FirstCompleteSession;
             for(TocEntry=0;TocEntry<LocalTrackCount + 1;TocEntry++) {
-                if(toc->TrackData[TocEntry].TrackNum == TrkNum) {
+                if(toc->TrackData[TocEntry].TrackNumber == TrkNum) {
                     Vcb->TrackMap[TrkNum].Session = Vcb->LastSession;
                 }
             }
@@ -2528,10 +2543,10 @@ UDFUseStandard(
         OldTrkNum = 0;
         // Scan toc for first & last LBA
         for(TocEntry=0;TocEntry<LocalTrackCount + 1;TocEntry++) {
-#define TempMSF toc->TrackData[TocEntry].LBA
-            TrkNum = toc->TrackData[TocEntry].TrackNum;
+#define TempMSF toc->TrackData[TocEntry].Address
+            TrkNum = toc->TrackData[TocEntry].TrackNumber;
 #ifdef UDF_DBG
-            if (TrkNum >= MAXIMUM_NUMBER_OF_TRACKS &&
+            if (TrkNum >= MAXIMUM_NUMBER_TRACKS_LARGE &&
                 TrkNum != TOC_LastTrack_ID) {
                 UDFPrint(("UDFUseStandard: Array out of bounds\n"));
                 BrutePoint();
@@ -2541,17 +2556,22 @@ UDFUseStandard(
                 MSF_TO_LBA(TempMSF[1],TempMSF[2],TempMSF[3]),
                 MSF_TO_LBA(TempMSF[1],TempMSF[2],TempMSF[3])));
 #endif // UDF_DBG
-            if(Vcb->FirstTrackNum == TrkNum) {
-                Vcb->FirstLBA = MSF_TO_LBA(TempMSF[1],TempMSF[2],TempMSF[3]);
-                if(Vcb->FirstLBA & 0x80000000) {
-                    Vcb->FirstLBA = 0;
+            if(TOC_LastTrack_ID == TrkNum) {
+
+                if (Command.Msf) {
+                    Vcb->LastLBA = MSF_TO_LBA(TempMSF[1],TempMSF[2],TempMSF[3]) - 1;
                 }
-            }
-            if(TOC_LastTrack_ID   == TrkNum) {
-                Vcb->LastLBA  = MSF_TO_LBA(TempMSF[1],TempMSF[2],TempMSF[3])-1;
-                Vcb->TrackMap[OldTrkNum].LastLba = Vcb->LastLBA-1;
+                else {
+                    // The non-MSF (LBA) mode
+                    Vcb->LastLBA = 0;
+                    SwapCopyUchar4(&Vcb->LastLBA, &toc->TrackData[TocEntry].Address);
+                    if (Vcb->LastLBA) {
+                        Vcb->LastLBA -= 1;
+                    }
+                }
+
+                Vcb->TrackMap[OldTrkNum].LastLba = Vcb->LastLBA;
                 UDFPrint(("UDFUseStandard: Last track entry, break TOC scan\n"));
-//                continue;
                 break;
             } else {
                 Vcb->TrackMap[TrkNum].FirstLba = MSF_TO_LBA(TempMSF[1],TempMSF[2],TempMSF[3]);
@@ -2599,11 +2619,18 @@ UDFUseStandard(
         }
         i = 0;
 
-        // Check for last VP track. Some last sectors may belong to Link-data &
+        // Check for last Variable Packet(VP) track. Some last sectors may belong to Link-data &
         // be unreadable. We should forget about them, because UDF needs
         // last _readable_ sector.
+
+        TempBuffer = MyAllocatePool__(NonPagedPool, Vcb->BlockSize);
+
+        if(!TempBuffer) { 
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+
         while(!OS_SUCCESS(RC) && (i<8)) {
-            RC = UDFPhReadSynchronous(Vcb->TargetDeviceObject, (int8*)toc, Vcb->BlockSize,
+            RC = UDFPhReadSynchronous(Vcb->TargetDeviceObject, TempBuffer, Vcb->BlockSize,
                        ((uint64)(Vcb->TrackMap[TrkNum].LastLba-i)) << Vcb->BlockSizeBits, &ReadBytes, PH_TMP_BUFFER);
             i++;
         }
@@ -2615,7 +2642,7 @@ UDFUseStandard(
             }*/
         } else {
 
-            // Check for FP track. READ_TOC reports actual track length, but
+            // Check for Fixed Packet(FP) track. READ_TOC reports actual track length, but
             // Link-data is hidden & unreadable for us. So, available track
             // length may be less than actual. Here we assume that Packet-size
             // is PACKETSIZE_UDF.
@@ -2624,7 +2651,7 @@ UDFUseStandard(
             len = (uint32)(((int64)len*PACKETSIZE_UDF) / (PACKETSIZE_UDF+7));
 
             while(!OS_SUCCESS(RC) && (i<9)) {
-                RC = UDFPhReadSynchronous(Vcb->TargetDeviceObject, (int8*)toc, Vcb->BlockSize,
+                RC = UDFPhReadSynchronous(Vcb->TargetDeviceObject, TempBuffer, Vcb->BlockSize,
                            ((uint64)(Vcb->TrackMap[TrkNum].FirstLba-i+len)) << Vcb->BlockSizeBits, &ReadBytes, PH_TMP_BUFFER);
                 i++;
             }
@@ -2675,6 +2702,7 @@ try_exit: NOTHING;
     } _SEH2_FINALLY {
         if(toc) MyFreePool__(toc);
         if(LastSes) MyFreePool__(LastSes);
+        if(TempBuffer) MyFreePool__(TempBuffer);
     } _SEH2_END;
 
     return RC;

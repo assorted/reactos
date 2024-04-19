@@ -176,5 +176,19 @@ OSSTATUS UDFResetDeviceDriver(IN PVCB Vcb,
                               IN PDEVICE_OBJECT TargetDeviceObject,
                               IN BOOLEAN Unlock);
 
+// This macro copies an unaligned src longword to a dst longword,
+// performing an little/big endian swap.
+
+typedef union _UCHAR1 {
+    UCHAR  Uchar[1];
+    UCHAR  ForceAlignment;
+} UCHAR1, *PUCHAR1;
+
+#define SwapCopyUchar4(Dst,Src) {                                        \
+    *((UNALIGNED UCHAR1 *)(Dst)) = *((UNALIGNED UCHAR1 *)(Src) + 3);     \
+    *((UNALIGNED UCHAR1 *)(Dst) + 1) = *((UNALIGNED UCHAR1 *)(Src) + 2); \
+    *((UNALIGNED UCHAR1 *)(Dst) + 2) = *((UNALIGNED UCHAR1 *)(Src) + 1); \
+    *((UNALIGNED UCHAR1 *)(Dst) + 3) = *((UNALIGNED UCHAR1 *)(Src));     \
+}
 
 #endif //__UDF_PHYS_LIB__H__
