@@ -2422,10 +2422,11 @@ UDFIsVolumeDirty(
     if(Vcb->origIntegrityType == INTEGRITY_TYPE_OPEN) {
         UDFPrint(("  Dirty\n"));
         (*VolumeState) |= VOLUME_IS_DIRTY;
-        Irp->IoStatus.Information = sizeof(ULONG);
     } else {
         UDFPrint(("  Clean\n"));
     }
+
+    Irp->IoStatus.Information = sizeof(ULONG);
     Irp->IoStatus.Status = STATUS_SUCCESS;
 
     return STATUS_SUCCESS;
