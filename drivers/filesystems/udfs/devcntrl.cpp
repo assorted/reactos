@@ -163,7 +163,6 @@ UDFCommonDeviceControl(
 //    PVOID                   BufferPointer = NULL;
     BOOLEAN                 AcquiredVcb = FALSE;
     BOOLEAN                 FSDevObj;
-    ULONG                   TrackNumber;
     BOOLEAN                 UnsafeIoctl = TRUE;
     UCHAR                   ScsiCommand;
     PPREVENT_MEDIA_REMOVAL_USER_IN Buf = NULL;    // FSD buffer
@@ -878,20 +877,13 @@ notify_media_change:
                 try_return(RC);
 
             //  Check the size of the output buffer.
-            if (IrpSp->Parameters.DeviceIoControl.OutputBufferLength < sizeof(CDROM_DISK_DATA_USER_OUT))
+            if (IrpSp->Parameters.DeviceIoControl.OutputBufferLength < sizeof(CDROM_DISK_DATA))
                 try_return(RC = STATUS_BUFFER_TOO_SMALL);
 
             //  Copy the data from the Vcb.
-            ((PCDROM_DISK_DATA_USER_OUT)(Irp->AssociatedIrp.SystemBuffer))->DiskData = CDROM_DISK_DATA_TRACK;
-            for(TrackNumber=Vcb->FirstTrackNum; TrackNumber<Vcb->LastTrackNum; TrackNumber++) {
-                if((Vcb->TrackMap[TrackNumber].TrackParam & Trk_QSubChan_Type_Mask) ==
-                    Trk_QSubChan_Type_Audio) {
-                    ((PCDROM_DISK_DATA_USER_OUT)(Irp->AssociatedIrp.SystemBuffer))->DiskData |= CDROM_DISK_AUDIO_TRACK;
-                    break;
-                }
-            }
+            ((CDROM_DISK_DATA*)Irp->AssociatedIrp.SystemBuffer)->DiskData = CDROM_DISK_DATA_TRACK;
 
-            Irp->IoStatus.Information = sizeof(CDROM_DISK_DATA_USER_OUT);
+            Irp->IoStatus.Information = sizeof(CDROM_DISK_DATA);
             RC = STATUS_SUCCESS;
             break;
         }
