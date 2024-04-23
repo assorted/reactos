@@ -2639,6 +2639,38 @@ UDFFilterCallbackAcquireForCreateSection(
     UNREFERENCED_PARAMETER(CompletionContext);		
 }
 
+NTSTATUS
+UDFToggleMediaEjectDisable (
+    IN PVCB Vcb,
+    IN BOOLEAN PreventRemoval
+    )
+{
+    PREVENT_MEDIA_REMOVAL Prevent;
+
+    //  If PreventRemoval is the same as UDF_VCB_FLAGS_MEDIA_LOCKED,
+    //  no-op this call, otherwise toggle the state of the flag.
+
+    if ((PreventRemoval ^ BooleanFlagOn(Vcb->VCBFlags, UDF_VCB_FLAGS_MEDIA_LOCKED)) == 0) {
+
+        return STATUS_SUCCESS;
+
+    } else {
+
+        Vcb->VCBFlags ^= UDF_VCB_FLAGS_MEDIA_LOCKED;
+    }
+
+    Prevent.PreventMediaRemoval = PreventRemoval;
+
+    return UDFPhSendIOCTL(IOCTL_DISK_MEDIA_REMOVAL,
+                          Vcb->TargetDeviceObject,
+                          &Prevent,
+                          sizeof(Prevent),
+                          NULL,
+                          0,
+                          FALSE,
+                          NULL);
+}
+
 #include "Include/misc_common.cpp"
 #include "Include/regtools.cpp"
 

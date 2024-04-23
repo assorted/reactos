@@ -498,19 +498,8 @@ UDFMountVolume(
                     try_return(RC);
                 }
             }
-
-            // lock media for now
-            if(!WrongMedia) {
-                ((PPREVENT_MEDIA_REMOVAL_USER_IN)(&MediaChangeCount))->PreventMediaRemoval = TRUE;
-                RC = UDFPhSendIOCTL( IOCTL_STORAGE_MEDIA_REMOVAL,
-                                     TargetDeviceObject,
-                                     &MediaChangeCount,sizeof(PREVENT_MEDIA_REMOVAL_USER_IN),
-                                     NULL,0,
-                                     FALSE,NULL);
-                Locked = TRUE;
-            }
-
         }
+
         // Now before we can initialize the Vcb we need to set up the
         // Get our device object and alignment requirement.
         // Device extension == VCB
@@ -553,6 +542,13 @@ UDFMountVolume(
 
         VolDo = NULL;
         Vpb = NULL;
+
+        // lock media for now
+        if(RemovableMedia) {
+
+            UDFToggleMediaEjectDisable(Vcb, TRUE);
+            Locked = TRUE;
+        }
 
         UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE );
         VcbAcquired = TRUE;
@@ -729,14 +725,12 @@ try_raw_mount:
 
         // unlock media
         if(RemovableMedia) {
-            if(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY) {
+            if(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY || 
+               Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) {
+
                 UDFPrint(("UDFMountVolume: unlock media on RO volume\n"));
-                ((PPREVENT_MEDIA_REMOVAL_USER_IN)(&MediaChangeCount))->PreventMediaRemoval = FALSE;
-                UDFPhSendIOCTL( IOCTL_STORAGE_MEDIA_REMOVAL,
-                                     TargetDeviceObject,
-                                     &MediaChangeCount,sizeof(PREVENT_MEDIA_REMOVAL_USER_IN),
-                                     NULL,0,
-                                     FALSE,NULL);
+                UDFToggleMediaEjectDisable(Vcb, FALSE);
+
                 if(Vcb->VCBFlags & UDF_VCB_FLAGS_OUR_DEVICE_DRIVER)
                     UDFResetDeviceDriver(Vcb, Vcb->TargetDeviceObject, TRUE);
             }
@@ -767,13 +761,9 @@ try_exit: NOTHING;
         if(!NT_SUCCESS(RC)) {
 
             if(RemovableMedia && Locked) {
+
                 UDFPrint(("UDFMountVolume: unlock media\n"));
-                ((PPREVENT_MEDIA_REMOVAL_USER_IN)(&MediaChangeCount))->PreventMediaRemoval = FALSE;
-                UDFPhSendIOCTL( IOCTL_STORAGE_MEDIA_REMOVAL,
-                                     TargetDeviceObject,
-                                     &MediaChangeCount,sizeof(PREVENT_MEDIA_REMOVAL_USER_IN),
-                                     NULL,0,
-                                     FALSE,NULL);
+                UDFToggleMediaEjectDisable(Vcb, FALSE);
             }
 /*            if((RC != STATUS_DEVICE_NOT_READY) &&
                (RC != STATUS_NO_MEDIA_IN_DEVICE) ) {*/
@@ -848,8 +838,6 @@ UDFStartEjectWaiter(
     IN PVCB    Vcb
     )
 {
-//    NTSTATUS RC;
-    PREVENT_MEDIA_REMOVAL_USER_IN Buff;
     UDFPrint(("UDFStartEjectWaiter:\n"));
     UDFPrint(("Vcb->FsDeviceType=%x\n", Vcb->FsDeviceType));
     if (Vcb->FsDeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) {
@@ -877,16 +865,12 @@ UDFStartEjectWaiter(
         }
         UDFPrint(("UDFStartEjectWaiter: check removable\n"));
         if(Vcb->VCBFlags & UDF_VCB_FLAGS_REMOVABLE_MEDIA) {
+
             // prevent media removal
             UDFPrint(("UDFStartEjectWaiter: lock media\n"));
-            Buff.PreventMediaRemoval = TRUE;
-            UDFTSendIOCTL( IOCTL_STORAGE_MEDIA_REMOVAL,
-                           Vcb,
-                           &Buff,sizeof(PREVENT_MEDIA_REMOVAL_USER_IN),
-                           NULL,0,
-                           FALSE,NULL );
-            Vcb->VCBFlags |= UDF_VCB_FLAGS_MEDIA_LOCKED;
+            UDFToggleMediaEjectDisable(Vcb, TRUE);
         }
+
         UDFPrint(("UDFStartEjectWaiter: prepare to start\n"));
         // initialize Eject Request waiter
         Vcb->EjectWaiter = (PUDFEjectWaitContext)MyAllocatePool__(NonPagedPool, sizeof(UDFEjectWaitContext));
