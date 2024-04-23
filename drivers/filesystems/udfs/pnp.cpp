@@ -78,6 +78,7 @@ Return Value:
 
  */
 NTSTATUS
+NTAPI
 UDFPnp (
     IN PDEVICE_OBJECT DeviceObject,
     IN PIRP Irp

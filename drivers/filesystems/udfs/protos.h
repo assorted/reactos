@@ -842,6 +842,7 @@ OSSTATUS UDFResetDeviceDriver(IN PVCB Vcb.
 * Prototypes for the file Pnp.cpp
 *************************************************************************/
 NTSTATUS
+NTAPI
 UDFPnp (
     IN PDEVICE_OBJECT DeviceObject,
     IN PIRP Irp
@@ -1157,6 +1158,12 @@ UDFZeroData (
     IN ULONG StartingZero,
     IN ULONG ByteCount,
     IN BOOLEAN CanWait
+    );
+
+NTSTATUS
+UDFToggleMediaEjectDisable (
+    IN PVCB Vcb,
+    IN BOOLEAN PreventRemoval
     );
 
 

@@ -1420,12 +1420,8 @@ UDFRecoverFromError(
             delay.QuadPart = -1000000; // 0.1 sec
             KeDelayExecutionThread(KernelMode, FALSE, &delay);
             // lock it
-/*            ((PPREVENT_MEDIA_REMOVAL_USER_IN)(Error))->PreventMediaRemoval = TRUE;
-            UDFPhSendIOCTL( IOCTL_STORAGE_MEDIA_REMOVAL,
-                                 Vcb->TargetDeviceObject,
-                                 Error,sizeof(PREVENT_MEDIA_REMOVAL_USER_IN),
-                                 NULL,0,
-                                 FALSE,NULL);
+/*          UDFToggleMediaEjectDisable(Vcb, TRUE);
+
             delay.QuadPart = -1000000; // 0.1 sec
             KeDelayExecutionThread(KernelMode, FALSE, &delay);*/
 
@@ -3134,12 +3130,7 @@ UDFGetDiskInfo(
 #endif //UDF_FORMAT_MEDIA
                 UDFResetDeviceDriver(Vcb, Vcb->TargetDeviceObject, FALSE);
                 // lock it
-                ((PPREVENT_MEDIA_REMOVAL_USER_IN)(ioBuf))->PreventMediaRemoval = TRUE;
-                UDFPhSendIOCTL( IOCTL_STORAGE_MEDIA_REMOVAL,
-                                     DeviceObject,
-                                     ioBuf,sizeof(PREVENT_MEDIA_REMOVAL_USER_IN),
-                                     NULL,0,
-                                     FALSE, NULL);
+                UDFToggleMediaEjectDisable(Vcb, TRUE);
 #ifdef UDF_FORMAT_MEDIA
             }
 #endif //UDF_FORMAT_MEDIA
