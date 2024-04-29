@@ -186,9 +186,6 @@ OUT PFILE_STANDARD_INFORMATION Buffer,
 OUT PIO_STATUS_BLOCK           IoStatus,
 IN PDEVICE_OBJECT              DeviceObject);
 
-extern VOID NTAPI UDFFastIoAcqCreateSec(
-IN PFILE_OBJECT FileObject);
-
 extern VOID NTAPI UDFFastIoRelCreateSec(
 IN PFILE_OBJECT FileObject);
 
