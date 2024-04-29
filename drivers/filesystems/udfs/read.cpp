@@ -31,6 +31,15 @@
 
 //#define POST_LOCK_PAGES
 
+//  This macro just puts a nice little try-except around RtlZeroMemory
+
+#define SafeZeroMemory(AT,BYTE_COUNT) {                            \
+    _SEH2_TRY {                                                    \
+        RtlZeroMemory((AT), (BYTE_COUNT));                         \
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {                    \
+         UDFRaiseStatus(PtrIrpContext, STATUS_INVALID_USER_BUFFER);\
+    } _SEH2_END;                                                   \
+}
 
 /*************************************************************************
 *
@@ -241,14 +250,11 @@ UDFCommonRead(
     PtrUDFCCB               Ccb = NULL;
     PVCB                    Vcb = NULL;
     PtrUDFNTRequiredFCB     NtReqFcb = NULL;
-    PERESOURCE              PtrResourceAcquired = NULL;
-    PERESOURCE              PtrResourceAcquired2 = NULL;
+    BOOLEAN                 VcbAcquired = FALSE;
+    BOOLEAN                 MainResourceAcquired = FALSE;
+    BOOLEAN                 PagingIoResourceAcquired = FALSE;
     PVOID                   SystemBuffer = NULL;
     PIRP                    TopIrp;
-//    uint32                  KeyValue = 0;
-
-    ULONG                   Res1Acq = 0;
-    ULONG                   Res2Acq = 0;
 
     BOOLEAN                 CacheLocked = FALSE;
 
@@ -400,18 +406,18 @@ UDFCommonRead(
                 PtrIrpContext->IrpContextFlags &= ~UDF_IRP_CONTEXT_FLUSH_REQUIRED;
 
                 // Acquire the volume resource exclusive
-                UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
-                PtrResourceAcquired = &(Vcb->VCBResource);
+                UDFAcquireResourceExclusive(&Vcb->VCBResource, TRUE);
+                VcbAcquired = TRUE;
 
                 UDFFlushLogicalVolume(NULL, NULL, Vcb, 0);
 
-                UDFReleaseResource(PtrResourceAcquired);
-                PtrResourceAcquired = NULL;
+                UDFReleaseResource(&Vcb->VCBResource);
+                VcbAcquired = FALSE;
             }
 
             // Acquire the volume resource shared ...
-            UDFAcquireResourceShared(&(Vcb->VCBResource), TRUE);
-            PtrResourceAcquired = &(Vcb->VCBResource);
+            UDFAcquireResourceShared(&Vcb->VCBResource, TRUE);
+            VcbAcquired = TRUE;
 
 #if 0
             if(PagingIo) {
@@ -466,56 +472,12 @@ UDFCommonRead(
         }
 
         NtReqFcb = Fcb->NTRequiredFCB;
-
-        Res1Acq = UDFIsResourceAcquired(&(NtReqFcb->MainResource));
-        if(!Res1Acq) {
-            Res1Acq = PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_RES1_ACQ;
-        }
-        Res2Acq = UDFIsResourceAcquired(&(NtReqFcb->PagingIoResource));
-        if(!Res2Acq) {
-            Res2Acq = PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_RES2_ACQ;
-        }
-
 #if 0
         if(PagingIo) {
             CollectStatistics(Vcb, UserFileReads);
             CollectStatisticsEx(Vcb, UserFileReadBytes, NumberBytesRead);
         }
 #endif
-
-        // This is a good place for oplock related processing.
-
-        // If this is the normal file we have to check for
-        // write access according to the current state of the file locks.
-        if (!PagingIo &&
-            !FsRtlCheckLockForReadAccess( &(NtReqFcb->FileLock), Irp )) {
-                try_return( RC = STATUS_FILE_LOCK_CONFLICT );
-        }
-
-        // Validate start offset and length supplied.
-        //  If start offset is > end-of-file, return an appropriate error. Note
-        // that since a FCB resource has already been acquired, and since all
-        // file size changes require acquisition of both FCB resources,
-        // the contents of the FCB and associated data structures
-        // can safely be examined.
-
-        //  Also note that we are using the file size in the "Common FCB Header"
-        // to perform the check. However, your FSD might decide to keep a
-        // separate copy in the FCB (or some other representation of the
-        //  file associated with the FCB).
-
-        TruncatedLength = ReadLength;
-        if (ByteOffset.QuadPart >= NtReqFcb->CommonFCBHeader.FileSize.QuadPart) {
-            // Starting offset is >= file size
-            try_return(RC = STATUS_END_OF_FILE);
-        }
-        // We can also go ahead and truncate the read length here
-        //  such that it is contained within the file size
-        if( NtReqFcb->CommonFCBHeader.FileSize.QuadPart < (ByteOffset.QuadPart + ReadLength) ) {
-            TruncatedLength = (ULONG)(NtReqFcb->CommonFCBHeader.FileSize.QuadPart - ByteOffset.QuadPart);
-            // we can't get ZERO here
-        }
-        UDFPrint(("    TruncatedLength = %x\n", TruncatedLength));
 
         // There are certain complications that arise when the same file stream
         // has been opened for cached and non-cached access. The FSD is then
@@ -533,79 +495,89 @@ UDFCommonRead(
         // (b) OR the current request is paging-io BUT it did not originate via
         //       the Cache Manager (or is a recursive I/O operation) and we do
         //       have an image section that has been initialized.
-#define UDF_REQ_NOT_VIA_CACHE_MGR(ptr)  (!MmIsRecursiveIoFault() && ((ptr)->ImageSectionObject != NULL))
 
-        if(NonCachedIo &&
-           (NtReqFcb->SectionObject.DataSectionObject != NULL)) {
-            if(!PagingIo) {
+        // Acquire the appropriate FCB resource shared
+        if (PagingIo) {
 
-/*                // We hold the main resource exclusive here because the flush
-                // may generate a recursive write in this thread.  The PagingIo
-                // resource is held shared so the drop-and-release serialization
-                // below will work.
-                if(!UDFAcquireResourceExclusive(&(NtReqFcb->MainResource), CanWait)) {
+            // Don't offload jobs when doing paging IO - otherwise this can lead to
+            // deadlocks in CcCopyRead.
+            CanWait = true;
+            // Try to acquire the FCB PagingIoResource shared
+            if (!UDFAcquireSharedStarveExclusive(&NtReqFcb->PagingIoResource, CanWait)) {
+                try_return(RC = STATUS_PENDING);
+            }
+            PagingIoResourceAcquired = TRUE;
+
+        } else {
+            // Try to acquire the FCB MainResource shared
+            if(NonCachedIo && NtReqFcb->SectionObject.DataSectionObject) {
+
+                // We hold the main resource exclusive here because the flush
+                // may generate a recursive write in this thread.
+                UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
+                if(!UDFAcquireResourceExclusive(&NtReqFcb->MainResource, CanWait)) {
                     try_return(RC = STATUS_PENDING);
                 }
-                PtrResourceAcquired = &(NtReqFcb->MainResource);
+                MainResourceAcquired = TRUE;
 
                 // We hold PagingIo shared around the flush to fix a
                 // cache coherency problem.
-                UDFAcquireResourceShared(&(NtReqFcb->PagingIoResource), TRUE );*/
+                UDFAcquireResourceShared(&NtReqFcb->PagingIoResource, TRUE );
 
                 MmPrint(("    CcFlushCache()\n"));
-                CcFlushCache(&(NtReqFcb->SectionObject), &ByteOffset, TruncatedLength, &(Irp->IoStatus));
+                CcFlushCache(&NtReqFcb->SectionObject, &ByteOffset, ReadLength, &Irp->IoStatus);
 
-/*                UDFReleaseResource(&(NtReqFcb->PagingIoResource));
-                UDFReleaseResource(PtrResourceAcquired);
-                PtrResourceAcquired = NULL;
+                UDFReleaseResource(&NtReqFcb->PagingIoResource);
+
                 // If the flush failed, return error to the caller
                 if(!NT_SUCCESS(RC = Irp->IoStatus.Status)) {
                     try_return(RC);
                 }
 
-                // Acquiring and immediately dropping the resource serializes
-                // us behind any other writes taking place (either from the
-                // lazy writer or modified page writer).*/
-                if(!Res2Acq) {
-                    UDFAcquireResourceExclusive(&(NtReqFcb->PagingIoResource), TRUE );
-                    UDFReleaseResource(&(NtReqFcb->PagingIoResource));
+                UDFConvertExclusiveToSharedLite(&NtReqFcb->MainResource);
+
+            } else {
+                UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
+                if(!UDFAcquireResourceShared(&NtReqFcb->MainResource, CanWait)) {
+                    try_return(RC = STATUS_PENDING);
                 }
+                MainResourceAcquired = TRUE;
             }
         }
 
-        // Acquire the appropriate FCB resource shared
-        if (PagingIo) {
-            // Don't offload jobs when doing paging IO - otherwise this can lead to
-            // deadlocks in CcCopyRead.
-            CanWait = true;
-            // Try to acquire the FCB PagingIoResource shared
-            if(!Res2Acq) {
-                if (!UDFAcquireResourceShared(&(NtReqFcb->PagingIoResource), CanWait)) {
-                    try_return(RC = STATUS_PENDING);
-                }
-                // Remember the resource that was acquired
-                PtrResourceAcquired2 = &(NtReqFcb->PagingIoResource);
-            }
-        } else {
-            // Try to acquire the FCB MainResource shared
-            if(NonCachedIo) {
-                if(!Res2Acq) {
-                    if(!UDFAcquireSharedWaitForExclusive(&(NtReqFcb->PagingIoResource), CanWait)) {
-                        try_return(RC = STATUS_PENDING);
-                    }
-                    PtrResourceAcquired2 = &(NtReqFcb->PagingIoResource);
-                }
-            } else {
-                if(!Res1Acq) {
-                    UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-                    if(!UDFAcquireResourceShared(&(NtReqFcb->MainResource), CanWait)) {
-                        try_return(RC = STATUS_PENDING);
-                    }
-                    // Remember the resource that was acquired
-                    PtrResourceAcquired = &(NtReqFcb->MainResource);
-                }
-            }
+        // This is a good place for oplock related processing.
+
+        // If this is the normal file we have to check for
+        // write access according to the current state of the file locks.
+        if (!PagingIo &&
+            !FsRtlCheckLockForReadAccess(&NtReqFcb->FileLock, Irp)) {
+                try_return( RC = STATUS_FILE_LOCK_CONFLICT );
         }
+
+        // Validate start offset and length supplied.
+        // If start offset is > end-of-file, return an appropriate error. Note
+        // that since a FCB resource has already been acquired, and since all
+        // file size changes require acquisition of both FCB resources,
+        // the contents of the FCB and associated data structures
+        // can safely be examined.
+
+        // Also note that we are using the file size in the "Common FCB Header"
+        // to perform the check. However, your FSD might decide to keep a
+        // separate copy in the FCB (or some other representation of the
+        // file associated with the FCB).
+
+        TruncatedLength = ReadLength;
+        if (ByteOffset.QuadPart >= NtReqFcb->CommonFCBHeader.FileSize.QuadPart) {
+            // Starting offset is >= file size
+            try_return(RC = STATUS_END_OF_FILE);
+        }
+        // We can also go ahead and truncate the read length here
+        //  such that it is contained within the file size
+        if (NtReqFcb->CommonFCBHeader.FileSize.QuadPart < (ByteOffset.QuadPart + ReadLength)) {
+            TruncatedLength = (ULONG)(NtReqFcb->CommonFCBHeader.FileSize.QuadPart - ByteOffset.QuadPart);
+            // we can't get ZERO here
+        }
+        UDFPrint(("    TruncatedLength = %x\n", TruncatedLength));
 
         // This is also a good place to set whether fast-io can be performed
         // on this particular file or not. Your FSD must make it's own
@@ -718,10 +690,6 @@ UDFCommonRead(
             }
 
 //                ASSERT(NT_SUCCESS(RC));
-            if(!Res2Acq) {
-                if(UDFAcquireResourceSharedWithCheck(&(NtReqFcb->PagingIoResource)))
-                    PtrResourceAcquired2 = &(NtReqFcb->PagingIoResource);
-            }
 
             RC = UDFLockCallersBuffer(PtrIrpContext, Irp, IoWriteAccess, TruncatedLength);
             if(!NT_SUCCESS(RC)) {
@@ -750,14 +718,14 @@ UDFCommonRead(
 
                     if (TruncatedLength > ZeroingOffset) {
 
-                        RtlZeroMemory((PUCHAR)SystemBuffer + ZeroingOffset, TruncatedLength - ZeroingOffset);
+                        SafeZeroMemory((PUCHAR)SystemBuffer + ZeroingOffset, TruncatedLength - ZeroingOffset);
                     }
                 } else {
 
                     //  All we have to do now is sit here and zero the
                     //  user's buffer, no reading is required.
 
-                    RtlZeroMemory(SystemBuffer, TruncatedLength);
+                    SafeZeroMemory(SystemBuffer, TruncatedLength);
                     NumberBytesRead = TruncatedLength;
                     UDFUnlockCallersBuffer(PtrIrpContext, Irp, SystemBuffer);
                     try_return(STATUS_SUCCESS);
@@ -810,16 +778,17 @@ try_exit:   NOTHING;
         }
 
         // Release any resources acquired here ...
-        if(PtrResourceAcquired2) {
-            UDFReleaseResource(PtrResourceAcquired2);
+        if (PagingIoResourceAcquired) {
+            UDFReleaseResource(&NtReqFcb->PagingIoResource);
         }
-        if(PtrResourceAcquired) {
-            if(NtReqFcb &&
-               (PtrResourceAcquired ==
-                &(NtReqFcb->MainResource))) {
-                UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-            }
-            UDFReleaseResource(PtrResourceAcquired);
+
+        if (MainResourceAcquired) {
+            UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
+            UDFReleaseResource(&NtReqFcb->MainResource);
+        }
+
+        if (VcbAcquired) {
+            UDFReleaseResource(&Vcb->VCBResource);
         }
 
         // Post IRP if required
@@ -831,14 +800,7 @@ try_exit:   NOTHING;
                 RC = UDFLockCallersBuffer(PtrIrpContext, Irp, IoWriteAccess, ReadLength);
                 ASSERT(NT_SUCCESS(RC));
             }
-            if(PagingIo) {
-                if(Res1Acq) {
-                    PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_RES1_ACQ;
-                }
-                if(Res2Acq) {
-                    PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_RES2_ACQ;
-                }
-            }
+
             // Perform the post operation which will mark the IRP pending
             // and will return STATUS_PENDING back to us
             RC = UDFPostRequest(PtrIrpContext, Irp);

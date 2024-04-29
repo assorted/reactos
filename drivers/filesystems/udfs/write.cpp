@@ -123,18 +123,18 @@ UDFCommonWrite(
     PtrUDFCCB               Ccb = NULL;
     PVCB                    Vcb = NULL;
     PtrUDFNTRequiredFCB     NtReqFcb = NULL;
-    PERESOURCE              PtrResourceAcquired = NULL;
-    PERESOURCE              PtrResourceAcquired2 = NULL;
     PVOID                   SystemBuffer = NULL;
-//    PVOID                   TmpBuffer = NULL;
-//    uint32                  KeyValue = 0;
     PIRP                    TopIrp;
 
     LONGLONG                ASize;
     LONGLONG                OldVDL;
 
-    ULONG                   Res1Acq = 0;
-    ULONG                   Res2Acq = 0;
+    BOOLEAN                 PagingIoResourceAcquired = FALSE;
+    BOOLEAN                 MainResourceAcquired = FALSE;
+    BOOLEAN                 VcbAcquired = FALSE;
+
+    BOOLEAN                 MainResourceAcquiredExclusive = FALSE;
+    BOOLEAN                 MainResourceCanDemoteToShared = FALSE;
 
     BOOLEAN                 CacheLocked = FALSE;
 
@@ -144,11 +144,10 @@ UDFCommonWrite(
     BOOLEAN                 SynchronousIo = FALSE;
     BOOLEAN                 IsThisADeferredWrite = FALSE;
     BOOLEAN                 WriteToEOF = FALSE;
-    BOOLEAN                 Resized = FALSE;
+    BOOLEAN                 FileSizesChanged = FALSE;
     BOOLEAN                 RecursiveWriteThrough = FALSE;
     BOOLEAN                 WriteFileSizeToDirNdx = FALSE;
     BOOLEAN                 ZeroBlock = FALSE;
-    BOOLEAN                 VcbAcquired = FALSE;
     BOOLEAN                 ZeroBlockDone = FALSE;
 
     TmPrint(("UDFCommonWrite: irp %x\n", Irp));
@@ -246,29 +245,6 @@ UDFCommonWrite(
 
         NtReqFcb = Fcb->NTRequiredFCB;
 
-        Res1Acq = UDFIsResourceAcquired(&(NtReqFcb->MainResource));
-        if(!Res1Acq) {
-            Res1Acq = PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_RES1_ACQ;
-        }
-        Res2Acq = UDFIsResourceAcquired(&(NtReqFcb->PagingIoResource));
-        if(!Res2Acq) {
-            Res2Acq = PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_RES2_ACQ;
-        }
-
-        if(!NonCachedIo &&
-           (Fcb->NodeIdentifier.NodeType != UDF_NODE_TYPE_VCB)) {
-            if((Fcb->NodeIdentifier.NodeType != UDF_NODE_TYPE_VCB) &&
-                UDFIsAStream(Fcb->FileInfo)) {
-                UDFNotifyFullReportChange( Vcb, Fcb->FileInfo,
-                                           FILE_NOTIFY_CHANGE_STREAM_WRITE,
-                                           FILE_ACTION_MODIFIED_STREAM);
-            } else {
-                UDFNotifyFullReportChange( Vcb, Fcb->FileInfo,
-                                           FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_LAST_ACCESS,
-                                           FILE_ACTION_MODIFIED);
-            }
-        }
-
         // Get some of the parameters supplied to us
         WriteLength = IrpSp->Parameters.Write.Length;
         if (WriteLength == 0) {
@@ -283,7 +259,7 @@ UDFCommonWrite(
         // If this is the normal file we have to check for
         // write access according to the current state of the file locks.
         if (!PagingIo &&
-            !FsRtlCheckLockForWriteAccess( &(NtReqFcb->FileLock), Irp) ) {
+            !FsRtlCheckLockForWriteAccess(&NtReqFcb->FileLock, Irp) ) {
                 try_return( RC = STATUS_FILE_LOCK_CONFLICT );
         }
 
@@ -317,7 +293,7 @@ UDFCommonWrite(
 
             // Acquire the volume resource exclusive
             UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
-            PtrResourceAcquired = &(Vcb->VCBResource);
+            VcbAcquired = TRUE;
 
             // I dislike the idea of writing to mounted media too, but M$ has another point of view...
             if(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) {
@@ -462,26 +438,22 @@ UDFCommonWrite(
         // information though the purge will probably fail if the file has been
         // mapped into some process' virtual address space
         // WARNING !!! we should not flush data beyond valid data length
-        if ( NonCachedIo &&
+        if (NonCachedIo &&
             !PagingIo &&
              NtReqFcb->SectionObject.DataSectionObject &&
              TruncatedLength &&
              (ByteOffset.QuadPart < NtReqFcb->CommonFCBHeader.FileSize.QuadPart)) {
 
-            if(!Res1Acq) {
-                // Try to acquire the FCB MainResource exclusively
-                if(!UDFAcquireResourceExclusive(&(NtReqFcb->MainResource), CanWait)) {
-                    try_return(RC = STATUS_PENDING);
-                }
-                PtrResourceAcquired = &(NtReqFcb->MainResource);
+            // Try to acquire the FCB MainResource exclusively
+            if(!UDFAcquireResourceExclusive(&NtReqFcb->MainResource, CanWait)) {
+                try_return(RC = STATUS_PENDING);
             }
+            MainResourceAcquired = TRUE;
 
-            if(!Res2Acq) {
-                //  We hold PagingIo shared around the flush to fix a
-                //  cache coherency problem.
-                UDFAcquireSharedStarveExclusive(&(NtReqFcb->PagingIoResource), TRUE );
-                PtrResourceAcquired2 = &(NtReqFcb->PagingIoResource);
-            }
+            //  We hold PagingIo exclusive around the flush and CcPurgeCacheSection to fix a
+            //  cache coherency problem.
+            UDFAcquireResourceExclusive(&NtReqFcb->PagingIoResource, TRUE);
+            PagingIoResourceAcquired = TRUE;
 
             // Flush and then attempt to purge the cache
             if((ByteOffset.QuadPart + TruncatedLength) > NtReqFcb->CommonFCBHeader.FileSize.QuadPart) {
@@ -493,34 +465,27 @@ UDFCommonWrite(
             MmPrint(("    CcFlushCache()\n"));
             CcFlushCache(&(NtReqFcb->SectionObject), &ByteOffset, NumberBytesWritten, &(Irp->IoStatus));
 
-            if(PtrResourceAcquired2) {
-                UDFReleaseResource(&(NtReqFcb->PagingIoResource));
-                PtrResourceAcquired2 = NULL;
-            }
             // If the flush failed, return error to the caller
             if (!NT_SUCCESS(RC = Irp->IoStatus.Status)) {
                 NumberBytesWritten = 0;
                 try_return(RC);
             }
 
-            if(!Res2Acq) {
-                // Acquiring and immediately dropping the resource serializes
-                // us behind any other writes taking place (either from the
-                // lazy writer or modified page writer).
-                UDFAcquireResourceExclusive(&(NtReqFcb->PagingIoResource), TRUE );
-                UDFReleaseResource(&(NtReqFcb->PagingIoResource));
+            // Attempt the purge
+            MmPrint(("    CcPurgeCacheSection()\n"));
+            BOOLEAN SuccessfulPurge = CcPurgeCacheSection(&NtReqFcb->SectionObject, &ByteOffset,
+                                                           NumberBytesWritten, FALSE);
+            NumberBytesWritten = 0;
+
+            UDFReleaseResource(&NtReqFcb->PagingIoResource);
+            PagingIoResourceAcquired = FALSE;
+
+            // We are finished with our flushing and purging
+            if (!SuccessfulPurge) {
+                try_return(RC = STATUS_PURGE_FAILED);            
             }
 
-            // Attempt the purge and ignore the return code
-            MmPrint(("    CcPurgeCacheSection()\n"));
-            CcPurgeCacheSection(&(NtReqFcb->SectionObject), &ByteOffset,
-                                        NumberBytesWritten, FALSE);
-            NumberBytesWritten = 0;
-            // We are finished with our flushing and purging
-            if(PtrResourceAcquired) {
-                UDFReleaseResource(PtrResourceAcquired);
-                PtrResourceAcquired = NULL;
-            }
+            MainResourceCanDemoteToShared = TRUE;
         }
 
         // Determine if we were called by the lazywriter.
@@ -529,43 +494,32 @@ UDFCommonWrite(
 
         // Acquire the appropriate FCB resource
         if(PagingIo) {
-            // Don't offload jobs when doing paging IO - otherwise this can lead to
-            // deadlocks in CcCopyWrite.
-            CanWait = true;
-            // PagingIoResource is already acquired exclusive
-            // on LazyWrite condition (see UDFAcqLazyWrite())
-            ASSERT(NonCachedIo);
-            if(!IsThisADeferredWrite) {
-                if(!Res2Acq) {
-                    // Try to acquire the FCB PagingIoResource exclusive
-                    if(!UDFAcquireResourceExclusive(&(NtReqFcb->PagingIoResource), CanWait)) {
-                        try_return(RC = STATUS_PENDING);
-                    }
-                    // Remember the resource that was acquired
-                    PtrResourceAcquired2 = &(NtReqFcb->PagingIoResource);
-                }
+
+            if (!UDFAcquireResourceShared(&NtReqFcb->PagingIoResource, TRUE)) {
+                try_return(RC = STATUS_PENDING);
             }
+            PagingIoResourceAcquired = TRUE;
+
+            ASSERT(NonCachedIo);
+
         } else {
             // Try to acquire the FCB MainResource shared
             if(NonCachedIo) {
-                if(!Res2Acq) {
-                    if(!UDFAcquireResourceExclusive(&(NtReqFcb->PagingIoResource), CanWait)) {
-                    //if(!UDFAcquireSharedWaitForExclusive(&(NtReqFcb->PagingIoResource), CanWait)) {
+                if(!MainResourceAcquired) {
+                    if(!UDFAcquireSharedWaitForExclusive(&NtReqFcb->MainResource, CanWait)) {
                         try_return(RC = STATUS_PENDING);
                     }
-                    PtrResourceAcquired2 = &(NtReqFcb->PagingIoResource);
+                    MainResourceAcquired = TRUE;
                 }
             } else {
-                if(!Res1Acq) {
+                if(!MainResourceAcquired) {
                     UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-                    if(!UDFAcquireResourceExclusive(&(NtReqFcb->MainResource), CanWait)) {
-                    //if(!UDFAcquireResourceShared(&(NtReqFcb->MainResource), CanWait)) {
+                    if(!UDFAcquireResourceShared(&(NtReqFcb->MainResource), CanWait)) {
                         try_return(RC = STATUS_PENDING);
                     }
-                    PtrResourceAcquired = &(NtReqFcb->MainResource);
+                    MainResourceAcquired = TRUE;
                 }
             }
-            // Remember the resource that was acquired
         }
 
         //  Set the flag indicating if Fast I/O is possible
@@ -635,49 +589,32 @@ UDFCommonWrite(
                 if(!CanWait)
                     try_return(RC = STATUS_PENDING);
 //                CanWait = TRUE;
-                // Release any resources acquired above ...
-                if (PtrResourceAcquired2) {
-                    UDFReleaseResource(PtrResourceAcquired2);
-                    PtrResourceAcquired2 = NULL;
-                }
-                if (PtrResourceAcquired) {
-                    UDFReleaseResource(PtrResourceAcquired);
-                    PtrResourceAcquired = NULL;
-                }
-                if(!UDFAcquireResourceShared(&(Vcb->VCBResource), CanWait)) {
-                    try_return(RC = STATUS_PENDING);
-                }
-                VcbAcquired = TRUE;
-                if(!Res1Acq) {
-                    // Try to acquire the FCB MainResource exclusively
+
+                // Try to acquire the FCB MainResource exclusively
+                if (!MainResourceAcquiredExclusive) {
+
+                    UDFReleaseResource(&NtReqFcb->MainResource);
+                    MainResourceAcquired = FALSE;
+
                     UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-                    if(!UDFAcquireResourceExclusive(&(NtReqFcb->MainResource), CanWait)) {
+                    if(!UDFAcquireResourceExclusive(&NtReqFcb->MainResource, CanWait)) {
                         try_return(RC = STATUS_PENDING);
                     }
-                    // Remember the resource that was acquired
-                    PtrResourceAcquired = &(NtReqFcb->MainResource);
+                    MainResourceAcquired = TRUE;
                 }
 
-                if(!Res2Acq) {
-                    // allocate space...
-                    AdPrint(("      Try to acquire PagingIoRes\n"));
-                    UDFAcquireResourceExclusive(&(NtReqFcb->PagingIoResource), TRUE );
-                    PtrResourceAcquired2 = &(NtReqFcb->PagingIoResource);
-                }
-                AdPrint(("      PagingIoRes Ok, Resizing...\n"));
+                UDFAcquireResourceExclusive(&NtReqFcb->PagingIoResource, TRUE);
+                PagingIoResourceAcquired = TRUE;
 
                 if(ExtendFS) {
                     RC = UDFResizeFile__(Vcb, Fcb->FileInfo, ByteOffset.QuadPart + TruncatedLength);
 
                     if(!NT_SUCCESS(RC)) {
-                        if(PtrResourceAcquired2) {
-                            UDFReleaseResource(&(NtReqFcb->PagingIoResource));
-                            PtrResourceAcquired2 = NULL;
-                        }
                         try_return(RC);
                     }
-                    Resized = TRUE;
+                    FileSizesChanged = TRUE;
                     // ... and inform the Cache Manager about it
+
                     NtReqFcb->CommonFCBHeader.FileSize.QuadPart = ByteOffset.QuadPart + TruncatedLength;
                     NtReqFcb->CommonFCBHeader.AllocationSize.QuadPart = UDFGetFileAllocationSize(Vcb, Fcb->FileInfo);
                     if(!Vcb->LowFreeSpace) {
@@ -687,6 +624,9 @@ UDFCommonWrite(
                     }
                     NtReqFcb->CommonFCBHeader.AllocationSize.LowPart &= ~(PAGE_SIZE-1);
                 }
+
+                UDFReleaseResource(&NtReqFcb->PagingIoResource);
+                PagingIoResourceAcquired = FALSE;
 
                 UDFPrint(("UDFCommonWrite: Set size %x (alloc size %x)\n", ByteOffset.LowPart + TruncatedLength, NtReqFcb->CommonFCBHeader.AllocationSize.LowPart));
                 if (CcIsFileCached(FileObject)) {
@@ -712,21 +652,6 @@ UDFCommonWrite(
                         ZeroBlockDone = TRUE;
 #endif //UDF_DBG
                     }
-                }
-                if (PtrResourceAcquired2) {
-                    UDFReleaseResource(PtrResourceAcquired2);
-                    PtrResourceAcquired2 = NULL;
-                }
-
-                // Inform any pending IRPs (notify change directory).
-                if(UDFIsAStream(Fcb->FileInfo)) {
-                    UDFNotifyFullReportChange( Vcb, Fcb->FileInfo,
-                                               FILE_NOTIFY_CHANGE_STREAM_SIZE,
-                                               FILE_ACTION_MODIFIED_STREAM);
-                } else {
-                    UDFNotifyFullReportChange( Vcb, Fcb->FileInfo,
-                                               FILE_NOTIFY_CHANGE_SIZE,
-                                               FILE_ACTION_MODIFIED);
                 }
             }
 
@@ -868,12 +793,6 @@ UDFCommonWrite(
                 try_return(RC = STATUS_PENDING);
             }
 
-            if(!Res2Acq) {
-                if(UDFAcquireResourceExclusiveWithCheck(&(NtReqFcb->PagingIoResource))) {
-                    PtrResourceAcquired2 = &(NtReqFcb->PagingIoResource);
-                }
-            }
-
             PerfPrint(("UDFCommonWrite: Physical write %x bytes at %x\n", TruncatedLength, ByteOffset.LowPart));
 
             // Lock the callers buffer
@@ -916,34 +835,23 @@ try_exit:   NOTHING;
         if(RC == STATUS_PENDING) {
 
             // Release any resources acquired here ...
-            if(PtrResourceAcquired2) {
-                UDFReleaseResource(PtrResourceAcquired2);
-            }
-            if(PtrResourceAcquired) {
-                if(NtReqFcb &&
-                   (PtrResourceAcquired ==
-                    &(NtReqFcb->MainResource))) {
-                    UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-                }
-                UDFReleaseResource(PtrResourceAcquired);
-            }
-            if(VcbAcquired) {
-                UDFReleaseResource(&(Vcb->VCBResource));
+            if (PagingIoResourceAcquired) {
+                UDFReleaseResource(&NtReqFcb->PagingIoResource);
             }
 
+            if (MainResourceAcquired) {
+                UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
+                UDFReleaseResource(&NtReqFcb->MainResource);
+            }
+
+            if(VcbAcquired) {
+                UDFReleaseResource(&Vcb->VCBResource);
+            }
             // Lock the callers buffer here. Then invoke a common routine to
             // perform the post operation.
             if (!(IrpSp->MinorFunction & IRP_MN_MDL)) {
                 RC = UDFLockCallersBuffer(PtrIrpContext, Irp, IoReadAccess, WriteLength);
                 ASSERT(NT_SUCCESS(RC));
-            }
-            if(PagingIo) {
-                if(Res1Acq) {
-                    PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_RES1_ACQ;
-                }
-                if(Res2Acq) {
-                    PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_RES2_ACQ;
-                }
             }
 
             // Perform the post operation which will mark the IRP pending
@@ -960,16 +868,28 @@ try_exit:   NOTHING;
             // operation, set a flag in the CCB that indicates that a write was
             // performed and that the file time should be updated at cleanup
             if (NT_SUCCESS(RC) && !PagingIo) {
-                Ccb->CCBFlags |= UDF_CCB_MODIFIED;
                 // If the file size was changed, set a flag in the FCB indicating that
                 // this occurred.
-                FileObject->Flags |= FO_FILE_MODIFIED;
-                if(Resized) {
+				SetFlag(FileObject->Flags, FO_FILE_MODIFIED);
+                
+				if(FileSizesChanged) {
                     if(!WriteFileSizeToDirNdx) {
+						
                         FileObject->Flags |= FO_FILE_SIZE_CHANGED;
                     } else {
+						
                         ASize = UDFGetFileAllocationSize(Vcb, Fcb->FileInfo);
                         UDFSetFileSizeInDirNdx(Vcb, Fcb->FileInfo, &ASize);
+						
+						if(UDFIsAStream(Fcb->FileInfo)) {
+							UDFNotifyFullReportChange(Vcb, Fcb->FileInfo,
+                                               FILE_NOTIFY_CHANGE_STREAM_SIZE,
+                                               FILE_ACTION_MODIFIED_STREAM);
+						} else {
+							UDFNotifyFullReportChange(Vcb, Fcb->FileInfo,
+                                               FILE_NOTIFY_CHANGE_SIZE,
+                                               FILE_ACTION_MODIFIED);
+						}
                     }
                 }
                 // Update ValidDataLength
@@ -989,21 +909,18 @@ try_exit:   NOTHING;
             }
 
             // Release any resources acquired here ...
-            if(PtrResourceAcquired2) {
-                UDFReleaseResource(PtrResourceAcquired2);
-            }
-            if(PtrResourceAcquired) {
-                if(NtReqFcb &&
-                   (PtrResourceAcquired ==
-                    &(NtReqFcb->MainResource))) {
-                    UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-                }
-                UDFReleaseResource(PtrResourceAcquired);
-            }
-            if(VcbAcquired) {
-                UDFReleaseResource(&(Vcb->VCBResource));
+            if (PagingIoResourceAcquired) {
+                UDFReleaseResource(&NtReqFcb->PagingIoResource);
             }
 
+            if (MainResourceAcquired) {
+                UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
+                UDFReleaseResource(&NtReqFcb->MainResource);
+            }
+
+            if(VcbAcquired) {
+                UDFReleaseResource(&Vcb->VCBResource);
+            }
             // If the request failed, and we had done some nasty stuff like
             // extending the file size (including informing the Cache Manager
             // about the new file size), and allocating on-disk space etc., undo
