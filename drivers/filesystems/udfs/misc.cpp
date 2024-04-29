@@ -2589,57 +2589,6 @@ UDFWCacheErrorHandler(
 }
 
 NTSTATUS
-NTAPI
-UDFFilterCallbackAcquireForCreateSection(
-    IN PFS_FILTER_CALLBACK_DATA CallbackData,
-    IN PVOID *CompletionContext
-    )
-{
-    NT_ASSERT( CallbackData->Operation == FS_FILTER_ACQUIRE_FOR_SECTION_SYNCHRONIZATION );
-    NT_ASSERT( CallbackData->SizeOfFsFilterCallbackData == sizeof(FS_FILTER_CALLBACK_DATA) );
-
-    PtrUDFNTRequiredFCB NtReqFcb = (PtrUDFNTRequiredFCB)CallbackData->FileObject->FsContext;
-
-    MmPrint(("  AcqForCreateSection()\n"));
-
-    // Acquire the MainResource exclusively for the file stream
-    if(!ExIsResourceAcquiredExclusiveLite(&(NtReqFcb->MainResource)) ||
-       !ExIsResourceAcquiredExclusiveLite(&(NtReqFcb->PagingIoResource)) ) {
-        UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-    } else {
-        MmPrint(("    already acquired\n"));
-    }
-
-    UDFAcquireResourceExclusive(&(NtReqFcb->MainResource), TRUE);
-
-    // Although this is typically not required, the UDF FSD will
-    // also acquire the PagingIoResource exclusively at this time
-    // to conform with the resource acquisition described in the set
-    // file information routine. Once again though, we will probably
-    // not need to do this.
-    UDFAcquireResourceExclusive(&(NtReqFcb->PagingIoResource), TRUE);
-    NtReqFcb->AcqSectionCount++;
-
-    // Return the appropriate status based on the type of synchronization and whether anyone
-    // has write access to this file.
-
-    if (CallbackData->Parameters.AcquireForSectionSynchronization.SyncType != SyncTypeCreateSection) {
-
-        return STATUS_FSFILTER_OP_COMPLETED_SUCCESSFULLY;
-
-    } else if (NtReqFcb->FCBShareAccess.Writers == 0) {
-
-        return STATUS_FILE_LOCKED_WITH_ONLY_READERS;
-
-    } else {
-
-        return STATUS_FILE_LOCKED_WITH_WRITERS;
-    }
-
-    UNREFERENCED_PARAMETER(CompletionContext);		
-}
-
-NTSTATUS
 UDFToggleMediaEjectDisable (
     IN PVCB Vcb,
     IN BOOLEAN PreventRemoval
