@@ -22,6 +22,45 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID    UDF_FILE_VERIFY_FS_CONTROL
 
+BOOLEAN
+UDFMarkDevForVerifyIfVcbMounted(
+    IN PVCB Vcb
+    )
+
+/*++
+
+Routine Description:
+
+    This routine checks to see if the specified Vcb is currently mounted on
+    the device or not.  If it is,  it sets the verify flag on the device, if
+    not then the state is noted in the Vcb.
+
+Arguments:
+
+    Vcb - This is the volume to check.
+
+Return Value:
+
+    TRUE if the device has been marked for verify here,  FALSE otherwise.
+
+--*/
+{
+    BOOLEAN Marked = FALSE;
+    KIRQL SavedIrql;
+
+    IoAcquireVpbSpinLock(&SavedIrql);
+
+    if (Vcb->Vpb == Vcb->Vpb->RealDevice->Vpb) {
+
+        SetFlag(Vcb->Vpb->RealDevice->Flags, DO_VERIFY_VOLUME);
+        Marked = TRUE;
+    }
+
+    IoReleaseVpbSpinLock( SavedIrql );
+
+    return Marked;
+}
+
 /*
 Routine Description:
     This routine checks that the current Vcb is valid and currently mounted
@@ -43,7 +82,6 @@ UDFVerifyVcb(
     IO_STATUS_BLOCK Iosb;
     ULONG MediaChangeCount = 0;
     BOOLEAN Nop = TRUE;
-    BOOLEAN UnsafeIoctl = (Vcb->VCBFlags & UDF_VCB_FLAGS_UNSAFE_IOCTL) ? TRUE : FALSE;
 
     UDFPrint(("UDFVerifyVCB: Modified=%d\n", Vcb->Modified));
     //  Fail immediately if the volume is in the progress of being dismounted
@@ -57,14 +95,14 @@ UDFVerifyVcb(
     //  to see if it needs to be verified
     if ( (Vcb->VCBFlags & UDF_VCB_FLAGS_REMOVABLE_MEDIA) &&
         !(Vcb->Vpb->RealDevice->Flags & DO_VERIFY_VOLUME) &&
-        (!(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_LOCKED) || UnsafeIoctl) ) {
-        UDFPrint(("UDFVerifyVCB: UnsafeIoctl=%d, locked=%d\n", UnsafeIoctl, (Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_LOCKED) ? 0 : 1));
-        Vcb->VCBFlags &= ~UDF_VCB_FLAGS_UNSAFE_IOCTL;
-        RC = UDFTSendIOCTL( IOCTL_STORAGE_CHECK_VERIFY,
-                                     Vcb,
-                                     NULL,0,
-                                     &MediaChangeCount,sizeof(ULONG),
-                                     FALSE,&Iosb );
+        (!(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_LOCKED)) ) {
+        UDFPrint(("UDFVerifyVCB: locked=%d\n", (Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_LOCKED) ? 0 : 1));
+
+        RC = UDFTSendIOCTL(IOCTL_STORAGE_CHECK_VERIFY,
+                           Vcb,
+                           NULL, 0,
+                           &MediaChangeCount, sizeof(ULONG),
+                           FALSE, &Iosb);
 
         //  Be safe about the count in case the driver didn't fill it in
         if (Iosb.Information != sizeof(ULONG))  MediaChangeCount = 0;
@@ -78,11 +116,10 @@ UDFVerifyVcb(
 
         if ( (RC == STATUS_VERIFY_REQUIRED) ||
              (UDFIsRawDevice(RC) && (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) ||
-             (NT_SUCCESS(RC) && (Vcb->MediaChangeCount != MediaChangeCount)) ||
-             UnsafeIoctl) {
+             (NT_SUCCESS(RC) && (Vcb->MediaChangeCount != MediaChangeCount)) ) {
 
             UDFPrint(("  set DO_VERIFY_VOLUME\n"));
-            Vcb->Vpb->RealDevice->Flags |= DO_VERIFY_VOLUME;
+            UDFMarkDevForVerifyIfVcbMounted(Vcb);
 
             //  If the volume is not mounted and we got a media change count,
             //  update the Vcb so we do not trigger a verify again at this
