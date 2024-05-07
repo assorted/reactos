@@ -2521,7 +2521,7 @@ UDFResizeExtent(
     if(Length) {
         // decrease extent
         AdPrint(("Resize cut (8)\n"));
-        lba = UDFExtentOffsetToLba(Vcb, ExtInfo->Mapping, Length-1, NULL, &lim, &flags, &i);
+        lba = UDFExtentOffsetToLba(Vcb, ExtInfo->Mapping, Length, NULL, &lim, &flags, &i);
         i++;
         ASSERT(lba != LBA_OUT_OF_EXTENT);
         ASSERT(lba != LBA_NOT_ALLOCATED);
