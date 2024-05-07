@@ -207,13 +207,9 @@ UDFCommonFileInfo(
         PtrSystemBuffer = Irp->AssociatedIrp.SystemBuffer;
 
         UDFFlushTryBreak(Vcb);
-        if(!UDFAcquireResourceShared(&(Vcb->VCBResource), CanWait)) {
-            PostRequest = TRUE;
-            try_return(RC = STATUS_PENDING);
-        }
-        AcquiredVcb = TRUE;
 
         if(IrpSp->MajorFunction == IRP_MJ_QUERY_INFORMATION) {
+
             // Now, obtain some parameters.
             BufferLength = IrpSp->Parameters.QueryFile.Length;
             FunctionalityRequested = IrpSp->Parameters.QueryFile.FileInformationClass;
@@ -229,6 +225,13 @@ UDFCommonFileInfo(
                 try_return(RC);
             }
 #endif //UDF_ENABLE_SECURITY
+
+            if (!UDFAcquireResourceShared(&Vcb->VCBResource, CanWait)) {
+                PostRequest = TRUE;
+                try_return(RC = STATUS_PENDING);
+            }
+            AcquiredVcb = TRUE;
+
             // Acquire the MainResource shared (NOTE: for paging-IO on a
             // page file, we should avoid acquiring any resources and simply
             // trust the VMM to do the right thing, else we could possibly
@@ -305,7 +308,8 @@ UDFCommonFileInfo(
 
 #ifndef UDF_READ_ONLY_BUILD
         } else {
-//      if(IrpSp->MajorFunction == IRP_MJ_SET_INFORMATION) {
+
+            ASSERT(IrpSp->MajorFunction == IRP_MJ_SET_INFORMATION);
             Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
             ASSERT(IrpSp->MajorFunction == IRP_MJ_SET_INFORMATION);
             // Now, obtain some parameters.
@@ -329,6 +333,18 @@ UDFCommonFileInfo(
             //  If the FSD supports opportunistic locking,
             // then we should check whether the oplock state
             // allows the caller to proceed.
+
+            // This function probably shouldn't be acquiring the VCB at all. 
+            // However, we'll only disable it for the FileEndOfFileInformation case
+            // because it leads to deadlock
+            if (FunctionalityRequested != FileEndOfFileInformation) {
+
+                if (!UDFAcquireResourceShared(&Vcb->VCBResource, CanWait)) {
+                    PostRequest = TRUE;
+                    try_return(RC = STATUS_PENDING);
+                }
+                AcquiredVcb = TRUE;
+            }
 
             // Rename, and link operations require creation of a directory
             // entry and possibly deletion of another directory entry.
