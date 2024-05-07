@@ -2259,7 +2259,7 @@ UDFResizeExtent(
     if(ExtInfo->Flags & EXTENT_FLAG_CUT_PREALLOCATED) {
         AdPrint(("  cut preallocated\n"));
     } else
-    if(ExtInfo->Length == Length) {
+    if(ExtInfo->Length + ExtInfo->Offset == Length) {
         return STATUS_SUCCESS;
     }
     if((ExtInfo->Flags & EXTENT_FLAG_ALLOC_MASK) == EXTENT_FLAG_ALLOC_SEQUENTIAL) {
