@@ -2555,7 +2555,8 @@ tail_cached:;
             ASSERT(lim);
 //            BrutePoint();
             EXTENT_MAP ClrMap[2];
-            ClrMap[0].extLength = lim & ~(LBS-1);
+
+            ClrMap[0].extLength = ALIGN_DOWN_BY(lim - 1, LBS);
             s = (ExtInfo->Mapping[i-1].extLength - ClrMap[0].extLength) & UDF_EXTENT_LENGTH_MASK;
             ClrMap[0].extLocation = ExtInfo->Mapping[i-1].extLocation +
                                    (s >> BSh);
