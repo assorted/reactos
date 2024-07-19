@@ -335,9 +335,11 @@ UDFCommonFileInfo(
             // allows the caller to proceed.
 
             // This function probably shouldn't be acquiring the VCB at all. 
-            // However, we'll only disable it for the FileEndOfFileInformation case
+            // However, we'll only disable it for 
+            // FileEndOfFileInformation or FileAllocationInformation case
             // because it leads to deadlock
-            if (FunctionalityRequested != FileEndOfFileInformation) {
+            if (FunctionalityRequested != FileEndOfFileInformation ||
+                FunctionalityRequested != FileAllocationInformation) {
 
                 if (!UDFAcquireResourceShared(&Vcb->VCBResource, CanWait)) {
                     PostRequest = TRUE;
