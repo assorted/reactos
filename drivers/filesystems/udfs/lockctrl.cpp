@@ -40,7 +40,7 @@ UDFLockControl(
     IN PIRP           Irp)                // I/O Request Packet
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PtrUDFIrpContext    PtrIrpContext = NULL;
+    PIRP_CONTEXT PtrIrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     UDFPrint(("UDFLockControl\n"));
@@ -103,7 +103,7 @@ UDFLockControl(
 NTSTATUS
 NTAPI
 UDFCommonLockControl(
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PIRP             Irp)
 {
     NTSTATUS            RC = STATUS_SUCCESS;
@@ -112,11 +112,10 @@ UDFCommonLockControl(
 //    BOOLEAN             CompleteRequest = FALSE;
     BOOLEAN             PostRequest = FALSE;
     BOOLEAN             CanWait = FALSE;
-    PtrUDFNTRequiredFCB NtReqFcb = NULL;
     BOOLEAN             AcquiredFCB = FALSE;
     PFILE_OBJECT        FileObject = NULL;
-    PtrUDFFCB           Fcb = NULL;
-    PtrUDFCCB           Ccb = NULL;
+    PFCB                Fcb = NULL;
+    PCCB                Ccb = NULL;
 
     UDFPrint(("UDFCommonLockControl\n"));
 
@@ -129,30 +128,29 @@ UDFCommonLockControl(
         ASSERT(FileObject);
 
         // Get the FCB and CCB pointers.
-        Ccb = (PtrUDFCCB)(FileObject->FsContext2);
+        Ccb = (PCCB)FileObject->FsContext2;
         ASSERT(Ccb);
         Fcb = Ccb->Fcb;
         ASSERT(Fcb);
         // Validate the sent-in FCB
-        if ( (Fcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB) ||
+        if ( (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
              (Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
 
 //            CompleteRequest = TRUE;
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
 
-        NtReqFcb = Fcb->NTRequiredFCB;
         CanWait = ((PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
 
         // Acquire the FCB resource shared
-        UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-        if (!UDFAcquireResourceExclusive(&(NtReqFcb->MainResource), CanWait)) {
+        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+        if (!UDFAcquireResourceExclusive(&Fcb->MainResource, CanWait)) {
             PostRequest = TRUE;
             try_return(RC = STATUS_PENDING);
         }
         AcquiredFCB = TRUE;
 
-        RC = FsRtlProcessFileLock(&(NtReqFcb->FileLock), Irp, NULL);
+        RC = FsRtlProcessFileLock(&Fcb->FileLock, Irp, NULL);
 //        CompleteRequest = TRUE;
 
 try_exit: NOTHING;
@@ -161,8 +159,8 @@ try_exit: NOTHING;
 
         // Release the FCB resources if acquired.
         if (AcquiredFCB) {
-            UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-            UDFReleaseResource(&(NtReqFcb->MainResource));
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFReleaseResource(&Fcb->MainResource);
             AcquiredFCB = FALSE;
         }
         if (PostRequest) {
@@ -217,8 +215,8 @@ UDFFastLock (
     BOOLEAN Results = FALSE;
 
 //    BOOLEAN             AcquiredFCB = FALSE;
-    PtrUDFFCB           Fcb = NULL;
-    PtrUDFCCB           Ccb = NULL;
+    PFCB                  Fcb = NULL;
+    PCCB                  Ccb = NULL;
 
     UDFPrint(("UDFFastLock\n"));
     //  Decode the type of file object we're being asked to process and make
@@ -226,12 +224,12 @@ UDFFastLock (
 
 
     // Get the FCB and CCB pointers.
-    Ccb = (PtrUDFCCB)(FileObject->FsContext2);
+    Ccb = (PCCB)FileObject->FsContext2;
     ASSERT(Ccb);
     Fcb = Ccb->Fcb;
     ASSERT(Fcb);
     // Validate the sent-in FCB
-    if ( (Fcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB) ||
+    if ( (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
          (Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
 
         IoStatus->Status = STATUS_INVALID_PARAMETER;
@@ -253,7 +251,7 @@ UDFFastLock (
 
         //  Now call the FsRtl routine to do the actual processing of the
         //  Lock request
-        if ((Results = FsRtlFastLock( &(Fcb->NTRequiredFCB->FileLock),
+        if ((Results = FsRtlFastLock(&Fcb->FileLock,
                                      FileObject,
                                      FileOffset,
                                      Length,
@@ -266,7 +264,7 @@ UDFFastLock (
                                      FALSE ))) {
 
             //  Set the flag indicating if Fast I/O is possible
-            Fcb->NTRequiredFCB->CommonFCBHeader.IsFastIoPossible = UDFIsFastIoPossible(Fcb);
+            Fcb->Header.IsFastIoPossible = UDFIsFastIoPossible(Fcb);
         }
 
 //try_exit:  NOTHING;
@@ -320,8 +318,8 @@ UDFFastUnlockSingle(
     BOOLEAN Results = FALSE;
 
 //    BOOLEAN             AcquiredFCB = FALSE;
-    PtrUDFFCB           Fcb = NULL;
-    PtrUDFCCB           Ccb = NULL;
+    PFCB                Fcb = NULL;
+    PCCB                Ccb = NULL;
 
     UDFPrint(("UDFFastUnlockSingle\n"));
     //  Decode the type of file object we're being asked to process and make
@@ -330,12 +328,12 @@ UDFFastUnlockSingle(
     IoStatus->Information = 0;
 
     // Get the FCB and CCB pointers.
-    Ccb = (PtrUDFCCB)(FileObject->FsContext2);
+    Ccb = (PCCB)FileObject->FsContext2;
     ASSERT(Ccb);
     Fcb = Ccb->Fcb;
     ASSERT(Fcb);
     // Validate the sent-in FCB
-    if ( (Fcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB) ||
+    if ( (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
          (Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
 
         IoStatus->Status = STATUS_INVALID_PARAMETER;
@@ -357,16 +355,16 @@ UDFFastUnlockSingle(
         //  Now call the FsRtl routine to do the actual processing of the
         //  Lock request
         Results = TRUE;
-        IoStatus->Status = FsRtlFastUnlockSingle( &(Fcb->NTRequiredFCB->FileLock),
-                                                  FileObject,
-                                                  FileOffset,
-                                                  Length,
-                                                  ProcessId,
-                                                  Key,
-                                                  NULL,
-                                                  FALSE );
+        IoStatus->Status = FsRtlFastUnlockSingle(&Fcb->FileLock,
+                                                 FileObject,
+                                                 FileOffset,
+                                                 Length,
+                                                 ProcessId,
+                                                 Key,
+                                                 NULL,
+                                                 FALSE);
         //  Set the flag indicating if Fast I/O is possible
-        Fcb->NTRequiredFCB->CommonFCBHeader.IsFastIoPossible = UDFIsFastIoPossible(Fcb);
+        Fcb->Header.IsFastIoPossible = UDFIsFastIoPossible(Fcb);
 
 //try_exit:  NOTHING;
     } _SEH2_FINALLY {
@@ -412,8 +410,8 @@ UDFFastUnlockAll(
     BOOLEAN Results = FALSE;
 
 //    BOOLEAN             AcquiredFCB = FALSE;
-    PtrUDFFCB           Fcb = NULL;
-    PtrUDFCCB           Ccb = NULL;
+    PFCB                Fcb = NULL;
+    PCCB                Ccb = NULL;
 
     UDFPrint(("UDFFastUnlockAll\n"));
 
@@ -422,12 +420,12 @@ UDFFastUnlockAll(
     //  sure it is only a user file open.
 
     // Get the FCB and CCB pointers.
-    Ccb = (PtrUDFCCB)(FileObject->FsContext2);
+    Ccb = (PCCB)FileObject->FsContext2;
     ASSERT(Ccb);
     Fcb = Ccb->Fcb;
     ASSERT(Fcb);
     // Validate the sent-in FCB
-    if ( (Fcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB) ||
+    if ( (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
          (Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
 
         IoStatus->Status = STATUS_INVALID_PARAMETER;
@@ -438,8 +436,8 @@ UDFFastUnlockAll(
 
     FsRtlEnterFileSystem();
 
-    UDF_CHECK_PAGING_IO_RESOURCE(Fcb->NTRequiredFCB);
-    UDFAcquireResourceShared( &(Fcb->NTRequiredFCB->MainResource),TRUE );
+    UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+    UDFAcquireResourceShared(&Fcb->MainResource, TRUE);
 
     _SEH2_TRY {
 
@@ -449,22 +447,22 @@ UDFFastUnlockAll(
         //  Now call the FsRtl routine to do the actual processing of the
         //  Lock request
         Results = TRUE;
-        IoStatus->Status = FsRtlFastUnlockAll( &(Fcb->NTRequiredFCB->FileLock),
-                                               FileObject,
-                                               ProcessId,
-                                               NULL );
+        IoStatus->Status = FsRtlFastUnlockAll(&Fcb->FileLock,
+                                              FileObject,
+                                              ProcessId,
+                                              NULL);
 
         //  Set the flag indicating if Fast I/O is questionable
 
-        Fcb->NTRequiredFCB->CommonFCBHeader.IsFastIoPossible = UDFIsFastIoPossible( Fcb );
+        Fcb->Header.IsFastIoPossible = UDFIsFastIoPossible(Fcb);
 
 //try_exit:  NOTHING;
     } _SEH2_FINALLY {
 
         //  Release the Fcb, and return to our caller
 
-        UDF_CHECK_PAGING_IO_RESOURCE(Fcb->NTRequiredFCB);
-        UDFReleaseResource(&(Fcb->NTRequiredFCB->MainResource));
+        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+        UDFReleaseResource(&Fcb->MainResource);
         FsRtlExitFileSystem();
 
     } _SEH2_END;
@@ -503,8 +501,8 @@ UDFFastUnlockAllByKey(
     BOOLEAN Results = FALSE;
 
 //    BOOLEAN             AcquiredFCB = FALSE;
-    PtrUDFFCB           Fcb = NULL;
-    PtrUDFCCB           Ccb = NULL;
+    PFCB                Fcb = NULL;
+    PCCB                Ccb = NULL;
 
     UDFPrint(("UDFFastUnlockAllByKey\n"));
 
@@ -513,12 +511,12 @@ UDFFastUnlockAllByKey(
     //  sure it is only a user file open.
 
     // Get the FCB and CCB pointers.
-    Ccb = (PtrUDFCCB)(FileObject->FsContext2);
+    Ccb = (PCCB)FileObject->FsContext2;
     ASSERT(Ccb);
     Fcb = Ccb->Fcb;
     ASSERT(Fcb);
     // Validate the sent-in FCB
-    if ( (Fcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB) ||
+    if ( (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
          (Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
 
         IoStatus->Status = STATUS_INVALID_PARAMETER;
@@ -529,8 +527,8 @@ UDFFastUnlockAllByKey(
 
     FsRtlEnterFileSystem();
 
-    UDF_CHECK_PAGING_IO_RESOURCE(Fcb->NTRequiredFCB);
-    UDFAcquireResourceShared( &(Fcb->NTRequiredFCB->MainResource),TRUE );
+    UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+    UDFAcquireResourceShared(&Fcb->MainResource, TRUE);
 
     _SEH2_TRY {
 
@@ -540,23 +538,23 @@ UDFFastUnlockAllByKey(
         //  Now call the FsRtl routine to do the actual processing of the
         //  Lock request
         Results = TRUE;
-        IoStatus->Status = FsRtlFastUnlockAllByKey( &(Fcb->NTRequiredFCB->FileLock),
-                                                    FileObject,
-                                                    ProcessId,
-                                                    Key,
-                                                    NULL );
+        IoStatus->Status = FsRtlFastUnlockAllByKey(&Fcb->FileLock,
+                                                   FileObject,
+                                                   ProcessId,
+                                                   Key,
+                                                   NULL);
 
         //  Set the flag indicating if Fast I/O is possible
 
-        Fcb->NTRequiredFCB->CommonFCBHeader.IsFastIoPossible = UDFIsFastIoPossible( Fcb );
+        Fcb->Header.IsFastIoPossible = UDFIsFastIoPossible(Fcb);
 
 //try_exit:  NOTHING;
     } _SEH2_FINALLY {
 
         //  Release the Fcb, and return to our caller
 
-        UDF_CHECK_PAGING_IO_RESOURCE(Fcb->NTRequiredFCB);
-        UDFReleaseResource(&(Fcb->NTRequiredFCB->MainResource));
+        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+        UDFReleaseResource(&Fcb->MainResource);
         FsRtlExitFileSystem();
 
     } _SEH2_END;

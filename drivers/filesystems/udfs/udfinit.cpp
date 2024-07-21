@@ -24,25 +24,6 @@
 // global variables are declared here
 UDFData                 UDFGlobalData;
 
-#define KD_PREFIX
-
-struct UDF_MEDIA_CLASS_NAMES UDFMediaClassName[] = {
-    {MediaUnknown, REG_DEFAULT_UNKNOWN},
-    {MediaHdd    , REG_DEFAULT_HDD},
-    {MediaCdr    , REG_DEFAULT_CDR},
-    {MediaCdrw   , REG_DEFAULT_CDRW},
-    {MediaCdrom  , REG_DEFAULT_CDROM},
-    {MediaZip    , REG_DEFAULT_ZIP},
-    {MediaFloppy , REG_DEFAULT_FLOPPY},
-    {MediaDvdr   , REG_DEFAULT_DVDR},
-    {MediaDvdrw  , REG_DEFAULT_DVDRW}
-};
-/*
-ULONG  MajorVersion = 0;
-ULONG  MinorVersion = 0;
-ULONG  BuildNumber  = 0;
-*/
-
 NTSTATUS
 UDFCreateFsDeviceObject(
     PCWSTR          FsDeviceName,
@@ -75,14 +56,8 @@ DriverEntry(
     )
 {
     NTSTATUS        RC = STATUS_SUCCESS;
-    UNICODE_STRING  DriverDeviceName;
-    UNICODE_STRING  unicodeDeviceName;
     BOOLEAN         InternalMMInitialized = FALSE;
-    PUDFFS_DEV_EXTENSION FSDevExt;
     HKEY            hUdfRootKey;
-
-//    UDFPrint(("UDF: Entered " VER_STR_PRODUCT_NAME " UDF DriverEntry \n"));
-//    UDFPrint((KD_PREFIX "Build " VER_STR_PRODUCT "\n"));
 
     _SEH2_TRY {
         _SEH2_TRY {
@@ -95,18 +70,18 @@ DriverEntry(
             RtlZeroMemory(&UDFGlobalData, sizeof(UDFGlobalData));
 
             // initialize some required fields
-            UDFGlobalData.NodeIdentifier.NodeType = UDF_NODE_TYPE_GLOBAL_DATA;
-            UDFGlobalData.NodeIdentifier.NodeSize = sizeof(UDFGlobalData);
+            UDFGlobalData.NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_GLOBAL_DATA;
+            UDFGlobalData.NodeIdentifier.NodeByteSize = sizeof(UDFGlobalData);
 
             // initialize the global data resource and remember the fact that
             //  the resource has been initialized
             RC = UDFInitializeResourceLite(&(UDFGlobalData.GlobalDataResource));
             ASSERT(NT_SUCCESS(RC));
-            UDFSetFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
+            SetFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
 
             RC = UDFInitializeResourceLite(&(UDFGlobalData.DelayedCloseResource));
             ASSERT(NT_SUCCESS(RC));
-//            UDFSetFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
+//            SetFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
 
             // keep a ptr to the driver object sent to us by the I/O Mgr
             UDFGlobalData.DriverObject = DriverObject;
@@ -123,11 +98,6 @@ DriverEntry(
             }
             InternalMMInitialized = TRUE;
 
-#ifdef USE_DLD
-            // Initialize Deadlock Detector
-            DLDInit(1280);
-            DLDetectInitialized = TRUE;
-#endif
             // before we proceed with any more initialization, read in
             //  user supplied configurable values ...
 
@@ -162,8 +132,6 @@ DriverEntry(
             //  some fixed amount of memory to avoid internal fragmentation and/or waiting
             //  later during run-time ...
 
-            UDFGlobalData.DefaultZoneSizeInNumStructs=10;
-
             UDFPrint(("UDF: Init zones\n"));
             if (!NT_SUCCESS(RC = UDFInitializeZones()))
                 try_return(RC);
@@ -186,42 +154,6 @@ DriverEntry(
 
             UDFGlobalData.CPU_Count = KeNumberProcessors;
 
-            // create a device object representing the driver itself
-            //  so that requests can be targeted to the driver ...
-            //  e.g. for a disk-based FSD, "mount" requests will be sent to
-            //        this device object by the I/O Manager.
-            //        For a redirector/server, you may have applications
-            //        send "special" IOCTL's using this device object ...
-
-            RtlInitUnicodeString(&DriverDeviceName, UDF_FS_NAME);
-
-            UDFPrint(("UDF: Create Driver dev obj\n"));
-            if (!NT_SUCCESS(RC = IoCreateDevice(
-                    DriverObject,       // our driver object
-                    sizeof(UDFFS_DEV_EXTENSION),  // don't need an extension for this object
-                    &DriverDeviceName,  // name - can be used to "open" the driver
-                                        // see the book for alternate choices
-                    FILE_DEVICE_CD_ROM_FILE_SYSTEM,
-                    0,                  // no special characteristics
-                                        // do not want this as an exclusive device, though you might
-                    FALSE,
-                    &(UDFGlobalData.UDFDeviceObject)))) {
-                        // failed to create a device object, leave ...
-                try_return(RC);
-            }
-
-            FSDevExt = (PUDFFS_DEV_EXTENSION)((UDFGlobalData.UDFDeviceObject)->DeviceExtension);
-            // Zero it out (typically this has already been done by the I/O
-            // Manager but it does not hurt to do it again)!
-            RtlZeroMemory(FSDevExt, sizeof(UDFFS_DEV_EXTENSION));
-
-            // Initialize the signature fields
-            FSDevExt->NodeIdentifier.NodeType = UDF_NODE_TYPE_UDFFS_DRVOBJ;
-            FSDevExt->NodeIdentifier.NodeSize = sizeof(UDFFS_DEV_EXTENSION);
-
-            RtlInitUnicodeString(&unicodeDeviceName, UDF_DOS_FS_NAME);
-            IoCreateSymbolicLink(&unicodeDeviceName, &DriverDeviceName);
-
             UDFPrint(("UDF: Create CD dev obj\n"));
             if (!NT_SUCCESS(RC = UDFCreateFsDeviceObject(UDF_FS_NAME_CD,
                                     DriverObject,
@@ -230,7 +162,7 @@ DriverEntry(
                 // failed to create a device object, leave ...
                 try_return(RC);
             }
-#ifdef UDF_HDD_SUPPORT
+
             UDFPrint(("UDF: Create HDD dev obj\n"));
             if (!NT_SUCCESS(RC = UDFCreateFsDeviceObject(UDF_FS_NAME_HDD,
                                     DriverObject,
@@ -239,18 +171,16 @@ DriverEntry(
                 // failed to create a device object, leave ...
                 try_return(RC);
             }
-#endif //UDF_HDD_SUPPORT
 
             if (UDFGlobalData.UDFDeviceObject_CD) {
                 UDFPrint(("UDFCreateFsDeviceObject: IoRegisterFileSystem() for CD\n"));
                 IoRegisterFileSystem(UDFGlobalData.UDFDeviceObject_CD);
             }
-#ifdef UDF_HDD_SUPPORT
+
             if (UDFGlobalData.UDFDeviceObject_HDD) {
                 UDFPrint(("UDFCreateFsDeviceObject: IoRegisterFileSystem() for HDD\n"));
                 IoRegisterFileSystem(UDFGlobalData.UDFDeviceObject_HDD);
             }
-#endif // UDF_HDD_SUPPORT
 
             RC = STATUS_SUCCESS;
 
@@ -268,13 +198,7 @@ DriverEntry(
         if (!NT_SUCCESS(RC)) {
             UDFPrint(("UDF: failed with status %x\n", RC));
             // Now, delete any device objects, etc. we may have created
-/*            if (UDFGlobalData.UDFDeviceObject) {
-                IoDeleteDevice(UDFGlobalData.UDFDeviceObject);
-                UDFGlobalData.UDFDeviceObject = NULL;
-            }*/
-#ifdef USE_DLD
-            if (DLDetectInitialized) DLDFree();
-#endif
+
             if (InternalMMInitialized) {
                 MyAllocRelease();
             }
@@ -282,13 +206,11 @@ DriverEntry(
                 IoDeleteDevice(UDFGlobalData.UDFDeviceObject_CD);
                 UDFGlobalData.UDFDeviceObject_CD = NULL;
             }
-#ifdef UDF_HDD_SUPPORT
 
             if (UDFGlobalData.UDFDeviceObject_HDD) {
                 IoDeleteDevice(UDFGlobalData.UDFDeviceObject_HDD);
                 UDFGlobalData.UDFDeviceObject_HDD = NULL;
             }
-#endif // UDF_HDD_SUPPORT
 
             // free up any memory we might have reserved for zones/lookaside
             //  lists
@@ -300,7 +222,7 @@ DriverEntry(
             if (UDFGlobalData.UDFFlags & UDF_DATA_FLAGS_RESOURCE_INITIALIZED) {
                 // un-initialize this resource
                 UDFDeleteResource(&(UDFGlobalData.GlobalDataResource));
-                UDFClearFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
+                ClearFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
             }
 //        } else {
         }
@@ -354,26 +276,17 @@ UDFInitializeFunctionPointers(
     DriverObject->MajorFunction[IRP_MJ_CREATE]              = UDFCreate;
     DriverObject->MajorFunction[IRP_MJ_CLOSE]               = UDFClose;
     DriverObject->MajorFunction[IRP_MJ_READ]                = UDFRead;
-#ifndef UDF_READ_ONLY_BUILD
     DriverObject->MajorFunction[IRP_MJ_WRITE]               = UDFWrite;
-#endif //UDF_READ_ONLY_BUILD
-
-    DriverObject->MajorFunction[IRP_MJ_QUERY_INFORMATION]   = UDFFileInfo;
-#ifndef UDF_READ_ONLY_BUILD
-    DriverObject->MajorFunction[IRP_MJ_SET_INFORMATION]     = UDFFileInfo;
-#endif //UDF_READ_ONLY_BUILD
-
-#ifndef UDF_READ_ONLY_BUILD
+    DriverObject->MajorFunction[IRP_MJ_QUERY_INFORMATION]   = UDFQueryInfo;
+    DriverObject->MajorFunction[IRP_MJ_SET_INFORMATION]     = UDFSetInfo;
     DriverObject->MajorFunction[IRP_MJ_FLUSH_BUFFERS]       = UDFFlush;
-#endif //UDF_READ_ONLY_BUILD
+
     // To implement support for querying and modifying volume attributes
     // (volume information query/set operations), enable initialization
     // of the following two function pointers and then implement the supporting
     // functions.
     DriverObject->MajorFunction[IRP_MJ_QUERY_VOLUME_INFORMATION] = UDFQueryVolInfo;
-#ifndef UDF_READ_ONLY_BUILD
     DriverObject->MajorFunction[IRP_MJ_SET_VOLUME_INFORMATION] = UDFSetVolInfo;
-#endif //UDF_READ_ONLY_BUILD
     DriverObject->MajorFunction[IRP_MJ_DIRECTORY_CONTROL]   = UDFDirControl;
     // To implement support for file system IOCTL calls, enable initialization
     // of the following function pointer and implement appropriate support.
@@ -384,21 +297,6 @@ UDFInitializeFunctionPointers(
     // function pointer and implement appropriate support.
     DriverObject->MajorFunction[IRP_MJ_LOCK_CONTROL]        = UDFLockControl;
     DriverObject->MajorFunction[IRP_MJ_CLEANUP]             = UDFCleanup;
-#ifdef UDF_HANDLE_EAS
-    DriverObject->MajorFunction[IRP_MJ_QUERY_EA]            = UDFQuerySetEA;
-#ifndef UDF_READ_ONLY_BUILD
-    DriverObject->MajorFunction[IRP_MJ_SET_EA]              = UDFQuerySetEA;
-#endif //UDF_READ_ONLY_BUILD
-#endif //UDF_HANDLE_EAS
-    // If the FSD supports security attributes, we should provide appropriate
-    // dispatch entry points and initialize the function pointers as given below.
-
-#ifdef UDF_ENABLE_SECURITY
-    DriverObject->MajorFunction[IRP_MJ_QUERY_SECURITY]   = UDFGetSecurity;
-#ifndef UDF_READ_ONLY_BUILD
-    DriverObject->MajorFunction[IRP_MJ_SET_SECURITY]     = UDFSetSecurity;
-#endif //UDF_READ_ONLY_BUILD
-#endif //UDF_ENABLE_SECURITY
 
 //    if(MajorVersion >= 0x05) {
         // w2k and higher
@@ -406,7 +304,7 @@ UDFInitializeFunctionPointers(
 //    }
 
     // Now, it is time to initialize the fast-io stuff ...
-    PtrFastIoDispatch = DriverObject->FastIoDispatch = &(UDFGlobalData.UDFFastIoDispatch);
+    PtrFastIoDispatch = DriverObject->FastIoDispatch = &UDFGlobalData.UDFFastIoDispatch;
 
     // initialize the global fast-io structure
     //  NOTE: The fast-io structure has undergone a substantial revision
@@ -419,9 +317,7 @@ UDFInitializeFunctionPointers(
     PtrFastIoDispatch->SizeOfFastIoDispatch = sizeof(FAST_IO_DISPATCH);
     PtrFastIoDispatch->FastIoCheckIfPossible    = UDFFastIoCheckIfPossible;
     PtrFastIoDispatch->FastIoRead               = FsRtlCopyRead;
-#ifndef UDF_READ_ONLY_BUILD
     PtrFastIoDispatch->FastIoWrite              = UDFFastIoCopyWrite /*FsRtlCopyWrite*/;
-#endif //UDF_READ_ONLY_BUILD
     PtrFastIoDispatch->FastIoQueryBasicInfo     = UDFFastIoQueryBasicInfo;
     PtrFastIoDispatch->FastIoQueryStandardInfo  = UDFFastIoQueryStdInfo;
     PtrFastIoDispatch->FastIoLock               = UDFFastLock;         // Lock
@@ -508,8 +404,8 @@ UDFCreateFsDeviceObject(
     RtlZeroMemory(FSDevExt, sizeof(UDFFS_DEV_EXTENSION));
 
     // Initialize the signature fields
-    FSDevExt->NodeIdentifier.NodeType = UDF_NODE_TYPE_UDFFS_DEVOBJ;
-    FSDevExt->NodeIdentifier.NodeSize = sizeof(UDFFS_DEV_EXTENSION);
+    FSDevExt->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_UDFFS_DEVOBJ;
+    FSDevExt->NodeIdentifier.NodeByteSize = sizeof(UDFFS_DEV_EXTENSION);
     // register the driver with the I/O Manager, pretend as if this is
     //  a physical disk based FSD (or in order words, this FSD manages
     //  logical volumes residing on physical disk drives)

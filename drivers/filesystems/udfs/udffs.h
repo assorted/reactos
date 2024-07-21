@@ -42,12 +42,6 @@
 // Test case: Running 'git clone https://github.com/reactos/reactos' under ReactOS results in an error.
 //#define UDF_USE_WCACHE
 
-//#define UDF_ENABLE_SECURITY
-
-#define UDF_HANDLE_EAS
-
-#define UDF_HDD_SUPPORT
-
 #define UDF_ALLOW_FRAG_AD
 
 #ifndef UDF_LIMIT_DIR_SIZE
@@ -86,8 +80,6 @@
 #define UDF_FE_ALLOCATION_CHARGE
 #endif //UDF_DELAYED_CLOSE
 
-#define UDF_ALLOW_RENAME_MOVE
-
 #define UDF_ALLOW_HARD_LINKS
 
 #ifdef UDF_ALLOW_HARD_LINKS
@@ -105,20 +97,21 @@
 
 /************* END OF OPTIONS **************/
 
-// some constant definitions
-#define UDF_PANIC_IDENTIFIER        (0x86427531)
-
 // Common include files - should be in the include dir of the MS supplied IFS Kit
-#ifndef _CONSOLE
-extern "C" {
-#include "ntifs.h"
-#include "ntifs_ex.h"
-}
-#endif //_CONSOLE
 
+#include <ntifs.h>
+#include <ntddscsi.h>
+#include <scsi.h>
+#include <ntddcdrm.h>
+#include <ntddcdvd.h>
+#include "ntdddisk.h"
 #include <pseh/pseh2.h>
 
-#include "Include/check_env.h"
+#ifdef __REACTOS__
+// Downgrade unsupported NT6.2+ features.
+#undef MdlMappingNoExecute
+#define MdlMappingNoExecute 0
+#endif
 
 #define PEXTENDED_IO_STACK_LOCATION  PIO_STACK_LOCATION
 
@@ -133,56 +126,33 @@ extern "C" {
 #define OS_SUCCESS(a)     NT_SUCCESS(a)
 #define OSSTATUS          NTSTATUS
 
-#ifndef _CONSOLE
-#include "ntdddisk.h"
-#include <devioctl.h>
-#include "Include/CrossNt/CrossNt.h"
-#endif //_CONSOLE
-
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
-//#include "ecma_167.h"
-//#include "osta_misc.h"
 #include "wcache.h"
-#include "CDRW/cdrw_usr.h"
 
 #include "Include/regtools.h"
-
-#ifdef _CONSOLE
-#include "udf_info/udf_rel.h"
-#include "Include/udf_common.h"
-#else
 #include "struct.h"
-#endif //_CONSOLE
 
 // global variables - minimize these
 extern UDFData              UDFGlobalData;
 
-#ifndef _CONSOLE
 #include "env_spec.h"
-#include "dldetect.h"
 #include "udf_dbg.h"
-#else
-#include "Include/env_spec_w32.h"
-#endif //_CONSOLE
 
-#include "sys_spec.h"
+#include "Include/Sys_spec_lib.h"
 
 #include "udf_info/udf_info.h"
 
-#ifndef _CONSOLE
 #include "protos.h"
-#endif //_CONSOLE
 
 #include "Include/phys_lib.h"
 #include "errmsg.h"
-//#include "Include/tools.h"
-#include "udfpubl.h"
-//#include "ntifs.h"
 #include "mem.h"
 
 extern CCHAR   DefLetter[];
+
+#define Add2Ptr(P,I) ((PVOID)((PUCHAR)(P) + (I)))
 
 // try-finally simulation
 #define try_return(S)   { S; goto try_exit; }
@@ -190,16 +160,9 @@ extern CCHAR   DefLetter[];
 #define try_return2(S)  { S; goto try_exit2; }
 
 // some global (helpful) macros
-#define UDFSetFlag(Flag, Value) ((Flag) |= (Value))
-#define UDFClearFlag(Flag, Value)   ((Flag) &= ~(Value))
-
-#define PtrOffset(BASE,OFFSET) ((ULONG)((ULONG)(OFFSET) - (ULONG)(BASE)))
 
 #define UDFQuadAlign(Value)         ((((uint32)(Value)) + 7) & 0xfffffff8)
 
-// to perform a bug-check (panic), the following macro is used
-#define UDFPanic(arg1, arg2, arg3)                  \
-    (KeBugCheckEx(UDF_PANIC_IDENTIFIER, UDF_BUG_CHECK_ID | __LINE__, (uint32)(arg1), (uint32)(arg2), (uint32)(arg3)))
 // small check for illegal open mode (desired access) if volume is
 // read only (on standard CD-ROM device or another like this)
 #define UdfIllegalFcbAccess(Vcb,DesiredAccess) ((   \
@@ -233,7 +196,6 @@ extern CCHAR   DefLetter[];
 //
 #if !defined(UDF_DBG) && !defined(PRINT_ALWAYS)
 
-#ifndef _CONSOLE
 #define UDFAcquireResourceExclusive(Resource,CanWait)  \
     (ExAcquireResourceExclusiveLite((Resource),(CanWait)))
 #define UDFAcquireResourceShared(Resource,CanWait) \
@@ -259,16 +221,12 @@ extern CCHAR   DefLetter[];
 #define UDFInterlockedExchangeAdd(addr,i) \
     (InterlockedExchangeAdd((addr),(i)))
 
-#endif //_CONSOLE
-
 #define UDF_CHECK_PAGING_IO_RESOURCE(NTReqFCB)
 #define UDF_CHECK_EXVCB_RESOURCE(Vcb)
 #define UDF_CHECK_BITMAP_RESOURCE(Vcb)
 
-
 #else //UDF_DBG
 
-#ifndef _CONSOLE
 #define UDFAcquireResourceExclusive(Resource,CanWait)  \
     (UDFDebugAcquireResourceExclusiveLite((Resource),(CanWait),UDF_BUG_CHECK_ID,__LINE__))
 
@@ -296,11 +254,9 @@ extern CCHAR   DefLetter[];
 #define UDFInterlockedExchangeAdd(addr,i) \
     (UDFDebugInterlockedExchangeAdd((addr),(i), UDF_BUG_CHECK_ID,__LINE__))
 
-#endif //_CONSOLE
-
-#define UDF_CHECK_PAGING_IO_RESOURCE(NTReqFCB) \
-    ASSERT(!ExIsResourceAcquiredExclusiveLite(&(NTReqFCB->PagingIoResource))); \
-    ASSERT(!ExIsResourceAcquiredSharedLite(&(NTReqFCB->PagingIoResource)));
+#define UDF_CHECK_PAGING_IO_RESOURCE(Fcb) \
+    ASSERT(!ExIsResourceAcquiredExclusiveLite(&Fcb->PagingIoResource)); \
+    ASSERT(!ExIsResourceAcquiredSharedLite(&Fcb->PagingIoResource));
 
 #define UDF_CHECK_EXVCB_RESOURCE(Vcb) \
     ASSERT( ExIsResourceAcquiredExclusiveLite(&(Vcb->VCBResource)) );
@@ -374,14 +330,22 @@ extern CCHAR   DefLetter[];
 #define UDF_FILE_PROTECT                                (0x00000300)
 //#define UDF_FILE_PROTECT_                                (0x0000030x)
 
+#define         UDF_PART_DAMAGED_RW                 (0x00)
+#define         UDF_PART_DAMAGED_RO                 (0x01)
+#define         UDF_PART_DAMAGED_NO                 (0x02)
+
+#define         UDF_FS_NAME_CD              L"\\UdfCd"
+#define         UDF_FS_NAME_HDD             L"\\UdfHdd"
+
+#define         UDF_ROOTDIR_NAME            L"\\"
+
 #define SystemAllocatePool(hernya,size) ExAllocatePoolWithTag(hernya, size, 'Snwd')
 #define SystemFreePool(addr) ExFreePool((PVOID)(addr))
 
 //Device names
 
 #include "Include/udf_reg.h"
-
-#include <ddk/mountmgr.h>
+#include <mountmgr.h>
 
 #endif  // _UDF_UDF_H_
 

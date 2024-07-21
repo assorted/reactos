@@ -34,6 +34,7 @@
 }
 
 #define         UDF_BUG_CHECK_ID                UDF_FILE_UDF_INFO_MOUNT
+#define         MRW_DMA_OFFSET           0x500
 
 OSSTATUS
 __fastcall
@@ -43,7 +44,6 @@ UDFSetDstring(
     IN uint32 Length
     );
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine loads specified bitmap.
     It is also allocate space if the bitmap is not allocated.
@@ -750,7 +750,6 @@ UDFUpdateVDS(
     DbgFreePool(Buf);
     return status;
 } // end UDFUpdateVDS()
-#endif //UDF_READ_ONLY_BUILD
 
 OSSTATUS
 __fastcall
@@ -798,7 +797,6 @@ UDFGetDstring(
     return;
 } // end UDFGetDstring()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine updates Volume Label & some other features stored in
     VolIdentDesc
@@ -857,7 +855,6 @@ Err_SetVI:
 
 #undef CUR_IDENT_SZ
 } // end UDFUpdateVolIdent()
-#endif //UDF_READ_ONLY_BUILD
 
 OSSTATUS
 UDFUpdateNonAllocated(
@@ -928,7 +925,6 @@ UDFUmount__(
     IN PVCB Vcb
     )
 {
-#ifndef UDF_READ_ONLY_BUILD
     uint32 flags = 0;
 
     if((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)
@@ -1001,7 +997,6 @@ UDFUmount__(
     Vcb->VCBFlags &= ~UDF_VCB_ASSUME_ALL_USED;
 
     UDFReleaseResource(&(Vcb->BitMapResource1));
-#endif //UDF_READ_ONLY_BUILD
 
     return STATUS_SUCCESS;
 } // end UDFUmount__()
@@ -1279,7 +1274,6 @@ exit_with_err:
             case UDF_PART_DAMAGED_RO:
                 UDFPrint(("UDF: Switch to r/o mode.\n"));
                 Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
-                Vcb->UserFSFlags |= UDF_USER_FS_FLAGS_MEDIA_DEFECT_RO;
                 RC = STATUS_SUCCESS;
                 break;
             case UDF_PART_DAMAGED_NO:
@@ -1359,7 +1353,6 @@ exit_with_err:
         if(Vcb->minUDFWriteRev > UDF_MAX_WRITE_REVISION) {
             UDFPrint(("     Target FS requires: %x Revision => ReadOnly\n",Vcb->minUDFWriteRev));
             Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
-            Vcb->UserFSFlags |= UDF_USER_FS_FLAGS_NEW_FS_RO;
         }
 
         LVID_hd = (LogicalVolHeaderDesc*)&(Vcb->LVid->logicalVolContentsUse);
@@ -2075,7 +2068,6 @@ UDFLoadPartDesc(
                 // Soft-read-only volume
                 UDFPrint(("Soft Read-only volume\n"));
                 Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
-                Vcb->UserFSFlags |= UDF_USER_FS_FLAGS_PART_RO;
             } else if(p->accessType > PARTITION_ACCESS_MAX_KNOWN) {
                 return STATUS_UNRECOGNIZED_MEDIA;
             }

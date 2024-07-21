@@ -166,9 +166,9 @@ BOOLEAN UDFRemoveOSReferences__(IN PUDF_FILE_INFO FileInfo);
 
 #define UDFIsFSDevObj(DeviceObject) \
     (DeviceObject->DeviceExtension && \
-      ( (((PVCB)(DeviceObject->DeviceExtension))->NodeIdentifier.NodeType == \
+      ( (((PVCB)(DeviceObject->DeviceExtension))->NodeIdentifier.NodeTypeCode == \
               UDF_NODE_TYPE_UDFFS_DEVOBJ) || \
-        (((PVCB)(DeviceObject->DeviceExtension))->NodeIdentifier.NodeType == \
+        (((PVCB)(DeviceObject->DeviceExtension))->NodeIdentifier.NodeTypeCode == \
               UDF_NODE_TYPE_UDFFS_DRVOBJ) \
       ) \
     )

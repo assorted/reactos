@@ -25,6 +25,9 @@
 #define         MEM_USLOC_TAG                   "US_Loc"
 #define         MEM_USOBJ_TAG                   "US_Obj"
 
+typedef LONGLONG FILE_ID;
+typedef FILE_ID* PFILE_ID;
+
 #define UDF_LOG_CREATE_DISPOSITION
 
 /*************************************************************************
@@ -50,7 +53,7 @@ UDFCreate(
     PIRP                    Irp)                // I/O Request Packet
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PtrUDFIrpContext    PtrIrpContext;
+    PIRP_CONTEXT PtrIrpContext;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     TmPrint(("UDFCreate:\n"));
@@ -152,15 +155,15 @@ UDFAcquireParent(
     if(RelatedFileInfo->Fcb &&
        RelatedFileInfo->Fcb->ParentFcb) {
 
-        UDF_CHECK_PAGING_IO_RESOURCE(RelatedFileInfo->Fcb->ParentFcb->NTRequiredFCB);
-        UDFAcquireResourceExclusive((*Res2) = &(RelatedFileInfo->Fcb->ParentFcb->NTRequiredFCB->MainResource),TRUE);
+        UDF_CHECK_PAGING_IO_RESOURCE(RelatedFileInfo->Fcb->ParentFcb);
+        UDFAcquireResourceExclusive((*Res2) = &RelatedFileInfo->Fcb->ParentFcb->MainResource, TRUE);
     }
 
-    UDF_CHECK_PAGING_IO_RESOURCE(RelatedFileInfo->Fcb->NTRequiredFCB);
-    UDFAcquireResourceExclusive((*Res1) = &(RelatedFileInfo->Fcb->NTRequiredFCB->MainResource),TRUE);
+    UDF_CHECK_PAGING_IO_RESOURCE(RelatedFileInfo->Fcb);
+    UDFAcquireResourceExclusive((*Res1) = &RelatedFileInfo->Fcb->MainResource, TRUE);
 
-    UDFInterlockedIncrement((PLONG)&(RelatedFileInfo->Fcb->ReferenceCount));
-    UDFInterlockedIncrement((PLONG)&(RelatedFileInfo->Dloc->CommonFcb->CommonRefCount));
+    UDFInterlockedIncrement((PLONG)&RelatedFileInfo->Fcb->ReferenceCount);
+    UDFInterlockedIncrement((PLONG)&RelatedFileInfo->Dloc->CommonFcb->CommonRefCount);
     UDFReferenceFile__(RelatedFileInfo);
     ASSERT_REF(RelatedFileInfo->Fcb->ReferenceCount >= RelatedFileInfo->RefCount);
 } // end UDFAcquireParent()
@@ -184,7 +187,7 @@ UDFAcquireParent(
 *************************************************************************/
 NTSTATUS
 UDFCommonCreate(
-    PtrUDFIrpContext                PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP                            Irp
     )
 {
@@ -227,9 +230,10 @@ UDFCommonCreate(
     // Should we ignore case when attempting to locate the object?
     BOOLEAN                     IgnoreCase;
 
-    PtrUDFCCB                   PtrRelatedCCB = NULL, PtrNewCcb = NULL;
-    PtrUDFFCB                   PtrRelatedFCB = NULL, PtrNewFcb = NULL;
-    PtrUDFNTRequiredFCB         NtReqFcb;
+    PCCB                        PtrRelatedCCB = NULL;
+    PCCB                        PtrNewCcb = NULL;
+    PFCB                        PtrRelatedFCB = NULL;
+    PFCB                        PtrNewFcb = NULL;
 
     ULONG                       ReturnedInformation = 0;
 
@@ -305,14 +309,14 @@ UDFCommonCreate(
         // If a related file object is present, get the pointers
         //  to the CCB and the FCB for the related file object
         if (PtrRelatedFileObject) {
-            PtrRelatedCCB = (PtrUDFCCB)(PtrRelatedFileObject->FsContext2);
+            PtrRelatedCCB = (PCCB)PtrRelatedFileObject->FsContext2;
             ASSERT(PtrRelatedCCB);
-            ASSERT(PtrRelatedCCB->NodeIdentifier.NodeType == UDF_NODE_TYPE_CCB);
+            ASSERT(PtrRelatedCCB->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_CCB);
             // each CCB in turn points to a FCB
             PtrRelatedFCB = PtrRelatedCCB->Fcb;
             ASSERT(PtrRelatedFCB);
-            ASSERT((PtrRelatedFCB->NodeIdentifier.NodeType == UDF_NODE_TYPE_FCB)
-                 ||(PtrRelatedFCB->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB));
+            ASSERT((PtrRelatedFCB->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_FCB)
+                 ||(PtrRelatedFCB->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB));
             RelatedObjectName = PtrRelatedFileObject->FileName;
             if (!(RelatedObjectName.Length) || (RelatedObjectName.Buffer[0] != L'\\')) {
                 if(PtrRelatedFCB->FCBName)
@@ -463,7 +467,7 @@ UDFCommonCreate(
         // Ensure that the operation has been directed to a valid VCB ...
         Vcb = (PVCB)(PtrIrpContext->TargetDeviceObject->DeviceExtension);
         ASSERT(Vcb);
-        ASSERT(Vcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB);
+        ASSERT(Vcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB);
 //        Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
 
         WriteThroughRequested = WriteThroughRequested ||
@@ -485,12 +489,6 @@ UDFCommonCreate(
         }
 
         UDFFlushTryBreak(Vcb);
-
-        if (Vcb->SoftEjectReq) {
-            AdPrint(("    Eject requested\n"));
-            ReturnedInformation = FILE_DOES_NOT_EXIST;
-            try_return(RC = STATUS_FILE_INVALID);
-        }
 
         // If the volume has been locked, fail the request
         if ((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) &&
@@ -516,13 +514,11 @@ UDFCommonCreate(
         // We fail in the following cases for Read-Only volumes
         //      - Open a target directory.
         //      - Create a file.
-        if(
+        if (
            (
            ((Vcb->origIntegrityType == INTEGRITY_TYPE_OPEN) &&
-            (Vcb->CompatFlags & UDF_VCB_IC_DIRTY_RO))
-#ifndef UDF_READ_ONLY_BUILD
-            || (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)
-#endif //UDF_READ_ONLY_BUILD
+            (Vcb->CompatFlags & UDF_VCB_IC_DIRTY_RO)) ||
+             (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)
             ) &&
             (DeleteOnCloseSpecified ||
              OpenTargetDirectory ||
@@ -546,7 +542,7 @@ UDFCommonCreate(
         // If a Volume open is requested, satisfy it now
         // ****************
         if (!(PtrNewFileObject->FileName.Length) && (!PtrRelatedFileObject ||
-              (PtrRelatedFCB->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB))) {
+              (PtrRelatedFCB->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB))) {
 
             BOOLEAN UndoLock = FALSE;
 
@@ -574,7 +570,6 @@ UDFCommonCreate(
                 try_return(RC = STATUS_NOT_A_DIRECTORY);
             }
 
-#ifndef UDF_READ_ONLY_BUILD
             if (DeleteOnCloseSpecified) {
                 // delete volume.... hmm
                 try_return(RC = STATUS_CANNOT_DELETE);
@@ -585,7 +580,6 @@ UDFCommonCreate(
                 ReturnedInformation = FILE_DOES_NOT_EXIST;
                 try_return(RC = STATUS_ACCESS_DENIED);
             }
-#endif //UDF_READ_ONLY_BUILD
 
             UDFPrint(("  ShareAccess %x, DesiredAccess %x\n", ShareAccess, DesiredAccess));
 /*
@@ -692,14 +686,14 @@ UDFCommonCreate(
                 }
             }
 
-            PtrNewFcb = (PtrUDFFCB)Vcb;
+            PtrNewFcb = (PFCB)Vcb;
             ASSERT(!(PtrNewFcb->FCBFlags & UDF_FCB_DELETE_ON_CLOSE));
 
             RC = UDFOpenFile(Vcb, PtrNewFileObject, PtrNewFcb);
             if (!NT_SUCCESS(RC))
                 goto op_vol_accs_dnd;
 
-            PtrNewCcb = (PtrUDFCCB)(PtrNewFileObject->FsContext2);
+            PtrNewCcb = (PCCB)PtrNewFileObject->FsContext2;
             if(PtrNewCcb) PtrNewCcb->CCBFlags |= UDF_CCB_VOLUME_OPEN;
             // Check _Security_
             RC = UDFCheckAccessRights(NULL, AccessState, Vcb->RootDirFCB, PtrNewCcb, DesiredAccess, ShareAccess);
@@ -972,7 +966,7 @@ op_vol_accs_dnd:
             if(!NT_SUCCESS(RC)) try_return(RC);
 //            DbgPrint("UDF: Open/Create RootDir : ReferenceCount %x\n",PtrNewFcb->ReferenceCount);
             UDFReferenceFile__(PtrNewFcb->FileInfo);
-            PtrNewCcb = (PtrUDFCCB)(PtrNewFileObject->FsContext2);
+            PtrNewCcb = (PCCB)PtrNewFileObject->FsContext2;
             TreeLength = 1;
 
             RC = UDFCheckAccessRights(PtrNewFileObject, AccessState, PtrNewFcb, PtrNewCcb, DesiredAccess, ShareAccess);
@@ -1025,12 +1019,12 @@ op_vol_accs_dnd:
             if(Res1) UDFReleaseResource(Res1);
             if(Res2) UDFReleaseResource(Res2);
 
-            UDF_CHECK_PAGING_IO_RESOURCE(RelatedFileInfo->Fcb->NTRequiredFCB);
-            UDFAcquireResourceExclusive(Res2 = &(RelatedFileInfo->Fcb->NTRequiredFCB->MainResource),TRUE);
+            UDF_CHECK_PAGING_IO_RESOURCE(RelatedFileInfo->Fcb);
+            UDFAcquireResourceExclusive(Res2 = &RelatedFileInfo->Fcb->MainResource, TRUE);
             PtrNewFcb = NewFileInfo->Fcb;
 
-            UDF_CHECK_PAGING_IO_RESOURCE(PtrNewFcb->NTRequiredFCB);
-            UDFAcquireResourceExclusive(Res1 = &(PtrNewFcb->NTRequiredFCB->MainResource),TRUE);
+            UDF_CHECK_PAGING_IO_RESOURCE(PtrNewFcb);
+            UDFAcquireResourceExclusive(Res1 = &PtrNewFcb->MainResource, TRUE);
             UDFReferenceFile__(NewFileInfo);
             TreeLength++;
 
@@ -1168,7 +1162,7 @@ op_vol_accs_dnd:
                 if(RelatedFileInfo && (TreeLength>1)) {
                     // it was an internal Open operation. Thus, assume
                     // RelatedFileInfo's Fcb to be valid
-                    RelatedFileInfo->Fcb->NTRequiredFCB->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
+                    RelatedFileInfo->Fcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                     RelatedFileInfo->Fcb->FCBFlags |= UDF_FCB_VALID;
                 }
                 // check path fragment size
@@ -1185,8 +1179,8 @@ op_vol_accs_dnd:
                 // acquire new _parent_ directory & try to open what
                 // we want.
 
-                UDF_CHECK_PAGING_IO_RESOURCE(RelatedFileInfo->Fcb->NTRequiredFCB);
-                UDFAcquireResourceExclusive(Res1 = &(RelatedFileInfo->Fcb->NTRequiredFCB->MainResource),TRUE);
+                UDF_CHECK_PAGING_IO_RESOURCE(RelatedFileInfo->Fcb);
+                UDFAcquireResourceExclusive(Res1 = &RelatedFileInfo->Fcb->MainResource, TRUE);
 
                 // check traverse rights
                 RC = UDFCheckAccessRights(NULL, NULL, RelatedFileInfo->Fcb, PtrRelatedCCB, FILE_TRAVERSE, 0);
@@ -1230,7 +1224,7 @@ SuccessOpen_SDir:
                         TailName = StreamName;
                     } else
                     if(RC == STATUS_NOT_FOUND) {
-#ifndef UDF_READ_ONLY_BUILD
+
                         // Stream Dir doesn't exist, but caller wants it to be
                         // created. Lets try to help him...
                         if((RequestedDisposition == FILE_CREATE) ||
@@ -1241,7 +1235,6 @@ SuccessOpen_SDir:
                             if(NT_SUCCESS(RC))
                                 goto SuccessOpen_SDir;
                         }
-#endif //UDF_READ_ONLY_BUILD
                     }
 /*                } else {
                     AdPrint(("    File deleted (2)\n"));
@@ -1296,11 +1289,11 @@ Skip_open_attempt:
                     }
                     // Acquire newly opened File...
                     Res2 = Res1;
-                    UDF_CHECK_PAGING_IO_RESOURCE(NewFileInfo->Fcb->NTRequiredFCB);
-                    UDFAcquireResourceExclusive(Res1 = &(NewFileInfo->Fcb->NTRequiredFCB->MainResource),TRUE);
+                    UDF_CHECK_PAGING_IO_RESOURCE(NewFileInfo->Fcb);
+                    UDFAcquireResourceExclusive(Res1 = &NewFileInfo->Fcb->MainResource, TRUE);
                     // ...and reference it
-                    UDFInterlockedIncrement((PLONG)&(PtrNewFcb->ReferenceCount));
-                    UDFInterlockedIncrement((PLONG)&(PtrNewFcb->NTRequiredFCB->CommonRefCount));
+                    UDFInterlockedIncrement((PLONG)&PtrNewFcb->ReferenceCount);
+                    UDFInterlockedIncrement((PLONG)&PtrNewFcb->CommonRefCount);
 
                     ASSERT_REF(PtrNewFcb->ReferenceCount >= NewFileInfo->RefCount);
                     // update unwind information
@@ -1325,17 +1318,15 @@ Skip_open_attempt:
                     AdPrint(("    Can't open file\n"));
                     // We have failed durring last Open attempt
                     // Roll back to last good state
-                    PtrUDFNTRequiredFCB NtReqFcb = NULL;
+
                     // Cleanup FileInfo if any
                     if(NewFileInfo) {
                         PtrNewFcb = NewFileInfo->Fcb;
                         // acquire appropriate resource if possible
-                        if(PtrNewFcb &&
-                           PtrNewFcb->NTRequiredFCB) {
-                            NtReqFcb = PtrNewFcb->NTRequiredFCB;
+                        if(PtrNewFcb) {
                             Res2 = Res1;
-                            UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-                            UDFAcquireResourceExclusive(Res1 = &(NtReqFcb->MainResource),TRUE);
+                            UDF_CHECK_PAGING_IO_RESOURCE(PtrNewFcb);
+                            UDFAcquireResourceExclusive(Res1 = &PtrNewFcb->MainResource, TRUE);
                         }
                         // cleanup pointer to Fcb in FileInfo to allow
                         // UDF_INFO package release FileInfo if there are
@@ -1366,8 +1357,8 @@ Skip_open_attempt:
                             // restore pointers to Fcb & CommonFcb in
                             // FileInfo & Dloc
                             NewFileInfo->Fcb = PtrNewFcb;
-                            if(NtReqFcb)
-                                NewFileInfo->Dloc->CommonFcb = NtReqFcb;
+                            if(PtrNewFcb)
+                                NewFileInfo->Dloc->CommonFcb = PtrNewFcb;
                         }
                         // forget about last FileInfo & Fcb,
                         // further unwind staff needs only last good
@@ -1411,8 +1402,8 @@ Skip_open_attempt:
                     try_return(RC);
                 }
                 // discard changes for last successfully opened file
-                UDFInterlockedDecrement((PLONG)&(PtrNewFcb->ReferenceCount));
-                UDFInterlockedDecrement((PLONG)&(PtrNewFcb->NTRequiredFCB->CommonRefCount));
+                UDFInterlockedDecrement((PLONG)&PtrNewFcb->ReferenceCount);
+                UDFInterlockedDecrement((PLONG)&PtrNewFcb->CommonRefCount);
                 RC = STATUS_SUCCESS;
                 ASSERT(!OpenTargetDirectory);
                 // break open loop and continue with Open
@@ -1476,15 +1467,15 @@ Skip_open_attempt:
             //  to reflect the fact that the parent directory of the
             //  target has been opened
             PtrNewFcb = NewFileInfo->Fcb;
-            UDFInterlockedDecrement((PLONG)&(PtrNewFcb->ReferenceCount));
-            UDFInterlockedDecrement((PLONG)&(PtrNewFcb->NTRequiredFCB->CommonRefCount));
+            UDFInterlockedDecrement((PLONG)&PtrNewFcb->ReferenceCount);
+            UDFInterlockedDecrement((PLONG)&PtrNewFcb->CommonRefCount);
             RC = UDFOpenFile(Vcb, PtrNewFileObject, PtrNewFcb);
             ASSERT_REF(PtrNewFcb->ReferenceCount >= NewFileInfo->RefCount);
             if (!NT_SUCCESS(RC)) {
                 AdPrint(("    Can't perform OpenFile operation for target\n"));
                 try_return(RC);
             }
-            PtrNewCcb = (PtrUDFCCB)(PtrNewFileObject->FsContext2);
+            PtrNewCcb = (PCCB)PtrNewFileObject->FsContext2;
 
             ASSERT(Res1);
             RC = UDFCheckAccessRights(PtrNewFileObject, AccessState, PtrNewFcb, PtrNewCcb, DesiredAccess, ShareAccess);
@@ -1521,13 +1512,10 @@ Skip_open_attempt:
                 try_return(RC);
             }
             // Check Volume ReadOnly attr
-#ifndef UDF_READ_ONLY_BUILD
             if((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)) {
-#endif //UDF_READ_ONLY_BUILD
                 ReturnedInformation = 0;
                 AdPrint(("    Write protected\n"));
                 try_return(RC = STATUS_MEDIA_WRITE_PROTECTED);
-#ifndef UDF_READ_ONLY_BUILD
             }
             // Check r/o + delete on close
             if(DeleteOnCloseSpecified &&
@@ -1669,10 +1657,10 @@ Undo_Create_1:
                 RC = MyAppendUnicodeStringToStringTag(&LocalPath, &LastGoodTail, MEM_USLOC_TAG);
                 if(!NT_SUCCESS(RC))
                     goto Creation_Err_1;
-                UDFInterlockedIncrement((PLONG)&(PtrNewFcb->ReferenceCount));
-                UDFInterlockedIncrement((PLONG)&(PtrNewFcb->NTRequiredFCB->CommonRefCount));
+                UDFInterlockedIncrement((PLONG)&PtrNewFcb->ReferenceCount);
+                UDFInterlockedIncrement((PLONG)&PtrNewFcb->CommonRefCount);
                 ASSERT_REF(PtrNewFcb->ReferenceCount >= NewFileInfo->RefCount);
-                PtrNewFcb->NTRequiredFCB->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
+                PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                 PtrNewFcb->FCBFlags |= UDF_FCB_VALID;
 
                 UDFNotifyFullReportChange( Vcb, NewFileInfo,
@@ -1724,10 +1712,10 @@ Undo_Create_1:
                     BrutePoint();
                     goto Creation_Err_1;
                 }
-                UDFInterlockedIncrement((PLONG)&(PtrNewFcb->ReferenceCount));
-                UDFInterlockedIncrement((PLONG)&(PtrNewFcb->NTRequiredFCB->CommonRefCount));
+                UDFInterlockedIncrement((PLONG)&PtrNewFcb->ReferenceCount);
+                UDFInterlockedIncrement((PLONG)&PtrNewFcb->CommonRefCount);
                 ASSERT_REF(PtrNewFcb->ReferenceCount >= NewFileInfo->RefCount);
-                PtrNewFcb->NTRequiredFCB->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
+                PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                 PtrNewFcb->FCBFlags |= UDF_FCB_VALID;
 
                 // PHASE 2
@@ -1776,17 +1764,17 @@ Undo_Create_1:
                 goto Undo_Create_1;
             }
 
-            PtrNewFcb->NTRequiredFCB->CommonFCBHeader.FileSize.QuadPart =
-            PtrNewFcb->NTRequiredFCB->CommonFCBHeader.ValidDataLength.QuadPart = 0;
+            PtrNewFcb->Header.FileSize.QuadPart =
+            PtrNewFcb->Header.ValidDataLength.QuadPart = 0;
             if(AllocationSize) {
                 // inform NT about size changes
-                PtrNewFcb->NTRequiredFCB->CommonFCBHeader.AllocationSize.QuadPart = AllocationSize;
+                PtrNewFcb->Header.AllocationSize.QuadPart = AllocationSize;
                 MmPrint(("    CcIsFileCached()\n"));
                 if(CcIsFileCached(PtrNewFileObject)) {
                      MmPrint(("    CcSetFileSizes()\n"));
                      BrutePoint();
-                     CcSetFileSizes(PtrNewFileObject, (PCC_FILE_SIZES)&(PtrNewFcb->NTRequiredFCB->CommonFCBHeader.AllocationSize));
-                     PtrNewFcb->NTRequiredFCB->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
+                     CcSetFileSizes(PtrNewFileObject, (PCC_FILE_SIZES)&PtrNewFcb->Header.AllocationSize);
+                     PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
                 }
             }
 
@@ -1796,7 +1784,7 @@ Undo_Create_1:
 
             // Set the Share Access for the file stream.
             // The FCBShareAccess field will be set by the I/O Manager.
-            PtrNewCcb = (PtrUDFCCB)(PtrNewFileObject->FsContext2);
+            PtrNewCcb = (PCCB)PtrNewFileObject->FsContext2;
             RC = UDFSetAccessRights(PtrNewFileObject, AccessState, PtrNewFcb, PtrNewCcb, DesiredAccess, ShareAccess);
 
             if(!NT_SUCCESS(RC)) {
@@ -1842,8 +1830,6 @@ Undo_Create_1:
             ReturnedInformation = FILE_CREATED;
 
             try_return(RC);
-#endif //UDF_READ_ONLY_BUILD
-
         }
 
 AlreadyOpened:
@@ -1857,21 +1843,20 @@ AlreadyOpened:
         // Assume that this structure named PtrNewCcb
         RC = UDFOpenFile(Vcb, PtrNewFileObject, PtrNewFcb);
         if (!NT_SUCCESS(RC)) try_return(RC);
-        PtrNewCcb = (PtrUDFCCB)(PtrNewFileObject->FsContext2);
+        PtrNewCcb = (PCCB)PtrNewFileObject->FsContext2;
 
-        if(RequestedDisposition == FILE_CREATE) {
+        if (RequestedDisposition == FILE_CREATE) {
             ReturnedInformation = FILE_EXISTS;
             AdPrint(("    Object name collision\n"));
             try_return(RC = STATUS_OBJECT_NAME_COLLISION);
         }
 
-        NtReqFcb = PtrNewFcb->NTRequiredFCB;
-        NtReqFcb->CommonFCBHeader.IsFastIoPossible = UDFIsFastIoPossible(PtrNewFcb);
+        PtrNewFcb->Header.IsFastIoPossible = UDFIsFastIoPossible(PtrNewFcb);
 
         // Check if caller wanted a directory only and target object
         //  is not a directory, or caller wanted a file only and target
         //  object is not a file ...
-        if((PtrNewFcb->FCBFlags & UDF_FCB_DIRECTORY) && ((RequestedDisposition == FILE_SUPERSEDE) ||
+        if ((PtrNewFcb->FCBFlags & UDF_FCB_DIRECTORY) && ((RequestedDisposition == FILE_SUPERSEDE) ||
               (RequestedDisposition == FILE_OVERWRITE) || (RequestedDisposition == FILE_OVERWRITE_IF) ||
               FileOnlyRequested)) {
             if(FileOnlyRequested) {
@@ -1883,13 +1868,13 @@ AlreadyOpened:
             try_return(RC);
         }
 
-        if(DirectoryOnlyRequested && !(PtrNewFcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+        if (DirectoryOnlyRequested && !(PtrNewFcb->FCBFlags & UDF_FCB_DIRECTORY)) {
             AdPrint(("    This is not a directory\n"));
             RC = STATUS_NOT_A_DIRECTORY;
             try_return(RC);
         }
 
-        if(DeleteOnCloseSpecified && (PtrNewFcb->FCBFlags & UDF_FCB_READ_ONLY)) {
+        if (DeleteOnCloseSpecified && (PtrNewFcb->FCBFlags & UDF_FCB_READ_ONLY)) {
             AdPrint(("    Can't delete Read-Only file\n"));
             RC = STATUS_CANNOT_DELETE;
             try_return(RC);
@@ -1915,30 +1900,29 @@ AlreadyOpened:
             //  point though.
             if( (DesiredAccess & FILE_WRITE_DATA) || DeleteOnCloseSpecified ) {
                 MmPrint(("    MmFlushImageSection();\n"));
-                NtReqFcb->AcqFlushCount++;
-                if(!MmFlushImageSection( &(NtReqFcb->SectionObject),
-                                          MmFlushForWrite )) {
+                PtrNewFcb->AcqFlushCount++;
+                if (!MmFlushImageSection(&PtrNewFcb->SectionObject, MmFlushForWrite)) {
 
-                    NtReqFcb->AcqFlushCount--;
+                    PtrNewFcb->AcqFlushCount--;
                     RC = DeleteOnCloseSpecified ? STATUS_CANNOT_DELETE :
                                                   STATUS_SHARING_VIOLATION;
                     AdPrint(("    File is mapped or deletion in progress\n"));
                     try_return (RC);
                 }
-                NtReqFcb->AcqFlushCount--;
+                PtrNewFcb->AcqFlushCount--;
             }
-            if(  NoBufferingSpecified &&
+            if (NoBufferingSpecified &&
                 /*  (PtrNewFileObject->Flags & FO_NO_INTERMEDIATE_BUFFERING) &&*/
                !(PtrNewFcb->CachedOpenHandleCount) &&
-                (NtReqFcb->SectionObject.DataSectionObject) ) {
+                (PtrNewFcb->SectionObject.DataSectionObject) ) {
                 //  If this is a non-cached open, and there are no open cached
                 //  handles, but there is still a data section, attempt a flush
                 //  and purge operation to avoid cache coherency overhead later.
                 //  We ignore any I/O errors from the flush.
                 MmPrint(("    CcFlushCache()\n"));
-                CcFlushCache( &(NtReqFcb->SectionObject), NULL, 0, NULL );
+                CcFlushCache(&PtrNewFcb->SectionObject, NULL, 0, NULL);
                 MmPrint(("    CcPurgeCacheSection()\n"));
-                CcPurgeCacheSection( &(NtReqFcb->SectionObject), NULL, 0, FALSE );
+                CcPurgeCacheSection(&PtrNewFcb->SectionObject, NULL, 0, FALSE);
             }
         }
 
@@ -1969,7 +1953,6 @@ AlreadyOpened:
            (RequestedDisposition == FILE_OVERWRITE_IF)) {
             // Attempt the operation here ...
 
-#ifndef UDF_READ_ONLY_BUILD
             ASSERT(!UDFIsADirectory(NewFileInfo));
 
             if(RequestedDisposition == FILE_SUPERSEDE) {
@@ -2012,8 +1995,8 @@ AlreadyOpened:
             //  Before we actually truncate, check to see if the purge
             //  is going to fail.
             MmPrint(("    MmCanFileBeTruncated()\n"));
-            if (!MmCanFileBeTruncated( &NtReqFcb->SectionObject,
-                                       &(UDFGlobalData.UDFLargeZero) )) {
+            if (!MmCanFileBeTruncated(&PtrNewFcb->SectionObject,
+                                      &UDFGlobalData.UDFLargeZero)) {
                 AdPrint(("    Can't truncate. File is mapped\n"));
                 try_return(RC = STATUS_USER_MAPPED_FILE);
             }
@@ -2025,7 +2008,7 @@ AlreadyOpened:
             CollectStatistics(Vcb, MetaDataWrites);
 #endif
             // Synchronize with PagingIo
-            UDFAcquireResourceExclusive(PagingIoRes = &(NtReqFcb->PagingIoResource),TRUE);
+            UDFAcquireResourceExclusive(PagingIoRes = &PtrNewFcb->PagingIoResource, TRUE);
             // Set file sizes
             if(!NT_SUCCESS(RC = UDFResizeFile__(Vcb, NewFileInfo, 0))) {
                 AdPrint(("    Error during resize operation\n"));
@@ -2037,13 +2020,13 @@ AlreadyOpened:
                     try_return(RC);
                 }
             }*/
-            NtReqFcb->CommonFCBHeader.AllocationSize.QuadPart = UDFSysGetAllocSize(Vcb, AllocationSize);
-            NtReqFcb->CommonFCBHeader.FileSize.QuadPart =
-            NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart = 0 /*AllocationSize*/;
+            PtrNewFcb->Header.AllocationSize.QuadPart = UDFSysGetAllocSize(Vcb, AllocationSize);
+            PtrNewFcb->Header.FileSize.QuadPart =
+            PtrNewFcb->Header.ValidDataLength.QuadPart = 0 /*AllocationSize*/;
             PtrNewFcb->FCBFlags &= ~UDF_FCB_DELAY_CLOSE;
             MmPrint(("    CcSetFileSizes()\n"));
-            CcSetFileSizes(PtrNewFileObject, (PCC_FILE_SIZES)&(NtReqFcb->CommonFCBHeader.AllocationSize));
-            NtReqFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
+            CcSetFileSizes(PtrNewFileObject, (PCC_FILE_SIZES)&PtrNewFcb->Header.AllocationSize);
+            PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
             // Release PagingIoResource
             UDFReleaseResource(PagingIoRes);
             PagingIoRes = NULL;
@@ -2076,9 +2059,6 @@ AlreadyOpened:
                (PtrRelatedFCB->FileInfo == NewFileInfo->ParentFile)) {
                 PtrRelatedFileObject->Flags |= (FO_FILE_MODIFIED | FO_FILE_SIZE_CHANGED);
             }
-#else //UDF_READ_ONLY_BUILD
-            try_return(RC = STATUS_ACCESS_DENIED);
-#endif //UDF_READ_ONLY_BUILD
         } else {
             ReturnedInformation = FILE_OPENED;
         }
@@ -2129,24 +2109,23 @@ try_exit:   NOTHING;
                 // directories are not cached
                 // so we should prevent flush attepmts on cleanup
                 if(!(PtrNewFcb->FCBFlags & UDF_FCB_DIRECTORY)) {
-#ifndef UDF_READ_ONLY_BUILD
+
                     if(WriteThroughRequested) {
                         PtrNewFileObject->Flags |= FO_WRITE_THROUGH;
                         PtrNewFcb->FCBFlags |= UDF_FCB_WRITE_THROUGH;
                         MmPrint(("        FO_WRITE_THROUGH\n"));
                     }
-#endif //UDF_READ_ONLY_BUILD
                     if(SequentialIoRequested &&
                        !(Vcb->CompatFlags & UDF_VCB_IC_IGNORE_SEQUENTIAL_IO)) {
                         PtrNewFileObject->Flags |= FO_SEQUENTIAL_ONLY;
                         MmPrint(("        FO_SEQUENTIAL_ONLY\n"));
-#ifndef UDF_READ_ONLY_BUILD
+
                         if(Vcb->TargetDeviceObject->Characteristics & FILE_REMOVABLE_MEDIA) {
                             PtrNewFileObject->Flags &= ~FO_WRITE_THROUGH;
                             PtrNewFcb->FCBFlags &= ~UDF_FCB_WRITE_THROUGH;
                             MmPrint(("        FILE_REMOVABLE_MEDIA + FO_SEQUENTIAL_ONLY => ~FO_WRITE_THROUGH\n"));
                         }
-#endif //UDF_READ_ONLY_BUILD
+
                         if(PtrNewFcb->FileInfo) {
                             UDFSetFileAllocMode__(PtrNewFcb->FileInfo, EXTENT_FLAG_ALLOC_SEQUENTIAL);
                         }
@@ -2175,12 +2154,12 @@ try_exit:   NOTHING;
                 if(PtrNewCcb) {
                     PtrNewCcb->TreeLength = TreeLength;
                     // delete on close
-#ifndef UDF_READ_ONLY_BUILD
+
                     if(DeleteOnCloseSpecified) {
                         ASSERT(!(PtrNewFcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY));
                         PtrNewCcb->CCBFlags |= UDF_CCB_DELETE_ON_CLOSE;
                     }
-#endif //UDF_READ_ONLY_BUILD
+
                     // case sensetivity
                     if(!IgnoreCase) {
                         // remember this for possible Rename/Move operation
@@ -2201,7 +2180,7 @@ try_exit:   NOTHING;
                 // increment the number of outstanding open operations on this
                 // logical volume (i.e. volume cannot be dismounted)
                 UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
-                PtrNewFcb->NTRequiredFCB->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
+                PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                 PtrNewFcb->FCBFlags |= UDF_FCB_VALID;
 #ifdef UDF_DBG
                 // We have no FileInfo for Volume
@@ -2215,8 +2194,8 @@ try_exit:   NOTHING;
 
             } else if(!NT_SUCCESS(RC)) {
                 // Perform failure related post-processing now
-                if(RestoreShareAccess && NtReqFcb && PtrNewFileObject) {
-                    IoRemoveShareAccess(PtrNewFileObject, &(NtReqFcb->FCBShareAccess));
+                if(RestoreShareAccess && PtrNewFcb && PtrNewFileObject) {
+                    IoRemoveShareAccess(PtrNewFileObject, &PtrNewFcb->FCBShareAccess);
                 }
                 UDFCleanUpCCB(PtrNewCcb);
                 if(PtrNewFileObject) {
@@ -2226,8 +2205,8 @@ try_exit:   NOTHING;
                 // so mark it as VALID to avoid future troubles...
                 if(LastGoodFileInfo && LastGoodFileInfo->Fcb) {
                     LastGoodFileInfo->Fcb->FCBFlags |= UDF_FCB_VALID;
-                    if(LastGoodFileInfo->Fcb->NTRequiredFCB) {
-                        LastGoodFileInfo->Fcb->NTRequiredFCB->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
+                    if(LastGoodFileInfo->Fcb) {
+                        LastGoodFileInfo->Fcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                     }
                 }
                 // Release resources...
@@ -2293,7 +2272,7 @@ NTSTATUS
 UDFFirstOpenFile(
     IN PVCB                    Vcb,                // volume control block
     IN PFILE_OBJECT            PtrNewFileObject,   // I/O Mgr. created file object
-   OUT PtrUDFFCB*              PtrNewFcb,
+   OUT PFCB*                   PtrNewFcb,
     IN PUDF_FILE_INFO          RelatedFileInfo,
     IN PUDF_FILE_INFO          NewFileInfo,
     IN PUNICODE_STRING         LocalPath,
@@ -2302,11 +2281,12 @@ UDFFirstOpenFile(
 {
 //    DIR_INDEX           NewFileIndex;
     PtrUDFObjectName    NewFCBName;
-    PtrUDFNTRequiredFCB NtReqFcb;
     NTSTATUS            RC;
     BOOLEAN             Linked = TRUE;
     PDIR_INDEX_HDR      hDirIndex;
     PDIR_INDEX_ITEM     DirIndex;
+
+    ASSERT(RelatedFileInfo);
 
     AdPrint(("UDFFirstOpenFile\n"));
 
@@ -2342,53 +2322,41 @@ UDFFirstOpenFile(
     NewFileInfo->Fcb = (*PtrNewFcb);
     (*PtrNewFcb)->ParentFcb = RelatedFileInfo->Fcb;
 
-    if(!((*PtrNewFcb)->NTRequiredFCB = NewFileInfo->Dloc->CommonFcb)) {
-        (*PtrNewFcb)->NTRequiredFCB = (PtrUDFNTRequiredFCB)MyAllocatePool__(NonPagedPool, UDFQuadAlign(sizeof(UDFNTRequiredFCB)));
-        if(!((*PtrNewFcb)->NTRequiredFCB)) {
-            UDFReleaseObjectName(NewFCBName);
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-        UDFPrint(("UDFAllocateNtReqFCB: %x\n", (*PtrNewFcb)->NTRequiredFCB));
-        RtlZeroMemory((*PtrNewFcb)->NTRequiredFCB, UDFQuadAlign(sizeof(UDFNTRequiredFCB)));
-        (*PtrNewFcb)->FileInfo->Dloc->CommonFcb = (*PtrNewFcb)->NTRequiredFCB;
+    if (!NewFileInfo->Dloc->CommonFcb) {
+        (*PtrNewFcb)->FileInfo->Dloc->CommonFcb = (*PtrNewFcb);
         Linked = FALSE;
     } else {
+        ASSERT(FALSE);
         if(!(NewFileInfo->Dloc->CommonFcb->NtReqFCBFlags & UDF_NTREQ_FCB_VALID)) {
-            (*PtrNewFcb)->NTRequiredFCB = NULL;
             BrutePoint();
             UDFReleaseObjectName(NewFCBName);
             return STATUS_ACCESS_DENIED;
         }
     }
 
-    NtReqFcb = (*PtrNewFcb)->NTRequiredFCB;
+    PFCB NewFcb = *PtrNewFcb;
     // Set times
     if(!Linked) {
         UDFGetFileXTime((*PtrNewFcb)->FileInfo,
-            &(NtReqFcb->CreationTime.QuadPart),
-            &(NtReqFcb->LastAccessTime.QuadPart),
-            &(NtReqFcb->ChangeTime.QuadPart),
-            &(NtReqFcb->LastWriteTime.QuadPart) );
+            &(NewFcb->CreationTime.QuadPart),
+            &(NewFcb->LastAccessTime.QuadPart),
+            &(NewFcb->ChangeTime.QuadPart),
+            &(NewFcb->LastWriteTime.QuadPart) );
 
         // Set the allocation size for the object is specified
-        NtReqFcb->CommonFCBHeader.AllocationSize.QuadPart =
+        NewFcb->Header.AllocationSize.QuadPart =
             UDFSysGetAllocSize(Vcb, NewFileInfo->Dloc->DataLoc.Length);
-//        NtReqFcb->CommonFCBHeader.AllocationSize.QuadPart = UDFGetFileAllocationSize(Vcb, NewFileInfo);
-        NtReqFcb->CommonFCBHeader.FileSize.QuadPart =
-        NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart = NewFileInfo->Dloc->DataLoc.Length;
+//        NewFcb->Header.AllocationSize.QuadPart = UDFGetFileAllocationSize(Vcb, NewFileInfo);
+        NewFcb->Header.FileSize.QuadPart =
+        NewFcb->Header.ValidDataLength.QuadPart = NewFileInfo->Dloc->DataLoc.Length;
     }
     // begin transaction
-    UDFAcquireResourceExclusive(&(Vcb->FcbListResource), TRUE);
+    UDFAcquireResourceExclusive(&Vcb->FcbListResource, TRUE);
 
     RC = UDFInitializeFCB(*PtrNewFcb, Vcb, NewFCBName,
                  UDFIsADirectory(NewFileInfo) ? UDF_FCB_DIRECTORY : 0, PtrNewFileObject);
     if(!NT_SUCCESS(RC)) {
-        if(!Linked) {
-            MyFreePool__((*PtrNewFcb)->NTRequiredFCB);
-            (*PtrNewFcb)->NTRequiredFCB = NULL;
-        }
-        UDFReleaseResource(&(Vcb->FcbListResource));
+        UDFReleaseResource(&Vcb->FcbListResource);
         return RC;
     }
     // set Read-only attribute
@@ -2449,16 +2417,15 @@ NTSTATUS
 UDFOpenFile(
     PVCB                 Vcb,                // volume control block
     PFILE_OBJECT         PtrNewFileObject,   // I/O Mgr. created file object
-    PtrUDFFCB            PtrNewFcb
+    PFCB                 PtrNewFcb
     )
 {
     NTSTATUS                RC = STATUS_SUCCESS;
-    PtrUDFCCB               Ccb = NULL;
-    PtrUDFNTRequiredFCB     NtReqFcb;
+    PCCB                    Ccb = NULL;
 
     AdPrint(("UDFOpenFile\n"));
-    ASSERT((PtrNewFcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_FCB)
-         ||(PtrNewFcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB));
+    ASSERT((PtrNewFcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_FCB)
+         ||(PtrNewFcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB));
 
     _SEH2_TRY {
 
@@ -2470,8 +2437,8 @@ UDFOpenFile(
             AdPrint(("Can't allocate CCB\n"));
             PtrNewFileObject->FsContext2 = NULL;
             //
-            UDFInterlockedIncrement((PLONG)&(PtrNewFcb->ReferenceCount));
-            UDFInterlockedIncrement((PLONG)&(PtrNewFcb->NTRequiredFCB->CommonRefCount));
+            UDFInterlockedIncrement((PLONG)&PtrNewFcb->ReferenceCount);
+            UDFInterlockedIncrement((PLONG)&PtrNewFcb->CommonRefCount);
             RC = STATUS_INSUFFICIENT_RESOURCES;
             try_return(RC);
         }
@@ -2483,8 +2450,8 @@ UDFOpenFile(
         // initialize the file object appropriately
         PtrNewFileObject->FsContext2 = (PVOID)(Ccb);
         PtrNewFileObject->Vpb = Vcb->Vpb;
-        PtrNewFileObject->FsContext = (PVOID)(NtReqFcb = PtrNewFcb->NTRequiredFCB);
-        PtrNewFileObject->SectionObjectPointer = &(NtReqFcb->SectionObject);
+        PtrNewFileObject->FsContext = (PVOID)PtrNewFcb;
+        PtrNewFileObject->SectionObjectPointer = &PtrNewFcb->SectionObject;
 #ifdef DBG
 //        NtReqFcb ->FileObject = PtrNewFileObject;
 #endif //DBG
@@ -2497,9 +2464,9 @@ UDFOpenFile(
         // insert CCB into linked list of open file object to Fcb or
         // to Vcb and do other intialization
         InsertTailList(&(PtrNewFcb->NextCCB), &(Ccb->NextCCB));
-        UDFInterlockedIncrement((PLONG)&(PtrNewFcb->ReferenceCount));
-        UDFInterlockedIncrement((PLONG)&(PtrNewFcb->NTRequiredFCB->CommonRefCount));
-        UDFReleaseResource(&(PtrNewFcb->CcbListResource));
+        UDFInterlockedIncrement((PLONG)&PtrNewFcb->ReferenceCount);
+        UDFInterlockedIncrement((PLONG)&PtrNewFcb->CommonRefCount);
+        UDFReleaseResource(&PtrNewFcb->CcbListResource);
 
 try_exit:   NOTHING;
     } _SEH2_FINALLY {
@@ -2527,7 +2494,7 @@ try_exit:   NOTHING;
 *************************************************************************/
 NTSTATUS
 UDFInitializeFCB(
-    IN PtrUDFFCB        PtrNewFcb,      // FCB structure to be initialized
+    IN PFCB             PtrNewFcb,      // FCB structure to be initialized
     IN PVCB             Vcb,            // logical volume (VCB) pointer
     IN PtrUDFObjectName PtrObjectName,  // name of the object
     IN ULONG            Flags,          // is this a file/directory, etc.
@@ -2537,44 +2504,44 @@ UDFInitializeFCB(
     NTSTATUS status;
     BOOLEAN Linked = TRUE;
 
-    if(!PtrNewFcb->NTRequiredFCB->CommonFCBHeader.Resource) {
+    if(!PtrNewFcb->Header.Resource) {
         // record signature
-        PtrNewFcb->NTRequiredFCB->CommonFCBHeader.NodeTypeCode = UDF_NODE_TYPE_NT_REQ_FCB;
-        PtrNewFcb->NTRequiredFCB->CommonFCBHeader.NodeByteSize = sizeof(UDFNTRequiredFCB);
+        PtrNewFcb->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_FCB;
+        PtrNewFcb->NodeIdentifier.NodeByteSize = sizeof(FCB);
         // Initialize the ERESOURCE objects
-        if(!NT_SUCCESS(status = UDFInitializeResourceLite(&(PtrNewFcb->NTRequiredFCB->MainResource)))) {
+        if(!NT_SUCCESS(status = UDFInitializeResourceLite(&PtrNewFcb->MainResource))) {
             AdPrint(("    Can't init resource\n"));
             return status;
         }
-        if(!NT_SUCCESS(status = UDFInitializeResourceLite(&(PtrNewFcb->NTRequiredFCB->PagingIoResource)))) {
+        if(!NT_SUCCESS(status = UDFInitializeResourceLite(&PtrNewFcb->PagingIoResource))) {
             AdPrint(("    Can't init resource (2)\n"));
-            UDFDeleteResource(&(PtrNewFcb->NTRequiredFCB->MainResource));
+            UDFDeleteResource(&PtrNewFcb->MainResource);
             return status;
         }
 
-        ExInitializeFastMutex(&PtrNewFcb->NTRequiredFCB->AdvancedFCBHeaderMutex);
+        ExInitializeFastMutex(&PtrNewFcb->AdvancedFCBHeaderMutex);
 
         // Fill NT required Fcb part
-        PtrNewFcb->NTRequiredFCB->CommonFCBHeader.Resource = &(PtrNewFcb->NTRequiredFCB->MainResource);
-        PtrNewFcb->NTRequiredFCB->CommonFCBHeader.PagingIoResource = &(PtrNewFcb->NTRequiredFCB->PagingIoResource);
-        FsRtlSetupAdvancedHeader(&PtrNewFcb->NTRequiredFCB->CommonFCBHeader, &PtrNewFcb->NTRequiredFCB->AdvancedFCBHeaderMutex);
+        PtrNewFcb->Header.Resource = &PtrNewFcb->MainResource;
+        PtrNewFcb->Header.PagingIoResource = &PtrNewFcb->PagingIoResource;
+        FsRtlSetupAdvancedHeader(&PtrNewFcb->Header, &PtrNewFcb->AdvancedFCBHeaderMutex);
         // Itialize byte-range locks support structure
-        FsRtlInitializeFileLock(&(PtrNewFcb->NTRequiredFCB->FileLock),NULL,NULL);
+        FsRtlInitializeFileLock(&(PtrNewFcb->FileLock), NULL, NULL);
         // Init reference counter
-        PtrNewFcb->NTRequiredFCB->CommonRefCount = 0;
+        PtrNewFcb->CommonRefCount = 0;
         Linked = FALSE;
     } else {
-        ASSERT(PtrNewFcb->NTRequiredFCB->CommonFCBHeader.NodeTypeCode == UDF_NODE_TYPE_NT_REQ_FCB);
+        ASSERT(FALSE);
     }
-    if(!NT_SUCCESS(status = UDFInitializeResourceLite(&(PtrNewFcb->CcbListResource)))) {
+    if(!NT_SUCCESS(status = UDFInitializeResourceLite(&PtrNewFcb->CcbListResource))) {
         AdPrint(("    Can't init resource (3)\n"));
         BrutePoint();
         if(!Linked) {
-            UDFDeleteResource(&(PtrNewFcb->NTRequiredFCB->PagingIoResource));
-            UDFDeleteResource(&(PtrNewFcb->NTRequiredFCB->MainResource));
-            PtrNewFcb->NTRequiredFCB->CommonFCBHeader.Resource =
-            PtrNewFcb->NTRequiredFCB->CommonFCBHeader.PagingIoResource = NULL;
-            FsRtlUninitializeFileLock(&(PtrNewFcb->NTRequiredFCB->FileLock));
+            UDFDeleteResource(&PtrNewFcb->PagingIoResource);
+            UDFDeleteResource(&PtrNewFcb->MainResource);
+            PtrNewFcb->Header.Resource =
+            PtrNewFcb->Header.PagingIoResource = NULL;
+            FsRtlUninitializeFileLock(&PtrNewFcb->FileLock);
         }
         return status;
     }

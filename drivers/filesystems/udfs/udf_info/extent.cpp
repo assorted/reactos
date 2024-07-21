@@ -813,7 +813,6 @@ UDFReadMappingFromXEntry(
     return Extent;
 }// end UDFReadMappingFromXEntry()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine builds data for AllocDesc sequence for specified
     extent
@@ -1763,7 +1762,6 @@ clean_caller:
     FEExtInfo->Mapping[0].extLength = (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
     return;
 } // end UDFFreeFESpace()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine flushes FE-Charge buffer, marks unused blocks as free
@@ -1802,7 +1800,6 @@ UDFFlushFESpace(
 #endif // UDF_FE_ALLOCATION_CHARGE
 } // end UDFFlushFESpace()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine rebuilds mapping on write attempts to Alloc-Not-Rec area.
     Here we assume that required area lays in a single frag.
@@ -2737,7 +2734,6 @@ UDFFreeFileAllocation(
     FileInfo->Dloc->AllocLoc.Modified =
     FileInfo->Dloc->FELoc.Modified = FALSE;
 } // end UDFFreeFileAllocation()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine packs physically sequential extents into single one
@@ -3181,7 +3177,6 @@ UDFGetZeroLength(
 #pragma warning(pop) // re-enable warning #4035
 #endif
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine writes data at any offset to specified extent.
  */
@@ -3439,4 +3434,3 @@ UDFZeroExtent(
     return STATUS_SUCCESS;
 } // end UDFZeroExtent()
 //#endif //0
-#endif //UDF_READ_ONLY_BUILD

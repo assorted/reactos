@@ -13,10 +13,6 @@ extern BOOLEAN opt_invalidate_volume;
 extern ULONG LockMode;
 #endif //UDF_FORMAT_MEDIA
 
-extern NTSTATUS UDFSyncCache(
-    IN PVCB Vcb
-    );
-
 OSSTATUS
 __fastcall
 UDFTIOVerify(
@@ -69,23 +65,10 @@ extern OSSTATUS UDFTWrite(IN PVOID _Vcb,
 #define PH_EX_WRITE            0x80000000
 #define PH_IO_LOCKED           0x20000000
 
-
-extern
-OSSTATUS
-UDFDoOPC(
-    IN PVCB Vcb
-    );
-
 extern OSSTATUS UDFPrepareForWriteOperation(
     IN PVCB Vcb,
     IN ULONG Lba,
     IN ULONG BCount);
-
-extern OSSTATUS UDFReadDiscTrackInfo(PDEVICE_OBJECT DeviceObject, // the target device object
-                                     PVCB           Vcb);         // Volume Control Block for ^ DevObj
-
-extern OSSTATUS UDFReadAndProcessFullToc(PDEVICE_OBJECT DeviceObject, // the target device object
-                                         PVCB           Vcb);
 
 extern OSSTATUS UDFUseStandard(PDEVICE_OBJECT DeviceObject, // the target device object
                                PVCB           Vcb);         // Volume control block fro this DevObj
@@ -96,23 +79,13 @@ extern OSSTATUS UDFGetBlockSize(PDEVICE_OBJECT DeviceObject, // the target devic
 extern OSSTATUS UDFGetDiskInfo(IN PDEVICE_OBJECT DeviceObject, // the target device object
                                IN PVCB           Vcb);         // Volume control block from this DevObj
 
-extern VOID NTAPI UDFEjectReqWaiter(IN PVOID Context);
-
-extern VOID     UDFStopEjectWaiter(PVCB Vcb);
-
 extern OSSTATUS UDFPrepareForReadOperation(IN PVCB Vcb,
                                            IN uint32 Lba,
                                            IN uint32 BCount
                                            );
 //#define UDFPrepareForReadOperation(a,b) (STATUS_SUCCESS)
 
-extern VOID     UDFUpdateNWA(PVCB Vcb,
-                             ULONG LBA,
-                             ULONG BCount,
-                             OSSTATUS RC);
-
 extern OSSTATUS UDFDoDismountSequence(IN PVCB Vcb,
-                                      IN PPREVENT_MEDIA_REMOVAL_USER_IN Buf,
                                       IN BOOLEAN Eject);
 
 // read physical sectors
@@ -142,7 +115,6 @@ extern OSSTATUS UDFReadData(IN PVCB Vcb,
                      OUT PCHAR Buffer,
                      OUT PSIZE_T ReadBytes);
 
-#ifndef UDF_READ_ONLY_BUILD
 // write physical sectors
 OSSTATUS UDFWriteSectors(IN PVCB Vcb,
                          IN BOOLEAN Translate,      // Translate Logical to Physical
@@ -170,7 +142,6 @@ OSSTATUS UDFWriteData(IN PVCB Vcb,
                                                  // data to indefinite term
                       IN PCHAR Buffer,
                       OUT PSIZE_T WrittenBytes);
-#endif //UDF_READ_ONLY_BUILD
 
 OSSTATUS UDFResetDeviceDriver(IN PVCB Vcb,
                               IN PDEVICE_OBJECT TargetDeviceObject,

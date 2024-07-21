@@ -30,9 +30,6 @@
 //#define TRACK_SYS_ALLOCS
 //#define TRACK_SYS_ALLOC_CALLERS
 
-// Use internal deadlock detector
-//#define USE_DLD
-
 #endif //UDF_DBG
 
 #define PROTECTED_MEM_RTL

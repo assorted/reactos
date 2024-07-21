@@ -687,7 +687,6 @@ UDFIndexDirectory(
     return status;
 } // end UDFIndexDirectory()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine removes all DELETED entries from Dir & resizes it.
     It must be called before closing, no files sould be opened.
@@ -709,7 +708,7 @@ UDFPackDirectory__(
     SIZE_T ReadBytes;
     int8* storedFI;
     PUDF_FILE_INFO curFileInfo;
-    PDIR_INDEX_ITEM DirNdx, DirNdx2;
+    PDIR_INDEX_ITEM DirNdx = NULL, DirNdx2;
     UDF_DIR_SCAN_CONTEXT ScanContext;
     uint_di dc=0;
     uint16 PartNum;
@@ -932,7 +931,6 @@ UDFReTagDirectory(
     return status;
 
 } // end UDFReTagDirectory()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine performs search for specified file in specified directory &
@@ -1226,10 +1224,10 @@ UDFStoreDloc(
         // update caller's structures & exit
         fi->Dloc = Dloc;
         UDFReleaseDloc(Vcb, Dloc);
-#if defined UDF_DBG && !defined _CONSOLE
+#if defined UDF_DBG
         if(fi->Dloc->CommonFcb) {
             ASSERT((uintptr_t)(fi->Dloc->CommonFcb) != 0xDEADDA7A);
-            ASSERT(fi->Dloc->CommonFcb->CommonFCBHeader.NodeTypeCode == UDF_NODE_TYPE_NT_REQ_FCB);
+            ASSERT(fi->Dloc->CommonFcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_FCB);
         }
 #endif // UDF_DBG
         UDFReleaseResource(&(Vcb->DlocResource));
