@@ -18,7 +18,9 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID                UDF_FILE_MISC
 
-#include            <stdio.h>
+#define FILE_DEVICE_CDRW        0x00000999
+#define CDRW_CTL_CODE_R(a,b)    CTL_CODE(FILE_DEVICE_CDRW, a,b, FILE_READ_DATA)
+#define IOCTL_CDRW_GET_DEVICE_NAME      CDRW_CTL_CODE_R(0x827, METHOD_BUFFERED)
 
 //CCHAR   DefLetter[] = {""};
 
@@ -1690,66 +1692,6 @@ try_exit:   NOTHING;
     return RC;
 } // end UDFInitializeVCB()
 
-UDFFSD_MEDIA_TYPE
-UDFGetMediaClass(
-    PVCB Vcb
-    )
-{
-    switch(Vcb->FsDeviceType) {
-    case FILE_DEVICE_CD_ROM_FILE_SYSTEM:
-        if(Vcb->VCBFlags & (UDF_VCB_FLAGS_VOLUME_READ_ONLY |
-                            UDF_VCB_FLAGS_MEDIA_READ_ONLY))
-            return MediaCdrom;
-        if(Vcb->CDR_Mode)
-            return MediaCdr;
-        if((Vcb->MediaType >= MediaType_UnknownSize_CDR) &&
-           (Vcb->MediaType < MediaType_UnknownSize_CDRW)) {
-            return MediaCdr;
-        }
-        if((Vcb->MediaType >= MediaType_UnknownSize_CDRW) &&
-           (Vcb->MediaType < MediaType_UnknownSize_Unknown)) {
-            return MediaCdrw;
-        }
-        if(Vcb->MediaClassEx == CdMediaClass_CDR) {
-            return MediaCdr;
-        }
-        if(Vcb->MediaClassEx == CdMediaClass_DVDR ||
-           Vcb->MediaClassEx == CdMediaClass_DVDpR ||
-           Vcb->MediaClassEx == CdMediaClass_HD_DVDR ||
-           Vcb->MediaClassEx == CdMediaClass_BDR) {
-            return MediaDvdr;
-        }
-        if(Vcb->MediaClassEx == CdMediaClass_CDRW) {
-            return MediaCdrw;
-        }
-        if(Vcb->MediaClassEx == CdMediaClass_DVDRW ||
-           Vcb->MediaClassEx == CdMediaClass_DVDpRW ||
-           Vcb->MediaClassEx == CdMediaClass_DVDRAM ||
-           Vcb->MediaClassEx == CdMediaClass_HD_DVDRW ||
-           Vcb->MediaClassEx == CdMediaClass_HD_DVDRAM ||
-           Vcb->MediaClassEx == CdMediaClass_BDRE) {
-            return MediaDvdrw;
-        }
-        //
-        if(Vcb->MediaClassEx == CdMediaClass_CDROM ||
-           Vcb->MediaClassEx == CdMediaClass_DVDROM ||
-           Vcb->MediaClassEx == CdMediaClass_HD_DVDROM ||
-           Vcb->MediaClassEx == CdMediaClass_BDROM) {
-            return MediaCdrom;
-        }
-        return MediaCdrom;
-#ifdef UDF_HDD_SUPPORT
-    case FILE_DEVICE_DISK_FILE_SYSTEM:
-        if(Vcb->TargetDeviceObject->Characteristics & FILE_FLOPPY_DISKETTE)
-            return MediaFloppy;
-        if(Vcb->TargetDeviceObject->Characteristics & FILE_REMOVABLE_MEDIA)
-            return MediaZip;
-        return MediaHdd;
-#endif //UDF_HDD_SUPPORT
-    }
-    return MediaUnknown;
-} // end UDFGetMediaClass()
-
 typedef ULONG
 (*ptrUDFGetParameter)(
     IN PVCB Vcb,
@@ -1786,7 +1728,7 @@ UDFReadRegKeys(
     ULONG mult = 1;
     ptrUDFGetParameter UDFGetParameter = UseCfg ? UDFGetCfgParameter : UDFGetRegParameter;
 
-    Vcb->DefaultRegName = UDFMediaClassName[(ULONG)UDFGetMediaClass(Vcb)].ClassName;
+    Vcb->DefaultRegName = REG_DEFAULT_UNKNOWN;
 
     // Should we use Extended FE by default ?
     Vcb->UseExtendedFE = (UCHAR)UDFGetParameter(Vcb, REG_USEEXTENDEDFE_NAME,
@@ -1973,10 +1915,6 @@ UDFReadRegKeys(
         if(!mult) mult = 1;
         Vcb->WCacheMaxBlocks *= mult;
         Vcb->WCacheMaxFrames *= mult;
-
-        if(UDFGetParameter(Vcb, UDF_USE_EJECT_BUTTON, TRUE)) {
-            Vcb->UseEvent = TRUE;
-        }
     }
     return;
 } // end UDFReadRegKeys()
@@ -2175,14 +2113,6 @@ UDFReleaseVCB(
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
     } _SEH2_END;
-
-/*    _SEH2_TRY {
-        if(Vcb->VCBFlags & UDF_VCB_FLAGS_STOP_WAITER_EVENT)
-            KeWaitForSingleObject(&(Vcb->WaiterStopped), Executive, KernelMode, FALSE, NULL);
-            Vcb->VCBFlags &= ~UDF_VCB_FLAGS_STOP_WAITER_EVENT;
-    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
-    }*/
 
     _SEH2_TRY {
         UDFPrint(("UDF: Delete resources\n"));

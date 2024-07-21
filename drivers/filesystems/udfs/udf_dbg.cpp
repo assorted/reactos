@@ -26,22 +26,7 @@ UDFDebugAcquireResourceSharedLite(
         BugCheckId,Line,PsGetCurrentThread()));
 #endif
 
-    BOOLEAN     Success;
-
-#ifdef USE_DLD
-
-    if (Wait) {
-        DLDAcquireShared(Resource, BugCheckId, Line,FALSE);
-        Success = TRUE;
-    } else {
-        Success = ExAcquireResourceSharedLite(Resource,Wait);
-    }
-
-#else
-
-    Success = ExAcquireResourceSharedLite(Resource,Wait);
-
-#endif // USE_DLD
+    BOOLEAN Success = ExAcquireResourceSharedLite(Resource,Wait);
 
     if(Success) {
 #ifdef TRACK_RESOURCES
@@ -71,22 +56,7 @@ UDFDebugAcquireSharedStarveExclusive(
         BugCheckId,Line,PsGetCurrentThread()));
 #endif
 
-    BOOLEAN     Success;
-
-#ifdef USE_DLD
-
-    if (Wait) {
-        DLDAcquireShared(Resource, BugCheckId, Line,FALSE);
-        Success = TRUE;
-    } else {
-        Success = ExAcquireResourceSharedLite(Resource,Wait);
-    }
-
-#else
-
-    Success = ExAcquireResourceSharedLite(Resource,Wait);
-
-#endif // USE_DLD
+    BOOLEAN Success = ExAcquireResourceSharedLite(Resource,Wait);
 
     if(Success) {
 #ifdef TRACK_RESOURCES
@@ -117,24 +87,7 @@ UDFDebugAcquireResourceExclusiveLite(
 #endif
 
 
-    BOOLEAN     Success;
-
-#ifdef USE_DLD
-
-    if (Wait) {
-        DLDAcquireExclusive(Resource, BugCheckId, Line);
-        Success = TRUE;
-    } else {
-        Success = ExAcquireResourceExclusiveLite(Resource,Wait);
-    }
-
-#else
-
-    Success = ExAcquireResourceExclusiveLite(Resource,Wait);
-
-#endif // USE_DLD
-
-
+    BOOLEAN Success = ExAcquireResourceExclusiveLite(Resource,Wait);
 
     if(Success) {
 #ifdef TRACK_RESOURCES
@@ -262,23 +215,7 @@ UDFDebugAcquireSharedWaitForExclusive(
         BugCheckId,Line,PsGetCurrentThread()));
 #endif
 
-    BOOLEAN     Success;
-
-#ifdef USE_DLD
-
-    if (Wait) {
-        DLDAcquireShared(Resource, BugCheckId, Line,TRUE);
-        Success = TRUE;
-    } else {
-        Success = ExAcquireSharedWaitForExclusive(Resource,Wait);
-    }
-
-#else
-
-    Success = ExAcquireSharedWaitForExclusive(Resource,Wait);
-
-#endif // USE_DLD
-
+    BOOLEAN Success = ExAcquireSharedWaitForExclusive(Resource,Wait);
 
     if(Success) {
 #ifdef TRACK_RESOURCES
@@ -463,32 +400,6 @@ not_bug:
 //    UDFPrint(("SysAllocated: %x\n",AllocCount));
     ExFreePool(addr);
 }
-
-NTSTATUS
-UDFWaitForSingleObject(
-    IN PLONG Object,
-    IN PLARGE_INTEGER Timeout OPTIONAL
-    )
-{
-    UDFPrint(("UDFWaitForSingleObject\n"));
-    LARGE_INTEGER LocalTimeout;
-    LARGE_INTEGER delay;
-    delay.QuadPart = -(WAIT_FOR_XXX_EMU_DELAY);
-
-    if(Timeout && (Timeout->QuadPart)) LocalTimeout = *Timeout;
-    else LocalTimeout.QuadPart = 0x7FFFFFFFFFFFFFFFLL;
-
-    UDFPrint(("SignalState %x\n", *Object));
-    if(!Object) return STATUS_INVALID_PARAMETER;
-    if((*Object)) return STATUS_SUCCESS;
-    while(LocalTimeout.QuadPart>0 && !(*Object) ) {
-        UDFPrint(("SignalState %x\n", *Object));
-        // Stall for a while.
-        KeDelayExecutionThread(KernelMode, FALSE, &delay);
-        LocalTimeout.QuadPart -= WAIT_FOR_XXX_EMU_DELAY;
-    }
-    return STATUS_SUCCESS;
-} // end UDFWaitForSingleObject()
 
 NTSTATUS
 DbgWaitForSingleObject_(

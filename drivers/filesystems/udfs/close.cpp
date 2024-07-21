@@ -310,10 +310,6 @@ UDFCommonClose(
             //AdPrint(("UDF: Closing volume, reset driver (e.g. stop BGF)\n"));
             //UDFResetDeviceDriver(Vcb, Vcb->TargetDeviceObject, FALSE);
 
-            AdPrint(("UDF: Closing volume, reset write status\n"));
-            RC = UDFPhSendIOCTL(IOCTL_CDRW_RESET_WRITE_STATUS, Vcb->TargetDeviceObject,
-                NULL, 0, NULL, 0, TRUE, NULL);
-
             if((Vcb->VCBFlags & UDF_VCB_FLAGS_BEING_DISMOUNTED) ||
                 ((!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) && (Vcb->VCBOpenCount <= UDF_RESIDUAL_REFERENCE))) {
                 // Try to KILL dismounted volume....

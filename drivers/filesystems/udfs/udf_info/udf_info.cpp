@@ -1565,13 +1565,11 @@ UDFReadEntityID_Domain(
     if((flags & ENTITYID_FLAGS_SOFT_RO) &&
         (Vcb->CompatFlags & UDF_VCB_IC_SOFT_RO)) {
         Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
-        Vcb->UserFSFlags |= UDF_USER_FS_FLAGS_SOFT_RO;
         UDFPrint(("       Soft-RO\n"));
     }
     if((flags & ENTITYID_FLAGS_HARD_RO) &&
        (Vcb->CompatFlags & UDF_VCB_IC_HW_RO)) {
         Vcb->VCBFlags |= UDF_VCB_FLAGS_MEDIA_READ_ONLY;
-        Vcb->UserFSFlags |= UDF_USER_FS_FLAGS_HW_RO;
         UDFPrint(("       Hard-RO\n"));
     }
 

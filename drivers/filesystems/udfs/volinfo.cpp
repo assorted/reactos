@@ -529,70 +529,16 @@ UDFQueryFsAttributeInfo(
     *Length &= ~1;
     //  Determine how much of the file system name will fit.
 
+#define UDF_FS_TITLE_UDF L"UDF"
+
 #define UDFSetFsTitle(tit) \
                 FsTypeTitle = UDF_FS_TITLE_##tit; \
                 FsTypeTitleLen = sizeof(UDF_FS_TITLE_##tit) - sizeof(WCHAR);
 
-    switch(Vcb->TargetDeviceObject->DeviceType) {
-    case FILE_DEVICE_CD_ROM: {
-        if(Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK) {
-            if(!Vcb->LastLBA) {
-                UDFSetFsTitle(BLANK);
-            } else {
-                UDFSetFsTitle(UNKNOWN);
-            }
-        } else
-        if(Vcb->CDR_Mode) {
-            if(Vcb->MediaClassEx == CdMediaClass_DVDR  ||
-               Vcb->MediaClassEx == CdMediaClass_DVDRW ||
-               Vcb->MediaClassEx == CdMediaClass_DVDRAM) {
-                UDFSetFsTitle(DVDR);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDpR ||
-               Vcb->MediaClassEx == CdMediaClass_DVDpRW) {
-                UDFSetFsTitle(DVDpR);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDROM) {
-                UDFSetFsTitle(DVDROM);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_CDROM) {
-                UDFSetFsTitle(CDROM);
-            } else {
-                UDFSetFsTitle(CDR);
-            }
-        } else {
-            if(Vcb->MediaClassEx == CdMediaClass_DVDROM ||
-               Vcb->MediaClassEx == CdMediaClass_DVDR ||
-               Vcb->MediaClassEx == CdMediaClass_DVDpR) {
-                UDFSetFsTitle(DVDROM);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDR) {
-                UDFSetFsTitle(DVDR);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDRW) {
-                UDFSetFsTitle(DVDRW);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDpRW) {
-                UDFSetFsTitle(DVDpRW);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDRAM) {
-                UDFSetFsTitle(DVDRAM);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_CDROM) {
-                UDFSetFsTitle(CDROM);
-            } else {
-                UDFSetFsTitle(CDRW);
-            }
-        }
-        break;
-    }
-    default: {
-        UDFSetFsTitle(HDD);
-        break;
-    }
-    }
+    UDFSetFsTitle(UDF);
 
 #undef UDFSetFsTitle
+#undef UDF_FS_TITLE_UDF
 
     if (*Length >= FsTypeTitleLen) {
         BytesToCopy = FsTypeTitleLen;

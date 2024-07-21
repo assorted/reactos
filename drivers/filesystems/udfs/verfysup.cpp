@@ -362,7 +362,6 @@ skip_logical_check:;
         if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED)) {
             UDFPrint(("UDFVerifyVolume: set UDF_VCB_FLAGS_VOLUME_MOUNTED\n"));
             Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_MOUNTED;
-            Vcb->SoftEjectReq = FALSE;
         }
         UDFClearFlag( Vpb->RealDevice->Flags, DO_VERIFY_VOLUME );
 
@@ -379,12 +378,6 @@ try_exit: NOTHING;
             UDFPrint(("UDFVerifyVolume: clear UDF_VCB_FLAGS_VOLUME_MOUNTED\n"));
             Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
             Vcb->WriteSecurity = FALSE;
-//            ASSERT(!(Vcb->EjectWaiter));
-            if(Vcb->EjectWaiter) {
-                UDFReleaseResource(&(Vcb->VCBResource));
-                UDFStopEjectWaiter(Vcb);
-                UDFAcquireResourceExclusive(&(Vcb->VCBResource),TRUE);
-            }
         } else
         if(NT_SUCCESS(RC) &&
            (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)){
@@ -425,8 +418,7 @@ try_exit: NOTHING;
                 if(!CacheInitialized) {
                     if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY)) {
                         if(!Vcb->CDR_Mode) {
-                            if((Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK) ||
-                               CdrwMediaClassEx_IsRAM(Vcb->MediaClassEx)) {
+                            if(Vcb->TargetDeviceObject->DeviceType == FILE_DEVICE_DISK) {
                                 UDFPrint(("UDFMountVolume: RAM mode\n"));
                                 Mode = WCACHE_MODE_RAM;
                             } else {
@@ -452,13 +444,6 @@ try_exit: NOTHING;
                     Vcb->WriteSecurity = FALSE;
                     Vcb->UseExtendedFE = FALSE;
                 }
-                UDFPrint(("UDFVerifyVolume: try start EjectWaiter\n"));
-                RC = UDFStartEjectWaiter(Vcb);
-                if(!NT_SUCCESS(RC)) {
-                    UDFPrint(("UDFVerifyVolume: start EjectWaiter failed\n"));
-                    Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
-                    Vcb->WriteSecurity = FALSE;
-                }
             }
         }
 
@@ -467,12 +452,6 @@ try_exit: NOTHING;
             UDFPrint(("UDFVerifyVolume: delete NewVcb\n"));
             WCacheFlushAll__(&(NewVcb->FastCache),NewVcb);
             WCacheRelease__(&(NewVcb->FastCache));
-
-            ASSERT(!(NewVcb->EjectWaiter));
-            // Waiter thread should be already stopped
-            // if MediaChangeCount have changed
-            ASSERT(!(Vcb->EjectWaiter));
-
             UDFCleanupVCB(NewVcb);
             MyFreePool__(NewVcb);
         }
@@ -719,7 +698,6 @@ UDFCheckForDismount(
             IoReleaseVpbSpinLock( SavedIrql );
             if(VcbAcquired)
                 UDFReleaseResource(&(Vcb->VCBResource));
-            UDFStopEjectWaiter(Vcb);
             UDFReleaseVCB(Vcb);
             VcbAcquired =
             VcbPresent = FALSE;
@@ -842,7 +820,6 @@ UDFDismountVcb(
             IoReleaseVpbSpinLock(SavedIrql);
             if(VcbAcquired)
                 UDFReleaseResource(&(Vcb->VCBResource));
-            UDFStopEjectWaiter(Vcb);
             UDFReleaseVCB(Vcb);
             VcbPresent = FALSE;
         }
@@ -857,7 +834,6 @@ UDFDismountVcb(
         IoReleaseVpbSpinLock( SavedIrql );
         if(VcbAcquired)
             UDFReleaseResource(&(Vcb->VCBResource));
-        UDFStopEjectWaiter(Vcb);
         UDFReleaseVCB(Vcb);
         VcbPresent = FALSE;
 

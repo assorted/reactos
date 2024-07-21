@@ -436,28 +436,6 @@ typedef struct _UDFIrpContextLite {
 //  wkstation into a server, tough luck !
 #define     UDF_NTAS_MULTIPLE                               (0x2)
 
-typedef struct _UDFEjectWaitContext {
-    PVCB    Vcb;
-
-    BOOLEAN SoftEjectReq;
-    UCHAR   Padding0[3];
-
-    KEVENT  StopReq;
-    PKEVENT WaiterStopped;
-    WORK_QUEUE_ITEM EjectReqWorkQueueItem;
-
-    GET_EVENT_USER_OUT EjectReqBuffer;
-    UCHAR   PaddingEvt[(0x40 - sizeof(GET_EVENT_USER_OUT)) & 0x0f];
-
-    GET_CAPABILITIES_USER_OUT DevCap;
-    UCHAR   PaddingDevCap[(0x40 - sizeof(GET_CAPABILITIES_USER_OUT)) & 0x0f];
-
-    GET_LAST_ERROR_USER_OUT Error;
-    UCHAR   PaddingError[(0x40 - sizeof(GET_LAST_ERROR_USER_OUT)) & 0x0f];
-
-    ULONG   Zero;
-} UDFEjectWaitContext, *PUDFEjectWaitContext;
-
 typedef struct _UDFBGWriteContext {
     PVCB  Vcb;
     PVOID Buffer;     // Target buffer
@@ -487,6 +465,26 @@ typedef struct _UDFFileIDCacheItem {
 } UDFFileIDCacheItem, *PUDFFileIDCacheItem;
 
 #define DIRTY_PAGE_LIMIT   32
+
+#define MAXIMUM_NUMBER_TRACKS_LARGE 0xAA
+
+typedef struct _CDROM_TOC_LARGE {
+
+    //
+    // Header
+    //
+
+    UCHAR Length[2];  // add two bytes for this field
+    UCHAR FirstTrack;
+    UCHAR LastTrack;
+
+    //
+    // Track data
+    //
+
+    TRACK_DATA TrackData[MAXIMUM_NUMBER_TRACKS_LARGE];
+
+} CDROM_TOC_LARGE;
 
 #endif /* _UDF_STRUCTURES_H_ */ // has this file been included?
 

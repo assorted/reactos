@@ -153,11 +153,6 @@ typedef struct _UDFVolumeControlBlock {
     //
     //---------------
 
-    // Eject Request waiter
-    struct _UDFEjectWaitContext*  EjectWaiter;
-    KEVENT          WaiterStopped;
-    ULONG           SoftEjectReq;
-
     ULONG           BM_FlushTime;
     ULONG           BM_FlushPriod;
     ULONG           Tree_FlushTime;
@@ -165,12 +160,6 @@ typedef struct _UDFVolumeControlBlock {
     ULONG           SkipCountLimit;
     ULONG           SkipEjectCountLimit;
 
-/*    // XP CD Burner related data
-    UNICODE_STRING  CDBurnerVolume;
-    BOOLEAN         CDBurnerVolumeValid;
-*/
-    // Background writes counter
-    LONG            BGWriters;
     // File Id cache
     struct _UDFFileIDCacheItem* FileIdCache;
     ULONG           FileIdCount;
@@ -187,12 +176,6 @@ typedef struct _UDFVolumeControlBlock {
   #ifdef _BROWSE_UDF_
     PUDF_FILE_INFO  RootFileInfo;
   #endif
-
-
-  #ifdef UDF_FORMAT_MEDIA
-    struct _UDFFmtState* fms;
-  #endif //UDF_FORMAT_MEDIA
-
 
     PDEVICE_OBJECT  TargetDeviceObject;
     ULONG           FsDeviceType;
@@ -251,27 +234,18 @@ typedef struct _UDFVolumeControlBlock {
     UCHAR           MediaType;
     UCHAR           MediaClassEx;
 
-    UCHAR           DiscStat;
     UCHAR           PhErasable;
     UCHAR           PhDiskType;
     UCHAR           PhMediaCapFlags;
 
     UCHAR           MRWStatus;
-    UCHAR           UseEvent;
     BOOLEAN         BlankCD;
     UCHAR           Reserved;
 
     ULONG           PhSerialNumber;
 
-    // Speed control
-    SET_CD_SPEED_EX_USER_IN SpeedBuf;
-    ULONG           MaxWriteSpeed;
-    ULONG           MaxReadSpeed;
-    ULONG           CurSpeed;
-
     BOOLEAN         CDR_Mode;
     BOOLEAN         DVD_Mode;
-    BOOLEAN         WriteParamsReq;
 
 #define SYNC_CACHE_RECOVERY_NONE     0
 #define SYNC_CACHE_RECOVERY_ATTEMPT  1
@@ -289,9 +263,6 @@ typedef struct _UDFVolumeControlBlock {
     PCHAR           ZBuffer;
     PCHAR           fZBuffer;
     ULONG           fZBufferSize;
-    PSEND_OPC_INFO_HEADER_USER_IN OPCh;
-    PGET_WRITE_MODE_USER_OUT WParams;
-    PGET_LAST_ERROR_USER_OUT Error;
 
     ULONG           IoErrorCounter;
     // Media change count (equal to the same field in CDFS VCB)
@@ -448,7 +419,6 @@ typedef struct _UDFVolumeControlBlock {
 
 #endif //_BROWSE_UDF_
     uint32          CompatFlags;
-    uint32          UserFSFlags;
     UCHAR           ShowBlankCd;
 
 } VCB, *PVCB;
@@ -462,7 +432,6 @@ typedef struct _UDFVolumeControlBlock {
 #define         UDF_VCB_FLAGS_VOLUME_READ_ONLY      (0x00000010)
 
 #define         UDF_VCB_FLAGS_VCB_INITIALIZED       (0x00000020)
-#define         UDF_VCB_FLAGS_OUR_DEVICE_DRIVER     (0x00000040)
 #define         UDF_VCB_FLAGS_NO_SYNC_CACHE         (0x00000080)
 #define         UDF_VCB_FLAGS_REMOVABLE_MEDIA       (0x00000100)
 #define         UDF_VCB_FLAGS_MEDIA_LOCKED          (0x00000200)
@@ -475,7 +444,6 @@ typedef struct _UDFVolumeControlBlock {
 #define         UDF_VCB_FLAGS_RAW_DISK              (0x00040000)
 #define         UDF_VCB_FLAGS_USE_STD               (0x00080000)
 
-#define         UDF_VCB_FLAGS_STOP_WAITER_EVENT     (0x00100000)
 #define         UDF_VCB_FLAGS_NO_DELAYED_CLOSE      (0x00200000)
 #define         UDF_VCB_FLAGS_MEDIA_READ_ONLY       (0x00400000)
 
@@ -542,12 +510,8 @@ typedef struct _UDFData {
     //  Although not really required, it helps if a helper application
     //  writen by us wishes to send us control information via
     //  IOCTL requests ...
-    PDEVICE_OBJECT              UDFDeviceObject;
     PDEVICE_OBJECT              UDFDeviceObject_CD;
     PDEVICE_OBJECT              UDFDeviceObject_HDD;
-    PDEVICE_OBJECT              UDFDeviceObject_TAPE;
-    PDEVICE_OBJECT              UDFDeviceObject_OTHER;
-    PDEVICE_OBJECT              UDFFilterDeviceObject;
     // we will keep a list of all logical volumes for our UDF FSD
     LIST_ENTRY                  VCBQueue;
     // the NT Cache Manager, the I/O Manager and we will conspire

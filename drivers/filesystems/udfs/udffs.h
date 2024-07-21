@@ -105,20 +105,15 @@
 
 /************* END OF OPTIONS **************/
 
-// some constant definitions
-#define UDF_PANIC_IDENTIFIER        (0x86427531)
-
 // Common include files - should be in the include dir of the MS supplied IFS Kit
-#ifndef _CONSOLE
-extern "C" {
-#include "ntifs.h"
-#include "ntifs_ex.h"
-}
-#endif //_CONSOLE
 
+#include <ntifs.h>
+#include <ntddscsi.h>
+#include <scsi.h>
+#include <ntddcdrm.h>
+#include <ntddcdvd.h>
+#include "ntdddisk.h"
 #include <pseh/pseh2.h>
-
-#include "Include/check_env.h"
 
 #define PEXTENDED_IO_STACK_LOCATION  PIO_STACK_LOCATION
 
@@ -133,19 +128,10 @@ extern "C" {
 #define OS_SUCCESS(a)     NT_SUCCESS(a)
 #define OSSTATUS          NTSTATUS
 
-#ifndef _CONSOLE
-#include "ntdddisk.h"
-#include <devioctl.h>
-#include "Include/CrossNt/CrossNt.h"
-#endif //_CONSOLE
-
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
-//#include "ecma_167.h"
-//#include "osta_misc.h"
 #include "wcache.h"
-#include "CDRW/cdrw_usr.h"
 
 #include "Include/regtools.h"
 
@@ -161,13 +147,12 @@ extern UDFData              UDFGlobalData;
 
 #ifndef _CONSOLE
 #include "env_spec.h"
-#include "dldetect.h"
 #include "udf_dbg.h"
 #else
 #include "Include/env_spec_w32.h"
 #endif //_CONSOLE
 
-#include "sys_spec.h"
+#include "Include/Sys_spec_lib.h"
 
 #include "udf_info/udf_info.h"
 
@@ -177,9 +162,7 @@ extern UDFData              UDFGlobalData;
 
 #include "Include/phys_lib.h"
 #include "errmsg.h"
-//#include "Include/tools.h"
 #include "udfpubl.h"
-//#include "ntifs.h"
 #include "mem.h"
 
 extern CCHAR   DefLetter[];
@@ -197,9 +180,6 @@ extern CCHAR   DefLetter[];
 
 #define UDFQuadAlign(Value)         ((((uint32)(Value)) + 7) & 0xfffffff8)
 
-// to perform a bug-check (panic), the following macro is used
-#define UDFPanic(arg1, arg2, arg3)                  \
-    (KeBugCheckEx(UDF_PANIC_IDENTIFIER, UDF_BUG_CHECK_ID | __LINE__, (uint32)(arg1), (uint32)(arg2), (uint32)(arg3)))
 // small check for illegal open mode (desired access) if volume is
 // read only (on standard CD-ROM device or another like this)
 #define UdfIllegalFcbAccess(Vcb,DesiredAccess) ((   \

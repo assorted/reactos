@@ -121,7 +121,6 @@ UDFCommonShutdown(
     PIO_STACK_LOCATION  IrpSp = NULL;
     PVCB Vcb;
     PLIST_ENTRY Link;
-    PPREVENT_MEDIA_REMOVAL_USER_IN Buf = NULL;
     LARGE_INTEGER delay;
 
     UDFPrint(("UDFCommonShutdown\n"));
@@ -134,10 +133,6 @@ UDFCommonShutdown(
         // First, get a pointer to the current I/O stack location
         IrpSp = IoGetCurrentIrpStackLocation(Irp);
         ASSERT(IrpSp);
-
-        Buf = (PPREVENT_MEDIA_REMOVAL_USER_IN)MyAllocatePool__(NonPagedPool, sizeof(PREVENT_MEDIA_REMOVAL_USER_IN));
-        if(!Buf)
-            try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
 
         // (a) Block all new "mount volume" requests by acquiring an appropriate
         //       global resource/lock.
@@ -189,8 +184,6 @@ UDFCommonShutdown(
             UDFCloseAllDelayed(Vcb);
 #endif //UDF_DELAYED_CLOSE
 
-            // disable Eject Waiter
-            UDFStopEjectWaiter(Vcb);
             // Acquire Vcb resource
             UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
 
@@ -232,7 +225,7 @@ UDFCommonShutdown(
 
             if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_SHUTDOWN)) {
 
-                UDFDoDismountSequence(Vcb, Buf, FALSE);
+                UDFDoDismountSequence(Vcb, FALSE);
                 if(Vcb->VCBFlags & UDF_VCB_FLAGS_REMOVABLE_MEDIA) {
                     // let drive flush all data before reset
                     delay.QuadPart = -10000000; // 1 sec
@@ -250,11 +243,6 @@ UDFCommonShutdown(
         UDFReleaseResource( &(UDFGlobalData.GlobalDataResource) );
 
         // Now, delete any device objects, etc. we may have created
-        if (UDFGlobalData.UDFDeviceObject) {
-            IoDeleteDevice(UDFGlobalData.UDFDeviceObject);
-            UDFGlobalData.UDFDeviceObject = NULL;
-        }
-
         IoUnregisterFileSystem(UDFGlobalData.UDFDeviceObject_CD);
         if (UDFGlobalData.UDFDeviceObject_CD) {
             IoDeleteDevice(UDFGlobalData.UDFDeviceObject_CD);
@@ -283,11 +271,8 @@ UDFCommonShutdown(
 
         RC = STATUS_SUCCESS;
 
-try_exit: NOTHING;
-
     } _SEH2_FINALLY {
 
-        if(Buf) MyFreePool__(Buf);
         if(!_SEH2_AbnormalTermination()) {
             Irp->IoStatus.Status = RC;
             Irp->IoStatus.Information = 0;

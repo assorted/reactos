@@ -234,13 +234,7 @@ UDFCommonCleanup(
 
             MmPrint(("    CcUninitializeCacheMap()\n"));
             CcUninitializeCacheMap(FileObject, NULL, NULL);
-            // reset device
-            if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) &&
-                (Vcb->VCBFlags & UDF_VCB_FLAGS_OUR_DEVICE_DRIVER)) {
-                // this call doesn't modify data buffer
-                // it just requires its presence
-                UDFResetDeviceDriver(Vcb, Vcb->TargetDeviceObject, TRUE);
-            }
+
             //  We must clean up the share access at this time, since we may not
             //  get a Close call for awhile if the file was mapped through this
             //  File Object.

@@ -34,6 +34,7 @@
 }
 
 #define         UDF_BUG_CHECK_ID                UDF_FILE_UDF_INFO_MOUNT
+#define         MRW_DMA_OFFSET           0x500
 
 OSSTATUS
 __fastcall
@@ -1279,7 +1280,6 @@ exit_with_err:
             case UDF_PART_DAMAGED_RO:
                 UDFPrint(("UDF: Switch to r/o mode.\n"));
                 Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
-                Vcb->UserFSFlags |= UDF_USER_FS_FLAGS_MEDIA_DEFECT_RO;
                 RC = STATUS_SUCCESS;
                 break;
             case UDF_PART_DAMAGED_NO:
@@ -1359,7 +1359,6 @@ exit_with_err:
         if(Vcb->minUDFWriteRev > UDF_MAX_WRITE_REVISION) {
             UDFPrint(("     Target FS requires: %x Revision => ReadOnly\n",Vcb->minUDFWriteRev));
             Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
-            Vcb->UserFSFlags |= UDF_USER_FS_FLAGS_NEW_FS_RO;
         }
 
         LVID_hd = (LogicalVolHeaderDesc*)&(Vcb->LVid->logicalVolContentsUse);
@@ -2075,7 +2074,6 @@ UDFLoadPartDesc(
                 // Soft-read-only volume
                 UDFPrint(("Soft Read-only volume\n"));
                 Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
-                Vcb->UserFSFlags |= UDF_USER_FS_FLAGS_PART_RO;
             } else if(p->accessType > PARTITION_ACCESS_MAX_KNOWN) {
                 return STATUS_UNRECOGNIZED_MEDIA;
             }

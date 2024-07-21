@@ -481,8 +481,6 @@ extern NTSTATUS NTAPI UDFMountVolume(
 PtrUDFIrpContext    PtrIrpContext,
 PIRP Irp);
 
-extern NTSTATUS UDFStartEjectWaiter(IN PVCB Vcb);
-
 extern VOID UDFScanForDismountedVcb (IN PtrUDFIrpContext IrpContext);
 
 extern NTSTATUS UDFCompleteMount(IN PVCB Vcb);
@@ -747,9 +745,6 @@ extern OSSTATUS UDFPrepareForWriteOperation(
 extern OSSTATUS UDFReadDiscTrackInfo(PDEVICE_OBJECT DeviceObject, // the target device object
                                      PVCB           Vcb);         // Volume Control Block for ^ DevObj
 
-extern OSSTATUS UDFReadAndProcessFullToc(PDEVICE_OBJECT DeviceObject, // the target device object
-                                         PVCB           Vcb);
-
 extern OSSTATUS UDFUseStandard(PDEVICE_OBJECT DeviceObject, // the target device object
                                PVCB           Vcb);         // Volume control block fro this DevObj
 
@@ -759,21 +754,12 @@ extern OSSTATUS UDFGetBlockSize(PDEVICE_OBJECT DeviceObject, // the target devic
 extern OSSTATUS UDFGetDiskInfo(IN PDEVICE_OBJECT DeviceObject, // the target device object
                                IN PVCB           Vcb);         // Volume control block from this DevObj
 
-extern VOID NTAPI UDFEjectReqWaiter(IN PVOID Context);
-
-extern VOID     UDFStopEjectWaiter(PVCB Vcb);
-
-//extern OSSTATUS UDFPrepareForReadOperation(IN PVCB Vcb,
-//                                           IN ULONG Lba);
-//#define UDFPrepareForReadOperation(a,b) (STATUS_SUCCESS)
-
 extern VOID     UDFUpdateNWA(PVCB Vcb,
                              ULONG LBA,
                              ULONG BCount,
                              OSSTATUS RC);
 
 extern OSSTATUS UDFDoDismountSequence(IN PVCB Vcb,
-                                      IN PPREVENT_MEDIA_REMOVAL_USER_IN Buf,
                                       IN BOOLEAN Eject);
 
 // read physical sectors

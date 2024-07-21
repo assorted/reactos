@@ -16,8 +16,6 @@
 
 #include "udffs.h"
 
-#include "CDRW/scsi_port.h"
-
 #define UDF_CURRENT_BUILD 123456789
 
 // define the file specific bug-check id
@@ -165,7 +163,6 @@ UDFCommonDeviceControl(
     BOOLEAN                 FSDevObj;
     BOOLEAN                 UnsafeIoctl = TRUE;
     UCHAR                   ScsiCommand;
-    PPREVENT_MEDIA_REMOVAL_USER_IN Buf = NULL;    // FSD buffer
     PCDB                    Cdb;
     PCHAR                   CdbData;
     PCHAR                   ModeSelectData;
@@ -266,44 +263,18 @@ UDFCommonDeviceControl(
             case IOCTL_CDROM_GET_VOLUME:
             case IOCTL_CDROM_SET_VOLUME:
 
-            case IOCTL_CDRW_SET_SPEED:
-            case IOCTL_CDRW_GET_CAPABILITIES:
-            case IOCTL_CDRW_GET_MEDIA_TYPE_EX:
-            case IOCTL_CDRW_GET_MEDIA_TYPE:
-
             case IOCTL_DISK_GET_MEDIA_TYPES:
             case IOCTL_STORAGE_GET_MEDIA_TYPES:
             case IOCTL_STORAGE_GET_MEDIA_TYPES_EX:
 
             case IOCTL_DISK_IS_WRITABLE:
-
-            case IOCTL_CDRW_GET_WRITE_MODE:
-            case IOCTL_CDRW_READ_TRACK_INFO:
-            case IOCTL_CDRW_READ_DISC_INFO:
-            case IOCTL_CDRW_BUFFER_CAPACITY:
-            case IOCTL_CDRW_GET_SIGNATURE:
-            case IOCTL_CDRW_TEST_UNIT_READY:
-            case IOCTL_CDRW_GET_LAST_ERROR:
-            case IOCTL_CDRW_MODE_SENSE:
-            case IOCTL_CDRW_LL_READ:
-            case IOCTL_CDRW_READ_ATIP:
-            case IOCTL_CDRW_READ_CD_TEXT:
-            case IOCTL_CDRW_READ_TOC_EX:
-            case IOCTL_CDRW_READ_FULL_TOC:
-            case IOCTL_CDRW_READ_PMA:
-            case IOCTL_CDRW_READ_SESSION_INFO:
-            case IOCTL_CDRW_GET_DEVICE_INFO:
-            case IOCTL_CDRW_GET_EVENT:
-
             case IOCTL_DVD_READ_STRUCTURE:
 
-            case IOCTL_CDRW_GET_DEVICE_NAME:
             case IOCTL_MOUNTDEV_QUERY_DEVICE_NAME:
 
             case IOCTL_UDF_GET_RETRIEVAL_POINTERS:
             case IOCTL_UDF_GET_SPEC_RETRIEVAL_POINTERS:
             case IOCTL_UDF_GET_FILE_ALLOCATION_MODE:
-            case IOCTL_UDF_GET_VERSION:
             case IOCTL_UDF_IS_VOLUME_JUST_MOUNTED:
             case IOCTL_UDF_SET_OPTIONS:
 //            case :
@@ -345,22 +316,22 @@ UDFCommonDeviceControl(
                     CdbData = NULL;
                 }
             }
-            ScsiCommand = Cdb->CDB6.OperationCode;
+            ScsiCommand = Cdb->AsByte[0];
 
-            if(ScsiCommand == SCSIOP_WRITE_CD) {
+            if(ScsiCommand == SCSIOP_WRITE) {
                 UDFPrint(("Write10, LBA %2.2x%2.2x%2.2x%2.2x\n",
-                         Cdb->WRITE_CD.LBA[0],
-                         Cdb->WRITE_CD.LBA[1],
-                         Cdb->WRITE_CD.LBA[2],
-                         Cdb->WRITE_CD.LBA[3]
+                         Cdb->CDB10.LogicalBlockByte0,
+                         Cdb->CDB10.LogicalBlockByte1,
+                         Cdb->CDB10.LogicalBlockByte2,
+                         Cdb->CDB10.LogicalBlockByte3
                          ));
             } else
             if(ScsiCommand == SCSIOP_WRITE12) {
                 UDFPrint(("Write12, LBA %2.2x%2.2x%2.2x%2.2x\n",
-                         Cdb->CDB12READWRITE.LBA[0],
-                         Cdb->CDB12READWRITE.LBA[1],
-                         Cdb->CDB12READWRITE.LBA[2],
-                         Cdb->CDB12READWRITE.LBA[3]
+                         Cdb->CDB12.LogicalBlock[0],
+                         Cdb->CDB12.LogicalBlock[1],
+                         Cdb->CDB12.LogicalBlock[2],
+                         Cdb->CDB12.LogicalBlock[3]
                          ));
             } else {
             }
@@ -370,8 +341,7 @@ UDFCommonDeviceControl(
 //                PMODE_PARAMETER_HEADER ParamHdr = (PMODE_PARAMETER_HEADER)CdbData;
                 ModeSelectData = CdbData+4;
                 switch(ModeSelectData[0]) {
-                case MODE_PAGE_MRW2:
-                case MODE_PAGE_WRITE_PARAMS:
+                case MODE_PAGE_WRITE_PARAMETERS:
                 case MODE_PAGE_MRW:
                     UDFPrint(("Unsafe MODE_SELECT_6 via pass-through (%2.2x)\n", ModeSelectData[0]));
                     goto unsafe_direct_scsi_cmd;
@@ -382,21 +352,20 @@ UDFCommonDeviceControl(
 //                PMODE_PARAMETER_HEADER10 ParamHdr = (PMODE_PARAMETER_HEADER10)CdbData;
                 ModeSelectData = CdbData+8;
                 switch(ModeSelectData[0]) {
-                case MODE_PAGE_MRW2:
-                case MODE_PAGE_WRITE_PARAMS:
+                case MODE_PAGE_WRITE_PARAMETERS:
                 case MODE_PAGE_MRW:
                     UDFPrint(("Unsafe MODE_SELECT_10 via pass-through (%2.2x)\n", ModeSelectData[0]));
                     goto unsafe_direct_scsi_cmd;
                 }
                 break; }
 
-            case SCSIOP_RESERVE_TRACK:
+            case SCSIOP_RESERVE_TRACK_RZONE:
             case SCSIOP_SEND_CUE_SHEET:
             case SCSIOP_SEND_DVD_STRUCTURE:
             case SCSIOP_CLOSE_TRACK_SESSION:
             case SCSIOP_FORMAT_UNIT:
             case SCSIOP_WRITE6:
-            case SCSIOP_WRITE_CD:
+            case SCSIOP_WRITE:
             case SCSIOP_BLANK:
             case SCSIOP_WRITE12:
             case SCSIOP_SET_STREAMING:
@@ -418,18 +387,11 @@ unsafe_direct_scsi_cmd:
                 UDFCloseAllDelayed(Vcb);
 #endif //UDF_DELAYED_CLOSE
 
-                // allocate tmp buffer for FSD calls
-                Buf = (PPREVENT_MEDIA_REMOVAL_USER_IN)MyAllocatePool__(NonPagedPool, sizeof(PREVENT_MEDIA_REMOVAL_USER_IN));
-                if(!Buf)
-                    try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-
                 UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
                 AcquiredVcb = TRUE;
                 UDFInterlockedDecrement((PLONG)&(Vcb->VCBOpenCount));
 
-                UDFDoDismountSequence(Vcb, Buf, FALSE);
-                MyFreePool__(Buf);
-                Buf = NULL;
+                UDFDoDismountSequence(Vcb, FALSE);
                 Vcb->MediaLockCount = 0;
 
                 Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
@@ -438,8 +400,6 @@ unsafe_direct_scsi_cmd:
                 // Release the Vcb resource.
                 UDFReleaseResource(&(Vcb->VCBResource));
                 AcquiredVcb = FALSE;
-                // disable Eject Request Waiter if any
-                UDFStopEjectWaiter(Vcb);
 
                 // Make sure, that volume will never be quick-remounted
                 // It is very important for ChkUdf utility and
@@ -451,16 +411,10 @@ unsafe_direct_scsi_cmd:
                 goto notify_media_change;
 
             case SCSIOP_START_STOP_UNIT:
-            case SCSIOP_DOORLOCK:
-            case SCSIOP_DOORUNLOCK:
             case SCSIOP_MEDIUM_REMOVAL:
                 UDFPrint(("UDF Medium/Tray control IOCTL via pass-through\n"));
             }
             goto ioctl_do_default;
-
-        case IOCTL_CDRW_BLANK:
-        case IOCTL_CDRW_LL_WRITE:
-        case IOCTL_CDRW_FORMAT_UNIT:
 
 notify_media_change:
 /*            Vcb->VCBFlags |= UDF_VCB_FLAGS_UNSAFE_IOCTL;
@@ -484,33 +438,6 @@ notify_media_change:
             break;
         }
 
-        case IOCTL_UDF_DISABLE_DRIVER: {
-
-            UDFPrint(("UDF Disable driver\n"));
-            IoUnregisterFileSystem(UDFGlobalData.UDFDeviceObject);
-            // Now, delete any device objects, etc. we may have created
-            if (UDFGlobalData.UDFDeviceObject) {
-                IoDeleteDevice(UDFGlobalData.UDFDeviceObject);
-                UDFGlobalData.UDFDeviceObject = NULL;
-            }
-
-            // free up any memory we might have reserved for zones/lookaside
-            //  lists
-            if (UDFGlobalData.UDFFlags & UDF_DATA_FLAGS_ZONES_INITIALIZED) {
-                UDFDestroyZones();
-            }
-
-            // delete the resource we may have initialized
-            if (UDFGlobalData.UDFFlags & UDF_DATA_FLAGS_RESOURCE_INITIALIZED) {
-                // un-initialize this resource
-                UDFDeleteResource(&(UDFGlobalData.GlobalDataResource));
-                UDFClearFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
-            }
-            RC = STATUS_SUCCESS;
-            CompleteIrp = TRUE;
-            Irp->IoStatus.Information = 0;
-            break;
-        }
         case IOCTL_UDF_INVALIDATE_VOLUMES: {
             UDFPrint(("UDF Invaidate volume\n"));
             if(AcquiredVcb) {
@@ -645,73 +572,6 @@ notify_media_change:
             CompleteIrp = TRUE;
             break;
 #endif //UDF_READ_ONLY_BUILD
-        case IOCTL_UDF_GET_VERSION: {
-
-            PUDF_GET_VERSION_OUT udf_ver;
-
-            UDFPrint(("UDFUserFsCtrlRequest: IOCTL_UDF_GET_VERSION\n"));
-
-            Irp->IoStatus.Information = 0;
-            CompleteIrp = TRUE;
-
-            if(!IrpSp->Parameters.DeviceIoControl.OutputBufferLength) {
-                UDFPrint(("!OutputBufferLength\n"));
-                try_return(RC = STATUS_SUCCESS);
-            }
-            //  Check the size of the output buffer.
-            if(IrpSp->Parameters.DeviceIoControl.OutputBufferLength < sizeof(UDF_GET_VERSION_OUT)) {
-                UDFPrint(("OutputBufferLength < %x\n", sizeof(UDF_GET_VERSION_OUT)));
-                try_return(RC = STATUS_BUFFER_TOO_SMALL);
-            }
-
-            udf_ver = (PUDF_GET_VERSION_OUT)(Irp->AssociatedIrp.SystemBuffer);
-            if(!udf_ver) {
-                UDFPrint(("!udf_ver\n"));
-                try_return(RC = STATUS_INVALID_USER_BUFFER);
-            }
-
-            RtlZeroMemory(udf_ver, IrpSp->Parameters.DeviceIoControl.OutputBufferLength);
-
-            udf_ver->header.Length = sizeof(UDF_GET_VERSION_OUT);
-            udf_ver->header.DriverVersionMj    = 0x00010005;
-            udf_ver->header.DriverVersionMn    = 0x12;
-            udf_ver->header.DriverVersionBuild = UDF_CURRENT_BUILD;
-
-            udf_ver->FSVersionMj = Vcb->CurrentUDFRev >> 8;
-            udf_ver->FSVersionMn = Vcb->CurrentUDFRev & 0xff;
-            udf_ver->FSFlags     = Vcb->UserFSFlags;
-            if( ((Vcb->origIntegrityType == INTEGRITY_TYPE_OPEN) &&
-                (Vcb->CompatFlags & UDF_VCB_IC_DIRTY_RO))
-                    ||
-               (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) ) {
-                UDFPrint(("  UDF_USER_FS_FLAGS_RO\n"));
-                udf_ver->FSFlags |= UDF_USER_FS_FLAGS_RO;
-            }
-            if(Vcb->VCBFlags & UDF_VCB_FLAGS_OUR_DEVICE_DRIVER) {
-                UDFPrint(("  UDF_USER_FS_FLAGS_OUR_DRIVER\n"));
-                udf_ver->FSFlags |= UDF_USER_FS_FLAGS_OUR_DRIVER;
-            }
-            if(Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK) {
-                UDFPrint(("  UDF_USER_FS_FLAGS_RAW\n"));
-                udf_ver->FSFlags |= UDF_USER_FS_FLAGS_RAW;
-            }
-            if(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY) {
-                UDFPrint(("  UDF_USER_FS_FLAGS_MEDIA_RO\n"));
-                udf_ver->FSFlags |= UDF_USER_FS_FLAGS_MEDIA_RO;
-            }
-            if(Vcb->FP_disc) {
-                UDFPrint(("  UDF_USER_FS_FLAGS_FP\n"));
-                udf_ver->FSFlags |= UDF_USER_FS_FLAGS_FP;
-            }
-            udf_ver->FSCompatFlags = Vcb->CompatFlags;
-
-            udf_ver->FSCfgVersion = Vcb->CfgVersion;
-
-            Irp->IoStatus.Information = sizeof(UDF_GET_VERSION_OUT);
-            RC = STATUS_SUCCESS;
-            CompleteIrp = TRUE;
-
-            break; }
         case IOCTL_UDF_SET_OPTIONS: {
 
             PUDF_SET_OPTIONS_IN udf_opt;
@@ -800,13 +660,6 @@ notify_media_change:
             RC = STATUS_SUCCESS;
             break; }
 #endif //0
-        case IOCTL_CDRW_RESET_DRIVER:
-
-            UDFPrint(("UDF: IOCTL_CDRW_RESET_DRIVER\n"));
-            Vcb->MediaLockCount = 0;
-            Vcb->VCBFlags &= ~UDF_VCB_FLAGS_MEDIA_LOCKED;
-            goto ioctl_do_default;
-
         case FSCTL_ALLOW_EXTENDED_DASD_IO:
 
             UDFPrint(("UDFUserFsCtrlRequest: FSCTL_ALLOW_EXTENDED_DASD_IO\n"));
@@ -833,38 +686,7 @@ notify_media_change:
         case IOCTL_CDROM_EJECT_MEDIA: {
 
             UDFPrint(("UDF Reset/Eject request\n"));
-//            PPREVENT_MEDIA_REMOVAL_USER_IN Buf;
-
-            if(Vcb->EjectWaiter) {
-                UDFPrint(("  Vcb->EjectWaiter present\n"));
-                Irp->IoStatus.Information = 0;
-                Vcb->EjectWaiter->SoftEjectReq = TRUE;
-                Vcb->SoftEjectReq = TRUE;
-                CompleteIrp = TRUE;
-                try_return(RC = STATUS_SUCCESS);
-            }
-            UDFPrint(("  !Vcb->EjectWaiter\n"));
             goto ioctl_do_default;
-/*
-            Buf = (PPREVENT_MEDIA_REMOVAL_USER_IN)MyAllocatePool__(NonPagedPool, sizeof(PREVENT_MEDIA_REMOVAL_USER_IN));
-            if(!Buf) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-            // Acquire Vcb resource (Shared -> Exclusive)
-            UDFReleaseResource(&(Vcb->VCBResource));
-            UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
-
-            Vcb->Vpb->RealDevice->Flags |= DO_VERIFY_VOLUME;
-            Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
-
-            UDFDoDismountSequence(Vcb, Buf, IoControlCode == IOCTL_CDROM_EJECT_MEDIA);
-            // disable Eject Request Waiter if any
-            MyFreePool__(Buf);
-            // Release the Vcb resource.
-            UDFReleaseResource(&(Vcb->VCBResource));
-            AcquiredVcb = FALSE;
-            UDFStopEjectWaiter(Vcb);
-            CompleteIrp = TRUE;
-            RC = STATUS_SUCCESS;
-            break;*/
         }
         case IOCTL_CDROM_DISK_TYPE: {
 
@@ -888,13 +710,11 @@ notify_media_change:
             break;
         }
 
-        case IOCTL_CDRW_LOCK_DOOR:
         case IOCTL_STORAGE_MEDIA_REMOVAL:
         case IOCTL_DISK_MEDIA_REMOVAL:
         case IOCTL_CDROM_MEDIA_REMOVAL: {
             UDFPrint(("UDF Lock/Unlock\n"));
-            PPREVENT_MEDIA_REMOVAL_USER_IN buffer; // user supplied buffer
-            buffer = (PPREVENT_MEDIA_REMOVAL_USER_IN)(Irp->AssociatedIrp.SystemBuffer);
+            PPREVENT_MEDIA_REMOVAL buffer = (PPREVENT_MEDIA_REMOVAL)(Irp->AssociatedIrp.SystemBuffer);
             if(!buffer) {
                 if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) {
                     UDFPrint(("!mounted\n"));
@@ -916,11 +736,6 @@ notify_media_change:
                     goto ioctl_do_default;
                 }
 #if 0
-                // allocate tmp buffer for FSD calls
-                Buf = (PPREVENT_MEDIA_REMOVAL_USER_IN)MyAllocatePool__(NonPagedPool, sizeof(PREVENT_MEDIA_REMOVAL_USER_IN));
-                if(!Buf)
-                    try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-
                 // Acquire Vcb resource (Shared -> Exclusive)
                 UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
                 UDFReleaseResource(&(Vcb->VCBResource));
@@ -933,15 +748,11 @@ notify_media_change:
                 UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
                 UDFInterlockedDecrement((PLONG)&(Vcb->VCBOpenCount));
 
-                UDFDoDismountSequence(Vcb, Buf, FALSE);
-                MyFreePool__(Buf);
-                Buf = NULL;
+                UDFDoDismountSequence(Vcb, FALSE);
                 Vcb->MediaLockCount = 0;
                 // Release the Vcb resource.
                 UDFReleaseResource(&(Vcb->VCBResource));
                 AcquiredVcb = FALSE;
-                // disable Eject Request Waiter if any
-                UDFStopEjectWaiter(Vcb);
 #else
                 // just ignore
 #endif
@@ -1024,10 +835,6 @@ try_exit: NOTHING;
         if(AcquiredVcb) {
             UDFReleaseResource(&(Vcb->VCBResource));
             AcquiredVcb = FALSE;
-        }
-
-        if(Buf) {
-            MyFreePool__(Buf);
         }
 
         if (!_SEH2_AbnormalTermination() &&

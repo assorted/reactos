@@ -486,12 +486,6 @@ UDFCommonCreate(
 
         UDFFlushTryBreak(Vcb);
 
-        if (Vcb->SoftEjectReq) {
-            AdPrint(("    Eject requested\n"));
-            ReturnedInformation = FILE_DOES_NOT_EXIST;
-            try_return(RC = STATUS_FILE_INVALID);
-        }
-
         // If the volume has been locked, fail the request
         if ((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) &&
             (Vcb->VolumeLockPID != GetCurrentPID())) {

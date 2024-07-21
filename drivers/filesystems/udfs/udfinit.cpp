@@ -75,10 +75,7 @@ DriverEntry(
     )
 {
     NTSTATUS        RC = STATUS_SUCCESS;
-    UNICODE_STRING  DriverDeviceName;
-    UNICODE_STRING  unicodeDeviceName;
     BOOLEAN         InternalMMInitialized = FALSE;
-    PUDFFS_DEV_EXTENSION FSDevExt;
     HKEY            hUdfRootKey;
 
 //    UDFPrint(("UDF: Entered " VER_STR_PRODUCT_NAME " UDF DriverEntry \n"));
@@ -123,11 +120,6 @@ DriverEntry(
             }
             InternalMMInitialized = TRUE;
 
-#ifdef USE_DLD
-            // Initialize Deadlock Detector
-            DLDInit(1280);
-            DLDetectInitialized = TRUE;
-#endif
             // before we proceed with any more initialization, read in
             //  user supplied configurable values ...
 
@@ -186,42 +178,6 @@ DriverEntry(
 
             UDFGlobalData.CPU_Count = KeNumberProcessors;
 
-            // create a device object representing the driver itself
-            //  so that requests can be targeted to the driver ...
-            //  e.g. for a disk-based FSD, "mount" requests will be sent to
-            //        this device object by the I/O Manager.
-            //        For a redirector/server, you may have applications
-            //        send "special" IOCTL's using this device object ...
-
-            RtlInitUnicodeString(&DriverDeviceName, UDF_FS_NAME);
-
-            UDFPrint(("UDF: Create Driver dev obj\n"));
-            if (!NT_SUCCESS(RC = IoCreateDevice(
-                    DriverObject,       // our driver object
-                    sizeof(UDFFS_DEV_EXTENSION),  // don't need an extension for this object
-                    &DriverDeviceName,  // name - can be used to "open" the driver
-                                        // see the book for alternate choices
-                    FILE_DEVICE_CD_ROM_FILE_SYSTEM,
-                    0,                  // no special characteristics
-                                        // do not want this as an exclusive device, though you might
-                    FALSE,
-                    &(UDFGlobalData.UDFDeviceObject)))) {
-                        // failed to create a device object, leave ...
-                try_return(RC);
-            }
-
-            FSDevExt = (PUDFFS_DEV_EXTENSION)((UDFGlobalData.UDFDeviceObject)->DeviceExtension);
-            // Zero it out (typically this has already been done by the I/O
-            // Manager but it does not hurt to do it again)!
-            RtlZeroMemory(FSDevExt, sizeof(UDFFS_DEV_EXTENSION));
-
-            // Initialize the signature fields
-            FSDevExt->NodeIdentifier.NodeType = UDF_NODE_TYPE_UDFFS_DRVOBJ;
-            FSDevExt->NodeIdentifier.NodeSize = sizeof(UDFFS_DEV_EXTENSION);
-
-            RtlInitUnicodeString(&unicodeDeviceName, UDF_DOS_FS_NAME);
-            IoCreateSymbolicLink(&unicodeDeviceName, &DriverDeviceName);
-
             UDFPrint(("UDF: Create CD dev obj\n"));
             if (!NT_SUCCESS(RC = UDFCreateFsDeviceObject(UDF_FS_NAME_CD,
                                     DriverObject,
@@ -268,13 +224,7 @@ DriverEntry(
         if (!NT_SUCCESS(RC)) {
             UDFPrint(("UDF: failed with status %x\n", RC));
             // Now, delete any device objects, etc. we may have created
-/*            if (UDFGlobalData.UDFDeviceObject) {
-                IoDeleteDevice(UDFGlobalData.UDFDeviceObject);
-                UDFGlobalData.UDFDeviceObject = NULL;
-            }*/
-#ifdef USE_DLD
-            if (DLDetectInitialized) DLDFree();
-#endif
+
             if (InternalMMInitialized) {
                 MyAllocRelease();
             }
