@@ -391,12 +391,10 @@ UDFDOSName(
     IN BOOLEAN KeepIntact
     )
 {
-#ifndef _CONSOLE
     if(Vcb->CompatFlags & UDF_VCB_IC_OS_NATIVE_DOS_NAME) {
         UDFDOSNameOsNative(DosName, UdfName, KeepIntact);
         return;
     }
-#endif //_CONSOLE
 
     switch(Vcb->CurrentUDFRev) {
     case 0x0100:
@@ -888,7 +886,6 @@ UDFDOSName201(
 
 } // end UDFDOSName201()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine initializes Tag structure. It must be called after all
     manual settings to generate valid CRC & Checksum
@@ -1020,7 +1017,6 @@ UDFBuildFileEntry(
 
     return STATUS_SUCCESS;
 } // end UDFBuildFileEntry()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine builds ExtentInfo for specified (Ex)FileEntry & associated
@@ -1117,7 +1113,6 @@ UDFBuildFileIdent(
     return STATUS_SUCCESS;
 } // end UDFBuildFileIdent()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine sets informationLength field in (Ext)FileEntry
  */
@@ -1197,7 +1192,6 @@ UDFSetFileSizeInDirNdx(
     }
     return;
 } // end UDFSetFileSizeInDirNdx()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine gets informationLength field in (Ext)FileEntry
@@ -1239,7 +1233,6 @@ UDFGetFileSizeFromDirNdx(
     return DirIndex->FileSize;
 } // end UDFGetFileSizeFromDirNdx()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine sets lengthAllocDesc field in (Ext)FileEntry
  */
@@ -1316,7 +1309,6 @@ UDFChangeFileLinkCount(
     }
     return;
 } // end UDFChangeFileLinkCount()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine gets fileLinkCount field from (Ext)FileEntry
@@ -1407,7 +1399,6 @@ UDFGetFileEALength(
     return 0;
 } // end UDFGetFileEALength()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine sets UniqueID field in (Ext)FileEntry
  */
@@ -1451,7 +1442,6 @@ UDFSetFileUID(
         ((FidADImpUse*)&(FileInfo->FileIdent->icb.impUse))->uniqueID = (uint32)UID;
     return;
 } // end UDFSetFileUID()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine gets UniqueID field in (Ext)FileEntry
@@ -1485,7 +1475,6 @@ UDFGetFileUID(
     return UDFGetFileUID_(FileInfo->Dloc->FileEntry);
 } // end UDFGetFileUID()
 
-#ifndef UDF_READ_ONLY_BUILD
 void
 UDFChangeFileCounter(
     IN PVCB Vcb,
@@ -1523,7 +1512,6 @@ UDFSetEntityID_imp_(
     iis->OSIdent = UDF_OS_ID_WINNT;
 
 } // end UDFSetEntityID_imp_()
-#endif //UDF_READ_ONLY_BUILD
 
 void
 UDFReadEntityID_Domain(
@@ -1565,19 +1553,16 @@ UDFReadEntityID_Domain(
     if((flags & ENTITYID_FLAGS_SOFT_RO) &&
         (Vcb->CompatFlags & UDF_VCB_IC_SOFT_RO)) {
         Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
-        Vcb->UserFSFlags |= UDF_USER_FS_FLAGS_SOFT_RO;
         UDFPrint(("       Soft-RO\n"));
     }
     if((flags & ENTITYID_FLAGS_HARD_RO) &&
        (Vcb->CompatFlags & UDF_VCB_IC_HW_RO)) {
         Vcb->VCBFlags |= UDF_VCB_FLAGS_MEDIA_READ_ONLY;
-        Vcb->UserFSFlags |= UDF_USER_FS_FLAGS_HW_RO;
         UDFPrint(("       Hard-RO\n"));
     }
 
 } // end UDFReadEntityID_Domain()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine writes data to file & increases it if necessary.
     In case of increasing AllocDescs will be rebuilt & flushed to disc
@@ -1768,11 +1753,10 @@ UDFUnlinkFile__(
 
     ValidateFileInfo(FileInfo);
 
-#ifndef _CONSOLE
     // now we can't call this if there is no OS-specific File Desc. present
     if(FileInfo->Fcb)
         UDFRemoveFileId__(Vcb, FileInfo);
-#endif //_CONSOLE
+
     // check references
     Dloc = FileInfo->Dloc;
     if((FileInfo->OpenCount /*> (uint32)(UDFHasAStreamDir(FileInfo) ? 1 : 0)*/) ||
@@ -1976,7 +1960,6 @@ skip_del_stream:
     }
     return STATUS_SUCCESS;
 } // end UDFUnlinkAllFilesInDir()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine inits UDF_FILE_INFO structure for specified file
@@ -2146,14 +2129,13 @@ init_tree_entry:
         status = UDFIndexDirectory(Vcb, FileInfo);
         if(!OS_SUCCESS(status))
             return status;
-#ifndef UDF_READ_ONLY_BUILD
+
         if((FileInfo->Dloc->DirIndex->DelCount > Vcb->PackDirThreshold) &&
            !(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)) {
             status = UDFPackDirectory__(Vcb, FileInfo);
             if(!OS_SUCCESS(status))
                 return status;
         }
-#endif //UDF_READ_ONLY_BUILD
     }
     UDFReferenceFile__(FileInfo);
     UDFReleaseDloc(Vcb, FileInfo->Dloc);
@@ -2237,14 +2219,13 @@ init_tree_entry:
         status = UDFIndexDirectory(Vcb, FileInfo);
         if(!OS_SUCCESS(status))
             return status;
-#ifndef UDF_READ_ONLY_BUILD
+
         if((FileInfo->Dloc->DirIndex->DelCount > Vcb->PackDirThreshold) &&
            !(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)) {
             status = UDFPackDirectory__(Vcb, FileInfo);
             if(!OS_SUCCESS(status))
                 return status;
         }
-#endif //UDF_READ_ONLY_BUILD
     }
     UDFReferenceFile__(FileInfo);
     UDFReleaseDloc(Vcb, FileInfo->Dloc);
@@ -2265,7 +2246,7 @@ UDFCleanUpFile__(
     uint32 lc = 0;
     BOOLEAN IsASDir;
     BOOLEAN KeepDloc;
-    PDIR_INDEX_ITEM DirNdx, DirNdx2;
+    PDIR_INDEX_ITEM DirNdx = NULL, DirNdx2;
     BOOLEAN Parallel = FALSE;
     BOOLEAN Linked = FALSE;
 #ifdef UDF_DBG
@@ -2405,6 +2386,12 @@ UDFCleanUpFile__(
 
 #ifdef UDF_DBG
             ASSERT(!Modified);
+            ASSERT(!(Dloc->FE_Flags & UDF_FE_FLAG_FE_MODIFIED));
+            ASSERT(!Dloc->DataLoc.Modified);
+            ASSERT(!(Dloc->DataLoc.Flags & EXTENT_FLAG_PREALLOCATED));
+            ASSERT(!Dloc->AllocLoc.Modified);
+            ASSERT(!Dloc->FELoc.Modified);
+            ASSERT(!(DirNdx && (DirNdx->FI_Flags & UDF_FI_FLAG_FI_MODIFIED)));
 #endif
 
 #ifndef UDF_TRACK_ONDISK_ALLOCATION
@@ -2549,7 +2536,6 @@ UDFCleanUpFile__(
     return KeepDloc ? UDF_FREE_FILEINFO : (UDF_FREE_FILEINFO | UDF_FREE_DLOC);
 } // end UDFCleanUpFile__()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine creates FileIdent record in destination directory &
     allocates FileEntry with in-ICB zero-sized data
@@ -2877,7 +2863,6 @@ try_exit:   NOTHING;
     return status;
 
 } // end UDFCreateFile__()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine reads data from file described by FileInfo
@@ -2899,7 +2884,6 @@ UDFReadFile__(
     return UDFReadExtent(Vcb, &(FileInfo->Dloc->DataLoc), Offset, Length, Direct, Buffer, ReadBytes);
 } // end UDFReadFile__()*/
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine zeros data in file described by FileInfo
  */
@@ -2967,7 +2951,6 @@ UDFPadLastSector(
     status = UDFWriteData(Vcb, TRUE, (((int64)Lba) << Vcb->BlockSizeBits) + sect_offs, to_write, FALSE, Vcb->ZBuffer, &WrittenBytes);
     return status;
 } // UDFPadLastSector()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine updates AllocDesc sequence, FileIdent & FileEntry
@@ -3150,8 +3133,6 @@ UDFCloseFile__(
     return STATUS_SUCCESS;
 } // end UDFCloseFile__()
 
-
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine moves file from DirInfo1 to DirInfo2 & renames it to fn
  */
@@ -3576,7 +3557,6 @@ mark_data_map_0:
 
     return status;
 } // end UDFResizeFile__()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine loads VAT.
@@ -3878,7 +3858,7 @@ UDFFlushFE(
 #endif // UDF_DBG
 retry_flush_FE:
     UDFPrint(("  FlushFE: %x\n", FileInfo->Dloc->FELoc.Mapping[0].extLocation));
-#ifndef UDF_READ_ONLY_BUILD
+
     UDFReTagDirectory(Vcb, FileInfo);
     if(FileInfo->Dloc->DataLoc.Modified ||
        FileInfo->Dloc->AllocLoc.Modified) {
@@ -4039,7 +4019,6 @@ relocate_FE:
         ASSERT((FileInfo->Dloc->FileEntry->descVersion == 2) ||
                (FileInfo->Dloc->FileEntry->descVersion == 3));
     }
-#endif //UDF_READ_ONLY_BUILD
 #ifdef UDF_DBG
     if(FileInfo->Dloc->AllocLoc.Mapping) {
         ASSERT(AllocMode != ICB_FLAG_AD_IN_ICB);
@@ -4076,7 +4055,7 @@ UDFFlushFI(
     }
 #endif // UDF_DBG
     UDFPrint(("  FlushFI: offs %x\n", (ULONG)(DirNdx->Offset)));
-#ifndef UDF_READ_ONLY_BUILD
+
     if((DirNdx->FI_Flags & UDF_FI_FLAG_FI_MODIFIED)) {
         // flush FileIdent
         ASSERT(PartNum != (uint32)(-1));
@@ -4111,7 +4090,7 @@ UDFFlushFI(
         }
         DirNdx->FI_Flags &= ~UDF_FI_FLAG_FI_MODIFIED;
     }
-#endif //UDF_READ_ONLY_BUILD
+
     return STATUS_SUCCESS;
 } // end UDFFlushFI()
 
@@ -4446,7 +4425,6 @@ try_exit:    NOTHING;
     return RC;
 } // end UDFReadTagged()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine creates hard link for the file from DirInfo1
     to DirInfo2 & names it as fn
@@ -4748,7 +4726,6 @@ UDFCreateStreamDir__(
     FileInfo->Dloc->SDirInfo = SDirInfo;
     return STATUS_SUCCESS;
 } // end UDFCreateStreamDir__()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine opens Stream Directory associated with file specified
@@ -4820,7 +4797,6 @@ UDFOpenStreamDir__(
     return STATUS_SUCCESS;
 } // end UDFOpenStreamDir__()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine records VAT & VAT Icb at the end of session
  */
@@ -5098,7 +5074,6 @@ UDFRecordVAT(
     WCacheFlushAll__(&(Vcb->FastCache), Vcb);
     return STATUS_SUCCESS;
 } // end UDFRecordVAT()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     This routine updates VAT according to RequestedLbaTable (RelocTab) &
@@ -5112,7 +5087,6 @@ UDFUpdateVAT(
     IN uint32 BCount
     )
 {
-#ifndef UDF_READ_ONLY_BUILD
     PVCB Vcb = (PVCB)_Vcb;
     uint16 PartNdx = (uint16)(Vcb->VatPartNdx);
     uint16 PartNum = (uint16)(Lba ? UDFGetRefPartNumByPhysLba(Vcb, Lba) : UDFGetPartNumByPartRef(Vcb, PartNdx));
@@ -5137,111 +5111,7 @@ UDFUpdateVAT(
         Vcb->Vat[CurLba] = NWA;
     }
     return STATUS_SUCCESS;
-#else //UDF_READ_ONLY_BUILD
-    return STATUS_MEDIA_WRITE_PROTECTED;
-#endif //UDF_READ_ONLY_BUILD
 } // end UDFUpdateVAT()
-
-#ifndef UDF_READ_ONLY_BUILD
-/*
-    This routine rebuilds file's FE in order to move data from
-    ICB to separate Block.
- */
-OSSTATUS
-UDFConvertFEToNonInICB(
-    IN PVCB Vcb,
-    IN PUDF_FILE_INFO FileInfo,
-    IN uint8 NewAllocMode
-    )
-{
-    OSSTATUS status;
-    int8* OldInIcb = NULL;
-    uint32 OldLen;
-    ValidateFileInfo(FileInfo);
-    SIZE_T ReadBytes;
-    SIZE_T _WrittenBytes;
-    PUDF_DATALOC_INFO Dloc;
-
-//    ASSERT(FileInfo->RefCount >= 1);
-
-    Dloc = FileInfo->Dloc;
-    ASSERT(Dloc->FELoc.Mapping[0].extLocation);
-    uint32 PartNum = UDFGetRefPartNumByPhysLba(Vcb, Dloc->FELoc.Mapping[0].extLocation);
-
-    if(NewAllocMode == ICB_FLAG_AD_DEFAULT_ALLOC_MODE) {
-        NewAllocMode = (uint8)(Vcb->DefaultAllocMode);
-    }
-    // we do not support recording of extended AD now
-    if(NewAllocMode != ICB_FLAG_AD_SHORT &&
-       NewAllocMode != ICB_FLAG_AD_LONG)
-        return STATUS_INVALID_PARAMETER;
-    if(!Dloc->DataLoc.Offset || !Dloc->DataLoc.Length)
-        return STATUS_SUCCESS;
-    ASSERT(!Dloc->AllocLoc.Mapping);
-    // read in-icb data. it'll be replaced after resize
-    OldInIcb = (int8*)MyAllocatePool__(NonPagedPool, (uint32)(Dloc->DataLoc.Length));
-    if(!OldInIcb)
-        return STATUS_INSUFFICIENT_RESOURCES;
-    OldLen = (uint32)(Dloc->DataLoc.Length);
-    status = UDFReadExtent(Vcb, &(Dloc->DataLoc), 0, OldLen, FALSE, OldInIcb, &ReadBytes);
-    if(!OS_SUCCESS(status)) {
-        MyFreePool__(OldInIcb);
-        return status;
-    }
-/*    if(!Dloc->AllocLoc.Mapping) {
-        Dloc->AllocLoc.Mapping = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool, sizeof(EXTENT_MAP)*2);
-        if(!Dloc->AllocLoc.Mapping) {
-            MyFreePool__(OldInIcb);
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-    }
-    // init Alloc mode
-    if((((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
-        ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags &= ~ICB_FLAG_ALLOC_MASK;
-        ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags |= Vcb->DefaultAllocMode;
-    } else {
-        BrutePoint();
-    }
-    RtlZeroMemory(Dloc->AllocLoc.Mapping, sizeof(EXTENT_MAP)*2);
-//    Dloc->AllocLoc.Mapping[0].extLocation = 0;
-    Dloc->AllocLoc.Mapping[0].extLength   = Vcb->LBlockSize | EXTENT_NOT_RECORDED_NOT_ALLOCATED;
-//    Dloc->AllocLoc.Mapping[1].extLocation = 0;
-//    Dloc->AllocLoc.Mapping[1].extLength = 0;
-*/
-
-    // grow extent in order to force space allocation
-    status = UDFResizeExtent(Vcb, PartNum, Vcb->LBlockSize, FALSE, &Dloc->DataLoc);
-    if(!OS_SUCCESS(status)) {
-        MyFreePool__(OldInIcb);
-        return status;
-    }
-
-    // set Alloc mode
-    if((((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
-        ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags &= ~ICB_FLAG_ALLOC_MASK;
-        ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags |= NewAllocMode;
-    } else {
-        BrutePoint();
-    }
-
-    // revert to initial extent size. This will not cause NonInICB->InICB transform
-    status = UDFResizeExtent(Vcb, PartNum, OldLen, FALSE, &Dloc->DataLoc);
-    if(!OS_SUCCESS(status)) {
-        MyFreePool__(OldInIcb);
-        return status;
-    }
-
-    // replace data from ICB (if any) & free buffer
-    status = UDFWriteExtent(Vcb, &(Dloc->DataLoc), 0, OldLen, FALSE, OldInIcb, &_WrittenBytes);
-    MyFreePool__(OldInIcb);
-    if(!OS_SUCCESS(status)) {
-        return status;
-    }
-    // inform UdfInfo, that AllocDesc's must be rebuilt on flush/close
-    Dloc->AllocLoc.Modified = TRUE;
-    Dloc->DataLoc.Modified = TRUE;
-    return STATUS_SUCCESS;
-} // end UDFConvertFEToNonInICB()
 
 /*
     This routine converts file's FE to extended form.
@@ -5386,4 +5256,3 @@ UDFPretendFileDeleted__(
     }
     return STATUS_SUCCESS;
 } // end UDFPretendFileDeleted__()
-#endif //UDF_READ_ONLY_BUILD

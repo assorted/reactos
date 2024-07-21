@@ -11,12 +11,6 @@ extern "C" {
 
 #include "platform.h"
 
-#ifdef _CONSOLE
-#include "env_spec_w32.h"
-#else
-//#include "env_spec.h"
-#endif
-
 #define WCACHE_BOUND_CHECKS
 
 typedef OSSTATUS     (*PWRITE_BLOCK) (IN PVOID Context,

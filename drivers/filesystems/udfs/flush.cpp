@@ -44,7 +44,7 @@ UDFFlush(
     PIRP                Irp)                // I/O Request Packet
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PtrUDFIrpContext    PtrIrpContext = NULL;
+    PIRP_CONTEXT PtrIrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     UDFPrint(("UDFFlush: \n"));
@@ -108,17 +108,16 @@ UDFFlush(
 *************************************************************************/
 NTSTATUS
 UDFCommonFlush(
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP             Irp
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
     PIO_STACK_LOCATION  IrpSp = NULL;
     PFILE_OBJECT        FileObject = NULL;
-    PtrUDFFCB           Fcb = NULL;
-    PtrUDFCCB           Ccb = NULL;
+    PFCB                Fcb = NULL;
+    PCCB                Ccb = NULL;
     PVCB                Vcb = NULL;
-    PtrUDFNTRequiredFCB NtReqFcb = NULL;
     BOOLEAN             AcquiredVCB = FALSE;
     BOOLEAN             AcquiredFCB = FALSE;
     BOOLEAN             PostRequest = FALSE;
@@ -144,17 +143,16 @@ UDFCommonFlush(
         ASSERT(FileObject);
 
         // Get the FCB and CCB pointers
-        Ccb = (PtrUDFCCB)(FileObject->FsContext2);
+        Ccb = (PCCB)FileObject->FsContext2;
         ASSERT(Ccb);
         Fcb = Ccb->Fcb;
         ASSERT(Fcb);
-        NtReqFcb = Fcb->NTRequiredFCB;
 
         // Check the type of object passed-in. That will determine the course of
         // action we take.
-        if ((Fcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB) || (Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY)) {
+        if ((Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) || (Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY)) {
 
-            if (Fcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB) {
+            if (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) {
                 Vcb = (PVCB)(Fcb);
             } else {
                 Vcb = Fcb->Vcb;
@@ -185,13 +183,13 @@ UDFCommonFlush(
             // This is a regular file.
             Vcb = Fcb->Vcb;
             ASSERT(Vcb);
-            if(!ExIsResourceAcquiredExclusiveLite(&(Vcb->VCBResource)) &&
-               !ExIsResourceAcquiredSharedLite(&(Vcb->VCBResource))) {
-                UDFAcquireResourceShared(&(Vcb->VCBResource), TRUE);
+            if(!ExIsResourceAcquiredExclusiveLite(&Vcb->VCBResource) &&
+               !ExIsResourceAcquiredSharedLite(&Vcb->VCBResource)) {
+                UDFAcquireResourceShared(&Vcb->VCBResource, TRUE);
                 AcquiredVCB = TRUE;
             }
-            UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-            UDFAcquireResourceExclusive(&(NtReqFcb->MainResource), TRUE);
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFAcquireResourceExclusive(&Fcb->MainResource, TRUE);
             AcquiredFCB = TRUE;
 
             // Request the Cache Manager to perform a flush operation.
@@ -214,12 +212,12 @@ try_exit:   NOTHING;
     } _SEH2_FINALLY {
 
         if (AcquiredFCB) {
-            UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-            UDFReleaseResource(&(NtReqFcb->MainResource));
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFReleaseResource(&Fcb->MainResource);
             AcquiredFCB = FALSE;
         }
         if (AcquiredVCB) {
-            UDFReleaseResource(&(Vcb->VCBResource));
+            UDFReleaseResource(&Vcb->VCBResource);
             AcquiredVCB = FALSE;
         }
 
@@ -286,8 +284,8 @@ try_exit:   NOTHING;
 *************************************************************************/
 ULONG
 UDFFlushAFile(
-    IN PtrUDFFCB           Fcb,
-    IN PtrUDFCCB           Ccb,
+    IN PFCB                Fcb,
+    IN PCCB                Ccb,
     OUT PIO_STATUS_BLOCK   PtrIoStatus,
     IN ULONG               FlushFlags
     )
@@ -306,14 +304,7 @@ UDFFlushAFile(
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
     } _SEH2_END;
-#ifndef UDF_READ_ONLY_BUILD
-    // Flush Security if required
-    _SEH2_TRY {
-        UDFWriteSecurity(Fcb->Vcb, Fcb, &(Fcb->NTRequiredFCB->SecurityDesc));
-    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
-    } _SEH2_END;
-#endif //UDF_READ_ONLY_BUILD
+
     // Flush SDir if any
     _SEH2_TRY {
         if(UDFHasAStreamDir(Fcb->FileInfo) &&
@@ -327,21 +318,20 @@ UDFFlushAFile(
     } _SEH2_END;
     // Flush File
     _SEH2_TRY {
-        if((Fcb->CachedOpenHandleCount || !Fcb->OpenHandleCount) &&
-            Fcb->NTRequiredFCB->SectionObject.DataSectionObject) {
-            if(!(Fcb->NTRequiredFCB->NtReqFCBFlags & UDF_NTREQ_FCB_DELETED)
+        if ((Fcb->CachedOpenHandleCount || !Fcb->OpenHandleCount) &&
+            Fcb->SectionObject.DataSectionObject) {
+            if (!(Fcb->NtReqFCBFlags & UDF_NTREQ_FCB_DELETED)
                                          &&
-                ((Fcb->NTRequiredFCB->NtReqFCBFlags & UDF_NTREQ_FCB_MODIFIED) ||
+                ((Fcb->NtReqFCBFlags & UDF_NTREQ_FCB_MODIFIED) ||
                  (Ccb && !(Ccb->CCBFlags & UDF_CCB_FLUSHED)) )) {
                 MmPrint(("    CcFlushCache()\n"));
-                CcFlushCache(&(Fcb->NTRequiredFCB->SectionObject), NULL, 0, PtrIoStatus);
+                CcFlushCache(&Fcb->SectionObject, NULL, 0, PtrIoStatus);
             }
             // notice, that we should purge cache
             // we can't do it now, because it may cause last Close
             // request & thus, structure deallocation
 //            PurgeCache = TRUE;
 
-#ifndef UDF_READ_ONLY_BUILD
             if(Ccb) {
                 if( (Ccb->FileObject->Flags & FO_FILE_MODIFIED) &&
                    !(Ccb->CCBFlags & UDF_CCB_WRITE_TIME_SET)) {
@@ -349,7 +339,7 @@ UDFFlushAFile(
                         LONGLONG NtTime;
                         KeQuerySystemTime((PLARGE_INTEGER)&NtTime);
                         UDFSetFileXTime(Fcb->FileInfo, NULL, NULL, NULL, &NtTime);
-                        Fcb->NTRequiredFCB->LastWriteTime.QuadPart = NtTime;
+                        Fcb->LastWriteTime.QuadPart = NtTime;
                     }
                     SetArchive = TRUE;
                     Ccb->FileObject->Flags &= ~FO_FILE_MODIFIED;
@@ -360,14 +350,12 @@ UDFFlushAFile(
                     Ccb->FileObject->Flags &= ~FO_FILE_SIZE_CHANGED;
                 }
             }
-#endif //UDF_READ_ONLY_BUILD
         }
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
     } _SEH2_END;
 
     _SEH2_TRY {
-#ifndef UDF_READ_ONLY_BUILD
         if(SetArchive &&
            (Fcb->Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ARCH_BIT)) {
             ULONG Attr;
@@ -378,7 +366,7 @@ UDFFlushAFile(
             if(!(Attr & FILE_ATTRIBUTE_ARCHIVE))
                 UDFAttributesToUDF(DirNdx, Fcb->FileInfo->Dloc->FileEntry, Attr | FILE_ATTRIBUTE_ARCHIVE);
         }
-#endif //UDF_READ_ONLY_BUILD
+
         UDFFlushFile__( Fcb->Vcb, Fcb->FileInfo, FlushFlags);
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
@@ -431,12 +419,6 @@ UDFFlushADirectory(
     if(!FI || !FI->Dloc || !FI->Dloc->DirIndex) goto SkipFlushDir;
 //    hDI = FI->Dloc->DirIndex;
 
-    // Flush Security if required
-    _SEH2_TRY {
-        UDFWriteSecurity(Vcb, FI->Fcb, &(FI->Fcb->NTRequiredFCB->SecurityDesc));
-    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
-    } _SEH2_END;
     // Flush SDir if any
     _SEH2_TRY {
         if(UDFHasAStreamDir(FI) &&
@@ -504,14 +486,13 @@ SkipFlushDir:
 *************************************************************************/
 ULONG
 UDFFlushLogicalVolume(
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PIRP             Irp,
     IN PVCB             Vcb,
     IN ULONG            FlushFlags
     )
 {
     ULONG ret_val = 0;
-#ifndef UDF_READ_ONLY_BUILD
     IO_STATUS_BLOCK IoStatus;
 
     UDFPrint(("UDFFlushLogicalVolume: \n"));
@@ -553,7 +534,6 @@ UDFFlushLogicalVolume(
     } _SEH2_FINALLY {
         ;
     } _SEH2_END;
-#endif //UDF_READ_ONLY_BUILD
 
     return ret_val;
 } // end UDFFlushLogicalVolume()

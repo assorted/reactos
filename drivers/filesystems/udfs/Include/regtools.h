@@ -7,8 +7,6 @@
 #ifndef __MULTIENV_REG_TOOLS__H__
 #define __MULTIENV_REG_TOOLS__H__
 
-#include "check_env.h"
-
 #ifndef WIN_32_MODE
 #define HKEY  HANDLE
 #endif //WIN_32_MODE

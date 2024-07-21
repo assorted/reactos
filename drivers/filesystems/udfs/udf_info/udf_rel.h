@@ -245,14 +245,14 @@ typedef struct _DIR_INDEX_ITEM {
     case of equal Lba of deleted & created FileEntries.
 
 */
-
+struct FCB;
 typedef struct _UDF_DATALOC_INFO {
 
 /**
     NT-specific field. As soon as NT supports HardLink concept it
     has own structure describing the file's actual data.
 */
-    struct _UDFNTRequiredFCB* CommonFcb; // pointer to corresponding NtReqFcb
+	FCB* CommonFcb; // pointer to corresponding FCB
 /**
     Describes on-disk location of  user  data.  If  the  file  is
     recorded using IN_ICB method this  structure  points  to  the
@@ -359,7 +359,7 @@ typedef struct _UDF_FILE_INFO {
     internal use this field may be NULL.  Each  Fcb  has  a  back
     pointer to FileInfo, so both structures are accessable.
 */
-    struct _UDFFileControlBlock* Fcb;  // pointer to corresponding Fcb (null if absent)
+    struct FCB* Fcb;  // pointer to corresponding Fcb (null if absent)
 /**
     Points to the structure describing  actual  data  location  &
     file attributes. See #UDF_DATALOC_INFO for more information.
@@ -518,7 +518,7 @@ typedef struct _UDF_ALLOCATION_CACHE_ITEM {
 
 #define UDF_FLUSH_FLAGS_LITE        (0x80000000)
 
-#if defined UDF_DBG || defined _CONSOLE
+#if defined UDF_DBG
 //#define UDF_CHECK_DISK_ALLOCATION
 
 //#define UDF_TRACK_ONDISK_ALLOCATION

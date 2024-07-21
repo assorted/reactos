@@ -39,9 +39,7 @@ typedef struct _UDF_VERIFY_REQ {
     PUCHAR     Buffer;
     ULONG      nReq;
     UDF_VERIFY_REQ_RANGE vr[MAX_VREQ_RANGES];
-#ifndef _CONSOLE
     WORK_QUEUE_ITEM VerifyItem;
-#endif
 } UDF_VERIFY_REQ, *PUDF_VERIFY_REQ;
 
 VOID
@@ -703,14 +701,11 @@ UDFVVerify(
                     VerifyReq->Buffer = (PUCHAR)DbgAllocatePoolWithTag(NonPagedPool, max_len * Vcb->BlockSize, 'bNWD');
                     if(VerifyReq->Buffer) {
                         InterlockedIncrement((PLONG)&(VerifyCtx->QueuedCount));
-#ifndef _CONSOLE
+
                         ExInitializeWorkItem( &(VerifyReq->VerifyItem),
                                               UDFVWorkItem,
                                               VerifyReq );
                         ExQueueWorkItem( &(VerifyReq->VerifyItem), CriticalWorkQueue );
-#else
-                        UDFVWorkItem(VerifyReq);
-#endif
                     } else {
                         DbgFreePool(VerifyReq);
                     }

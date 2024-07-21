@@ -42,7 +42,7 @@ UDFFSControl(
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PtrUDFIrpContext    PtrIrpContext;
+    PIRP_CONTEXT PtrIrpContext;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     UDFPrint(("\nUDFFSControl: \n\n"));
@@ -101,7 +101,7 @@ UDFFSControl(
 NTSTATUS
 NTAPI
 UDFCommonFSControl(
-    PtrUDFIrpContext    PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP                Irp                // I/O Request Packet
     )
 {
@@ -176,7 +176,7 @@ Return Value:
 NTSTATUS
 NTAPI
 UDFUserFsCtrlRequest(
-    PtrUDFIrpContext IrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp
     )
 {
@@ -313,31 +313,25 @@ Return Value:
 NTSTATUS
 NTAPI
 UDFMountVolume(
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PIRP Irp
     )
 {
     NTSTATUS                RC;
     PIO_STACK_LOCATION      IrpSp = IoGetCurrentIrpStackLocation(Irp);
     PDEVICE_OBJECT          TargetDeviceObject = NULL;
-    PFILTER_DEV_EXTENSION   filterDevExt;
     PDEVICE_OBJECT          fsDeviceObject;
     PVPB                    Vpb = IrpSp->Parameters.MountVolume.Vpb;
     PVCB                    Vcb = NULL;
-//    PVCB                    OldVcb = NULL;
     PDEVICE_OBJECT          VolDo = NULL;
     IO_STATUS_BLOCK         Iosb;
     ULONG                   MediaChangeCount = 0;
-    ULONG                   Characteristics;
     DEVICE_TYPE             FsDeviceType;
     BOOLEAN                 RestoreDoVerify = FALSE;
     BOOLEAN                 WrongMedia = FALSE;
     BOOLEAN                 RemovableMedia = TRUE;
     BOOLEAN                 CompleteIrp = FALSE;
     ULONG                   Mode;
-    TEST_UNIT_READY_USER_OUT TestUnitReadyBuffer;
-    ULONG                   i;
-    LARGE_INTEGER           delay;
     BOOLEAN                 VcbAcquired = FALSE;
     BOOLEAN                 DeviceNotTouched = TRUE;
     BOOLEAN                 Locked = FALSE;
@@ -345,52 +339,39 @@ UDFMountVolume(
 
     ASSERT(IrpSp);
     UDFPrint(("\n !!! UDFMountVolume\n"));
-//    UDFPrint(("Build " VER_STR_PRODUCT "\n\n"));
 
     fsDeviceObject = PtrIrpContext->TargetDeviceObject;
     UDFPrint(("Mount on device object %x\n", fsDeviceObject));
-    filterDevExt = (PFILTER_DEV_EXTENSION)fsDeviceObject->DeviceExtension;
-    if (filterDevExt->NodeIdentifier.NodeType == UDF_NODE_TYPE_FILTER_DEVOBJ &&
-        filterDevExt->NodeIdentifier.NodeSize == sizeof(FILTER_DEV_EXTENSION)) {
+
+    PFILTER_DEV_EXTENSION filterDevExt = (PFILTER_DEV_EXTENSION)fsDeviceObject->DeviceExtension;
+    if (filterDevExt->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_FILTER_DEVOBJ &&
+        filterDevExt->NodeIdentifier.NodeByteSize == sizeof(FILTER_DEV_EXTENSION)) {
         CompleteIrp = FALSE;
-    } else
-    if (filterDevExt->NodeIdentifier.NodeType == UDF_NODE_TYPE_UDFFS_DEVOBJ &&
-        filterDevExt->NodeIdentifier.NodeSize == sizeof(UDFFS_DEV_EXTENSION)) {
+    } else if (filterDevExt->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_UDFFS_DEVOBJ &&
+        filterDevExt->NodeIdentifier.NodeByteSize == sizeof(UDFFS_DEV_EXTENSION)) {
         CompleteIrp = TRUE;
     } else {
         UDFPrintErr(("Invalid node type in FS or FILTER DeviceObject\n"));
         ASSERT(FALSE);
     }
+
     // Get a pointer to the target physical/virtual device object.
     TargetDeviceObject = IrpSp->Parameters.MountVolume.DeviceObject;
 
-    if(((Characteristics = TargetDeviceObject->Characteristics) & FILE_FLOPPY_DISKETTE) ||
-       (UDFGlobalData.UDFFlags & UDF_DATA_FLAGS_BEING_UNLOADED) ) {
+    if (FlagOn(TargetDeviceObject->Characteristics, FILE_FLOPPY_DISKETTE) ||
+        FlagOn(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_BEING_UNLOADED)) {
+
         WrongMedia = TRUE;
+
     } else {
-        RemovableMedia = (Characteristics & FILE_REMOVABLE_MEDIA) ? TRUE : FALSE;
-        if(TargetDeviceObject->DeviceType != FILE_DEVICE_CD_ROM) {
-            if(UDFGetRegParameter(NULL, REG_MOUNT_ON_CDONLY_NAME, FALSE)) {
-                WrongMedia = TRUE;
-            }
-        }
+
+        RemovableMedia = FlagOn(TargetDeviceObject->Characteristics, FILE_REMOVABLE_MEDIA);
+
         if(TargetDeviceObject->DeviceType == FILE_DEVICE_CD_ROM) {
             FsDeviceType = FILE_DEVICE_CD_ROM_FILE_SYSTEM;
-#ifdef UDF_HDD_SUPPORT
         } else
         if (TargetDeviceObject->DeviceType == FILE_DEVICE_DISK) {
-            WrongMedia = FALSE; // Reset the flag as it may be altered in the preceding code
-            if(RemovableMedia) {
-                if(!UDFGetRegParameter(NULL, REG_MOUNT_ON_ZIP_NAME, TRUE)) {
-                    WrongMedia = TRUE;
-                }
-            } else {
-                if(!UDFGetRegParameter(NULL, REG_MOUNT_ON_HDD_NAME, TRUE)) {
-                    WrongMedia = TRUE;
-                }
-            }
             FsDeviceType = FILE_DEVICE_DISK_FILE_SYSTEM;
-#endif //UDF_HDD_SUPPORT
         } else {
             WrongMedia = TRUE;
         }
@@ -407,50 +388,6 @@ UDFMountVolume(
 
         if(RemovableMedia) {
             UDFPrint(("UDFMountVolume: removable media\n"));
-            // just remember current MediaChangeCount
-            // or fail if No Media ....
-
-            // experimental CHECK_VERIFY, for fucking BENQ DVD_DD_1620
-
-                // Now we can get device state via GET_EVENT (if supported)
-                // or still one TEST_UNIT_READY command
-                RC = UDFPhSendIOCTL( IOCTL_STORAGE_CHECK_VERIFY,
-                                     TargetDeviceObject,
-                                     NULL,0,
-                                     &MediaChangeCount,sizeof(ULONG),
-                                     FALSE,&Iosb );
-
-            // Send TEST_UNIT_READY comment
-            // This can spin-up or wake-up the device
-            if(UDFGetRegParameter(NULL, UDF_WAIT_CD_SPINUP, TRUE)) {
-                delay.QuadPart = -15000000LL; // 1.5 sec
-                for(i=0; i<UDF_READY_MAX_RETRY; i++) {
-                    // Use device default ready timeout
-                    Mode = 0;
-                    RC = UDFPhSendIOCTL( IOCTL_CDRW_TEST_UNIT_READY,
-                                         TargetDeviceObject,
-                                         &Mode,sizeof(Mode),
-                                         &TestUnitReadyBuffer,sizeof(TEST_UNIT_READY_USER_OUT),
-                                         FALSE,NULL);
-                    UDFPrint(("UDFMountVolume: TEST_UNIT_READY %x\n", RC));
-                    if(!NT_SUCCESS(RC))
-                        break;
-                    if(TestUnitReadyBuffer.SenseKey == SCSI_SENSE_NOT_READY &&
-                       TestUnitReadyBuffer.AdditionalSenseCode == SCSI_ADSENSE_LUN_NOT_READY &&
-                       TestUnitReadyBuffer.AdditionalSenseCodeQualifier == SCSI_SENSEQ_BECOMING_READY) {
-                        UDFPrint(("UDFMountVolume: retry\n"));
-                        KeDelayExecutionThread(KernelMode, FALSE, &delay);
-                        //delay.QuadPart -= 10000000LL; // 1.0 sec
-                    } else {
-                        break;
-                    }
-                }
-                if(i) {
-                    UDFPrint(("UDFMountVolume: additional delay 3 sec\n"));
-                    delay.QuadPart = -30000000LL; // 3.0 sec
-                    KeDelayExecutionThread(KernelMode, FALSE, &delay);
-                }
-            }
 
             // Now we can get device state via GET_EVENT (if supported)
             // or still one TEST_UNIT_READY command
@@ -615,11 +552,6 @@ UDFMountVolume(
                         WCACHE_CACHE_WHOLE_PACKET, // enable cache whole packet
                         WCACHE_MARK_BAD_BLOCKS | WCACHE_RO_BAD_BLOCKS);  // let user retry request on Bad Blocks
 
-#ifdef UDF_READ_ONLY_BUILD
-        Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
-        Vcb->VCBFlags |= UDF_VCB_FLAGS_MEDIA_READ_ONLY;
-#endif //UDF_READ_ONLY_BUILD
-
         if(!NT_SUCCESS(RC)) {
             UDFPrint(("UDFMountVolume: try raw mount\n"));
             if(Vcb->NSRDesc & VRS_ISO9660_FOUND) {
@@ -650,13 +582,12 @@ try_raw_mount:
             }
         } else {
             Vcb->MountPhErrorCount = -1;
-#ifndef UDF_READ_ONLY_BUILD
+
             // set cache mode according to media type
             if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY)) {
                 UDFPrint(("UDFMountVolume: writable volume\n"));
                 if(!Vcb->CDR_Mode) {
-                    if((FsDeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) ||
-                       CdrwMediaClassEx_IsRAM(Vcb->MediaClassEx)) {
+                    if(FsDeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) {
                         UDFPrint(("UDFMountVolume: RAM mode\n"));
                         Mode = WCACHE_MODE_RAM;
                     } else {
@@ -678,8 +609,10 @@ try_raw_mount:
                     Vcb->UseExtendedFE = FALSE;
                 }
             }
+#ifdef UDF_USE_WCACHE
             WCacheSetMode__(&(Vcb->FastCache), Mode);
-#endif //UDF_READ_ONLY_BUILD
+#endif //UDF_USE_WCACHE
+
             // Complete mount operations: create root FCB
             UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
             RC = UDFCompleteMount(Vcb);
@@ -701,15 +634,10 @@ try_raw_mount:
             Vcb->VCBFlags &= ~UDF_VCB_FLAGS_RAW_DISK;
         }
 
-#ifndef UDF_READ_ONLY_BUILD
-        if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY)) {
-            RC = UDFStartEjectWaiter(Vcb);
-            if(!NT_SUCCESS(RC)) try_return(RC);
-        } else {
+        if((Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY)) {
             UDFPrint(("UDFMountVolume: RO mount\n"));
             Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
         }
-#endif //UDF_READ_ONLY_BUILD
 
         Vcb->Vpb->SerialNumber = Vcb->PhSerialNumber;
         Vcb->Vpb->VolumeLabelLength = Vcb->VolIdent.Length;
@@ -730,9 +658,6 @@ try_raw_mount:
 
                 UDFPrint(("UDFMountVolume: unlock media on RO volume\n"));
                 UDFToggleMediaEjectDisable(Vcb, FALSE);
-
-                if(Vcb->VCBFlags & UDF_VCB_FLAGS_OUR_DEVICE_DRIVER)
-                    UDFResetDeviceDriver(Vcb, Vcb->TargetDeviceObject, TRUE);
             }
         }
 
@@ -767,12 +692,6 @@ try_exit: NOTHING;
             }
 /*            if((RC != STATUS_DEVICE_NOT_READY) &&
                (RC != STATUS_NO_MEDIA_IN_DEVICE) ) {*/
-                // reset driver
-            if(!DeviceNotTouched &&
-               (!Vcb || (Vcb && (Vcb->VCBFlags & UDF_VCB_FLAGS_OUR_DEVICE_DRIVER)))) {
-                UDFPrint(("UDFMountVolume: reset driver\n"));
-                UDFResetDeviceDriver(Vcb, TargetDeviceObject, TRUE);
-            }
 
             if(RC == STATUS_CRC_ERROR || RC == STATUS_FILE_CORRUPT_ERROR) {
                 UDFPrint(("UDFMountVolume: status -> STATUS_UNRECOGNIZED_VOLUME\n"));
@@ -822,7 +741,7 @@ try_exit: NOTHING;
             Irp->Tail.Overlay.CurrentStackLocation++;
 
             // Now call the appropriate file system driver with the request.
-            RC = IoCallDriver( filterDevExt->lowerFSDeviceObject, Irp );
+            RC = IoCallDriver(filterDevExt->lowerFSDeviceObject, Irp);
 
         }
 
@@ -834,77 +753,14 @@ try_exit: NOTHING;
 } // end UDFMountVolume()
 
 NTSTATUS
-UDFStartEjectWaiter(
-    IN PVCB    Vcb
-    )
-{
-    UDFPrint(("UDFStartEjectWaiter:\n"));
-    UDFPrint(("Vcb->FsDeviceType=%x\n", Vcb->FsDeviceType));
-    if (Vcb->FsDeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) {
-        UDFPrint(("Is HDD so skip\n"));
-        return STATUS_SUCCESS;
-    }
-    if(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY) {
-        UDFPrint(("  UDF_VCB_FLAGS_MEDIA_READ_ONLY\n"));
-    }
-    if(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_LOCKED) {
-        UDFPrint(("  UDF_VCB_FLAGS_MEDIA_LOCKED\n"));
-    }
-    UDFPrint(("  EjectWaiter=%x\n", Vcb->EjectWaiter));
-    if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY) &&
-       /*!(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_LOCKED) &&*/
-       !(Vcb->EjectWaiter)) {
-
-        UDFPrint(("UDFStartEjectWaiter: check driver\n"));
-        if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_OUR_DEVICE_DRIVER) &&
-            (Vcb->FsDeviceType == FILE_DEVICE_CD_ROM_FILE_SYSTEM)) {
-            // we don't know how to write without our device driver
-            Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
-            UDFPrint(("  not our driver, ignore\n"));
-            return STATUS_SUCCESS;
-        }
-        UDFPrint(("UDFStartEjectWaiter: check removable\n"));
-        if(Vcb->VCBFlags & UDF_VCB_FLAGS_REMOVABLE_MEDIA) {
-
-            // prevent media removal
-            UDFPrint(("UDFStartEjectWaiter: lock media\n"));
-            UDFToggleMediaEjectDisable(Vcb, TRUE);
-        }
-
-        UDFPrint(("UDFStartEjectWaiter: prepare to start\n"));
-        // initialize Eject Request waiter
-        Vcb->EjectWaiter = (PUDFEjectWaitContext)MyAllocatePool__(NonPagedPool, sizeof(UDFEjectWaitContext));
-        if(!(Vcb->EjectWaiter)) return STATUS_INSUFFICIENT_RESOURCES;
-        KeInitializeEvent(&(Vcb->WaiterStopped), NotificationEvent, FALSE);
-        Vcb->EjectWaiter->Vcb = Vcb;
-        Vcb->EjectWaiter->SoftEjectReq = FALSE;
-        KeInitializeEvent(&(Vcb->EjectWaiter->StopReq), NotificationEvent, FALSE);
-//        Vcb->EjectWaiter->StopReq = FALSE;
-        Vcb->EjectWaiter->WaiterStopped = &(Vcb->WaiterStopped);
-        // This can occure after unexpected media loss, when EjectRequestWaiter
-        // terminates automatically
-        ASSERT(!(Vcb->VCBFlags & UDF_VCB_FLAGS_STOP_WAITER_EVENT));
-        Vcb->VCBFlags |= UDF_VCB_FLAGS_STOP_WAITER_EVENT;
-        ExInitializeWorkItem(&(Vcb->EjectWaiter->EjectReqWorkQueueItem), UDFEjectReqWaiter, Vcb->EjectWaiter);
-        UDFPrint(("UDFStartEjectWaiter: create thread\n"));
-        ExQueueWorkItem(&(Vcb->EjectWaiter->EjectReqWorkQueueItem), DelayedWorkQueue);
-    } else {
-        UDFPrint(("  ignore\n"));
-    }
-    return STATUS_SUCCESS;
-} // end UDFStartEjectWaiter()
-
-NTSTATUS
 UDFCompleteMount(
     IN PVCB    Vcb
     )
 {
     NTSTATUS                    RC;// = STATUS_SUCCESS;
-    PtrUDFNTRequiredFCB         NtReqFcb = NULL;
-    PFSRTL_COMMON_FCB_HEADER    PtrCommonFCBHeader = NULL;
     UNICODE_STRING              LocalPath;
     PtrUDFObjectName            RootName;
-    PtrUDFFCB                   RootFcb;
+    PFCB                        RootFcb;
 
     UDFPrint(("UDFCompleteMount:\n"));
     Vcb->ZBuffer = (PCHAR)DbgAllocatePoolWithTag(NonPagedPool, max(Vcb->LBlockSize, PAGE_SIZE), 'zNWD');
@@ -915,7 +771,9 @@ UDFCompleteMount(
     // Create the root index and reference it in the Vcb.
     RootFcb =
     Vcb->RootDirFCB = UDFAllocateFCB();
-    if(!RootFcb) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!RootFcb) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
 
     UDFPrint(("UDFCompleteMount: alloc Root ObjName\n"));
     // Allocate and set root FCB unique name
@@ -950,27 +808,20 @@ insuf_res_2:
     }
     RootFcb->FileInfo->Fcb = RootFcb;
 
-    if(!(RootFcb->NTRequiredFCB = RootFcb->FileInfo->Dloc->CommonFcb)) {
-        UDFPrint(("UDFCompleteMount: alloc Root ObjName (2)\n"));
-        if(!(RootFcb->NTRequiredFCB =
-                    (PtrUDFNTRequiredFCB)MyAllocatePool__(NonPagedPool, UDFQuadAlign(sizeof(UDFNTRequiredFCB))) ) ) {
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-            goto insuf_res_2;
-        }
-        RtlZeroMemory(RootFcb->NTRequiredFCB, UDFQuadAlign(sizeof(UDFNTRequiredFCB)));
-        RootFcb->FileInfo->Dloc->CommonFcb = RootFcb->NTRequiredFCB;
+    if(!RootFcb->FileInfo->Dloc->CommonFcb) {
+        RootFcb->FileInfo->Dloc->CommonFcb = RootFcb;
     }
+
     UDFPrint(("UDFCompleteMount: init FCB\n"));
     RC = UDFInitializeFCB(RootFcb,Vcb,RootName,UDF_FCB_ROOT_DIRECTORY | UDF_FCB_DIRECTORY,NULL);
     if(!NT_SUCCESS(RC)) {
         // if we get here, no resources are inited
         RootFcb->OpenHandleCount =
         RootFcb->ReferenceCount  =
-        RootFcb->NTRequiredFCB->CommonRefCount = 0;
+        RootFcb->CommonRefCount = 0;
 
         UDFCleanUpFile__(Vcb, RootFcb->FileInfo);
         MyFreePool__(RootFcb->FileInfo);
-        MyFreePool__(RootFcb->NTRequiredFCB);
         UDFCleanUpFCB(RootFcb);
         Vcb->RootDirFCB = NULL;
         return RC;
@@ -980,13 +831,13 @@ insuf_res_2:
     UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
     RootFcb->OpenHandleCount =
     RootFcb->ReferenceCount  =
-    RootFcb->NTRequiredFCB->CommonRefCount = 1;
+    RootFcb->CommonRefCount = 1;
 
     UDFGetFileXTime(RootFcb->FileInfo,
-                  &(RootFcb->NTRequiredFCB->CreationTime.QuadPart),
-                  &(RootFcb->NTRequiredFCB->LastAccessTime.QuadPart),
-                  &(RootFcb->NTRequiredFCB->ChangeTime.QuadPart),
-                  &(RootFcb->NTRequiredFCB->LastWriteTime.QuadPart) );
+                  &(RootFcb->CreationTime.QuadPart),
+                  &(RootFcb->LastAccessTime.QuadPart),
+                  &(RootFcb->ChangeTime.QuadPart),
+                  &(RootFcb->LastWriteTime.QuadPart) );
 
     if(Vcb->SysStreamLbAddr.logicalBlockNum) {
         Vcb->SysSDirFileInfo = (PUDF_FILE_INFO)MyAllocatePool__(NonPagedPool,sizeof(UDF_FILE_INFO));
@@ -1089,44 +940,6 @@ unwind_3:
         RC = STATUS_SUCCESS;
     }
 
-#define DWN_MAX_CFG_FILE_SIZE  0x10000
-
-    /* Read DWN config file from disk with disk-specific options */
-    RC = MyInitUnicodeString(&LocalPath, UDF_CONFIG_STREAM_NAME_W);
-    if(NT_SUCCESS(RC)) {
-
-        int8* buff;
-        SIZE_T len;
-        PUDF_FILE_INFO CfgFileInfo = NULL;
-
-        RC = UDFOpenFile__(Vcb, FALSE, TRUE, &LocalPath, RootFcb->FileInfo, &CfgFileInfo, NULL);
-        if(OS_SUCCESS(RC)) {
-
-            len = (ULONG)UDFGetFileSize(CfgFileInfo);
-            if(len && len < DWN_MAX_CFG_FILE_SIZE) {
-                buff = (int8*)MyAllocatePool__(NonPagedPool, len);
-                if(buff) {
-                    RC = UDFReadFile__(Vcb, CfgFileInfo, 0, len, FALSE, buff, &len);
-                    if(OS_SUCCESS(RC)) {
-                        // parse config
-                        Vcb->Cfg = (PUCHAR)buff;
-                        Vcb->CfgLength = len;
-                        UDFReadRegKeys(Vcb, TRUE /*update*/, TRUE /*cfg*/);
-                        Vcb->Cfg = NULL;
-                        Vcb->CfgLength = 0;
-                        Vcb->CfgVersion = 0;
-                    }
-                    MyFreePool__(buff);
-                }
-            }
-
-            UDFCloseFile__(Vcb, CfgFileInfo);
-        }
-        if(CfgFileInfo) {
-            UDFCleanUpFile__(Vcb, CfgFileInfo);
-        }
-        MyFreePool__(LocalPath.Buffer);
-    }
     RC = STATUS_SUCCESS;
 
     // clear Modified flags. It was not real modify, just
@@ -1136,34 +949,31 @@ unwind_3:
     UDFPreClrModified(Vcb);
     UDFClrModified(Vcb);
     // this is a part of UDF_RESIDUAL_REFERENCE
-    UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
+    UDFInterlockedIncrement((PLONG)&Vcb->VCBOpenCount);
 
-    NtReqFcb = RootFcb->NTRequiredFCB;
-
-    // Start initializing the fields contained in the CommonFCBHeader.
-    PtrCommonFCBHeader = &(NtReqFcb->CommonFCBHeader);
+    // Start initializing the fields contained in the Header.
 
     // DisAllow fast-IO for now.
-//    PtrCommonFCBHeader->IsFastIoPossible = FastIoIsNotPossible;
-    PtrCommonFCBHeader->IsFastIoPossible = FastIoIsPossible;
+//    RootFcb->Header->IsFastIoPossible = FastIoIsNotPossible;
+    RootFcb->Header.IsFastIoPossible = FastIoIsPossible;
 
     // Initialize the MainResource and PagingIoResource pointers in
     // the CommonFCBHeader structure to point to the ERESOURCE structures we
     // have allocated and already initialized above.
-//    PtrCommonFCBHeader->Resource = &(NtReqFcb->MainResource);
-//    PtrCommonFCBHeader->PagingIoResource = &(NtReqFcb->PagingIoResource);
+//    RootFcb->Header.Resource = &RootFcb->MainResource;
+//    RootFcb->Header.PagingIoResource = &RootFcb->PagingIoResource;
 
     // Initialize the file size values here.
-    PtrCommonFCBHeader->AllocationSize.QuadPart = 0;
-    PtrCommonFCBHeader->FileSize.QuadPart = 0;
+    RootFcb->Header.AllocationSize.QuadPart = 0;
+    RootFcb->Header.FileSize.QuadPart = 0;
 
     // The following will disable ValidDataLength support.
-//    PtrCommonFCBHeader->ValidDataLength.QuadPart = 0x7FFFFFFFFFFFFFFFI64;
-    PtrCommonFCBHeader->ValidDataLength.QuadPart = 0;
+//    RootFcb->Header.ValidDataLength.QuadPart = 0x7FFFFFFFFFFFFFFFI64;
+    RootFcb->Header.ValidDataLength.QuadPart = 0;
 
     if(!NT_SUCCESS(RC))
         return RC;
-    UDFAssignAcl(Vcb, NULL, RootFcb, NtReqFcb);
+
 /*
     Vcb->CDBurnerVolumeValid = true;
 
@@ -1199,10 +1009,8 @@ UDFBlankMount(
     )
 {
     NTSTATUS                    RC;// = STATUS_SUCCESS;
-    PtrUDFNTRequiredFCB         NtReqFcb = NULL;
-    PFSRTL_COMMON_FCB_HEADER    PtrCommonFCBHeader = NULL;
     PtrUDFObjectName            RootName;
-    PtrUDFFCB                   RootFcb;
+    PFCB                        RootFcb;
     PDIR_INDEX_HDR hDirNdx;
     PDIR_INDEX_ITEM DirNdx;
 
@@ -1210,7 +1018,7 @@ UDFBlankMount(
     RootFcb =
     Vcb->RootDirFCB = UDFAllocateFCB();
     if(!RootFcb) return STATUS_INSUFFICIENT_RESOURCES;
-    RtlZeroMemory(RootFcb,sizeof(UDFFCB));
+    RtlZeroMemory(RootFcb,sizeof(FCB));
 
     // Allocate and set root FCB unique name
     RootName = UDFAllocateObjectName();
@@ -1224,8 +1032,8 @@ UDFBlankMount(
     if(!NT_SUCCESS(RC))
         goto bl_unwind_1;
 
-    RootFcb->NodeIdentifier.NodeType = UDF_NODE_TYPE_FCB;
-    RootFcb->NodeIdentifier.NodeSize = sizeof(UDFFCB);
+    RootFcb->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_FCB;
+    RootFcb->NodeIdentifier.NodeByteSize = sizeof(FCB);
 
     RootFcb->FileInfo = (PUDF_FILE_INFO)MyAllocatePool__(NonPagedPool,sizeof(UDF_FILE_INFO));
     if(!RootFcb->FileInfo) {
@@ -1268,28 +1076,19 @@ bl_unwind_1:
     RootFcb->FileInfo->Dloc->DirIndex = hDirNdx;
     RootFcb->FileInfo->Fcb = RootFcb;
 
-    if(!(RootFcb->NTRequiredFCB = RootFcb->FileInfo->Dloc->CommonFcb)) {
-        if(!(RootFcb->NTRequiredFCB =
-                    (PtrUDFNTRequiredFCB)MyAllocatePool__(NonPagedPool, UDFQuadAlign(sizeof(UDFNTRequiredFCB))) ) ) {
-            MyFreePool__(RootName->ObjectName.Buffer);
-            UDFReleaseObjectName(RootName);
-            UDFCleanUpFCB(RootFcb);
-            Vcb->RootDirFCB = NULL;
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-        RtlZeroMemory(RootFcb->NTRequiredFCB, UDFQuadAlign(sizeof(UDFNTRequiredFCB)));
-        RootFcb->FileInfo->Dloc->CommonFcb = RootFcb->NTRequiredFCB;
+    if(!RootFcb->FileInfo->Dloc->CommonFcb) {
+        RootFcb->FileInfo->Dloc->CommonFcb = RootFcb;
     }
-    RC = UDFInitializeFCB(RootFcb,Vcb,RootName,UDF_FCB_ROOT_DIRECTORY | UDF_FCB_DIRECTORY,NULL);
+
+    RC = UDFInitializeFCB(RootFcb, Vcb, RootName, UDF_FCB_ROOT_DIRECTORY | UDF_FCB_DIRECTORY,NULL);
     if(!NT_SUCCESS(RC)) {
         // if we get here, no resources are inited
         RootFcb->OpenHandleCount =
         RootFcb->ReferenceCount  =
-        RootFcb->NTRequiredFCB->CommonRefCount = 0;
+        RootFcb->CommonRefCount = 0;
 
         UDFCleanUpFile__(Vcb, RootFcb->FileInfo);
         MyFreePool__(RootFcb->FileInfo);
-        MyFreePool__(RootFcb->NTRequiredFCB);
         UDFCleanUpFCB(RootFcb);
         Vcb->RootDirFCB = NULL;
         return RC;
@@ -1299,33 +1098,30 @@ bl_unwind_1:
     UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
     RootFcb->OpenHandleCount =
     RootFcb->ReferenceCount  =
-    RootFcb->NTRequiredFCB->CommonRefCount =
+    RootFcb->CommonRefCount =
     RootFcb->FileInfo->RefCount =
     RootFcb->FileInfo->Dloc->LinkRefCount = 1;
 
     // this is a part of UDF_RESIDUAL_REFERENCE
     UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
 
-    NtReqFcb = RootFcb->NTRequiredFCB;
-
-    // Start initializing the fields contained in the CommonFCBHeader.
-    PtrCommonFCBHeader = &(NtReqFcb->CommonFCBHeader);
+    // Start initializing the fields contained in the Header.
 
     // DisAllow fast-IO for now.
-    PtrCommonFCBHeader->IsFastIoPossible = FastIoIsNotPossible;
+    RootFcb->Header.IsFastIoPossible = FastIoIsNotPossible;
 
     // Initialize the MainResource and PagingIoResource pointers in
     // the CommonFCBHeader structure to point to the ERESOURCE structures we
     // have allocated and already initialized above.
-    PtrCommonFCBHeader->Resource = &(NtReqFcb->MainResource);
-    PtrCommonFCBHeader->PagingIoResource = &(NtReqFcb->PagingIoResource);
+    RootFcb->Header.Resource = &RootFcb->MainResource;
+    RootFcb->Header.PagingIoResource = &RootFcb->PagingIoResource;
 
     // Initialize the file size values here.
-    PtrCommonFCBHeader->AllocationSize.QuadPart = 0;
-    PtrCommonFCBHeader->FileSize.QuadPart = 0;
+    RootFcb->Header.AllocationSize.QuadPart = 0;
+    RootFcb->Header.FileSize.QuadPart = 0;
 
     // The following will disable ValidDataLength support.
-    PtrCommonFCBHeader->ValidDataLength.QuadPart = 0x7FFFFFFFFFFFFFFFLL;
+    RootFcb->Header.ValidDataLength.QuadPart = 0x7FFFFFFFFFFFFFFFLL;
 
     return RC;
 } // end UDFBlankMount()
@@ -1450,7 +1246,6 @@ UDFCleanupVCB(
     }
 
     MyFreeMemoryAndPointer(Vcb->Statistics);
-    MyFreeMemoryAndPointer(Vcb->NTRequiredFCB);
     MyFreeMemoryAndPointer(Vcb->VolIdent.Buffer);
     MyFreeMemoryAndPointer(Vcb->TargetDevName.Buffer);
 
@@ -1464,9 +1259,6 @@ UDFCleanupVCB(
         Vcb->fZBuffer = NULL;
     }
 
-    MyFreeMemoryAndPointer(Vcb->OPCh);
-    MyFreeMemoryAndPointer(Vcb->WParams);
-    MyFreeMemoryAndPointer(Vcb->Error);
     MyFreeMemoryAndPointer(Vcb->TrackMap);
 
 } // end UDFCleanupVCB()
@@ -1488,7 +1280,7 @@ Return Value:
 */
 VOID
 UDFScanForDismountedVcb(
-    IN PtrUDFIrpContext IrpContext
+    IN PIRP_CONTEXT IrpContext
     )
 {
     PVCB Vcb;
@@ -1530,25 +1322,23 @@ Return Value:
 */
 NTSTATUS
 UDFIsVolumeMounted(
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     )
 {
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );
 
-    PtrUDFFCB Fcb;
-    PtrUDFCCB Ccb;
-
     UDFPrint(("UDFIsVolumeMounted\n"));
 
-    Ccb = (PtrUDFCCB)IrpSp->FileObject->FsContext2;
+    PCCB Ccb = (PCCB)IrpSp->FileObject->FsContext2;
     if(!Ccb) {
         UDFPrintErr(("  !Ccb\n"));
         Irp->IoStatus.Information = 0;
         Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
         return STATUS_INVALID_PARAMETER;
     }
-    Fcb = Ccb->Fcb;
+
+    PFCB Fcb = Ccb->Fcb;
 
     if(Fcb &&
        !(Fcb->Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK) &&
@@ -1579,7 +1369,7 @@ Return Value:
 */
 NTSTATUS
 UDFGetStatistics(
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     )
 {
@@ -1638,7 +1428,7 @@ Return Value:
 */
 NTSTATUS
 UDFIsPathnameValid(
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     )
 {
@@ -1702,7 +1492,7 @@ Return Value:
 */
 NTSTATUS
 UDFLockVolume(
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP             Irp,
     IN ULONG            PID
     )
@@ -1712,24 +1502,22 @@ UDFLockVolume(
     KIRQL SavedIrql;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );
 
-    PVCB Vcb;
-    PtrUDFFCB Fcb;
-    PtrUDFCCB Ccb;
     BOOLEAN VcbAcquired = FALSE;
 
     UDFPrint(("UDFLockVolume: PID %x\n", PID));
 
     //  Decode the file object, the only type of opens we accept are
     //  user volume opens.
-    Ccb = (PtrUDFCCB)(IrpSp->FileObject->FsContext2);
+    PCCB Ccb = (PCCB)IrpSp->FileObject->FsContext2;
     if(!Ccb) {
         UDFPrintErr(("  !Ccb\n"));
         Irp->IoStatus.Information = 0;
         Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
         return STATUS_INVALID_PARAMETER;
     }
-    Fcb = Ccb->Fcb;
-    Vcb = Fcb->Vcb;
+
+    PFCB Fcb = Ccb->Fcb;
+    PVCB Vcb = Fcb->Vcb;
 
     // Check for volume open
     if (Vcb != (PVCB)Fcb || !(Ccb->CCBFlags & UDF_CCB_VOLUME_OPEN)) {
@@ -1837,7 +1625,7 @@ Return Value:
 */
 NTSTATUS
 UDFUnlockVolume(
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP             Irp,
     IN ULONG            PID
     )
@@ -1847,23 +1635,20 @@ UDFUnlockVolume(
     KIRQL SavedIrql;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );
 
-    PVCB Vcb;
-    PtrUDFFCB Fcb;
-    PtrUDFCCB Ccb;
-
     UDFPrint(("UDFUnlockVolume: PID %x\n", PID));
 
     //  Decode the file object, the only type of opens we accept are
     //  user volume opens.
-    Ccb = (PtrUDFCCB)(IrpSp->FileObject->FsContext2);
+    PCCB Ccb = (PCCB)IrpSp->FileObject->FsContext2;
     if(!Ccb) {
         UDFPrintErr(("  !Ccb\n"));
         Irp->IoStatus.Information = 0;
         Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
         return STATUS_INVALID_PARAMETER;
     }
-    Fcb = Ccb->Fcb;
-    Vcb = Fcb->Vcb;
+
+    PFCB Fcb = Ccb->Fcb;
+    PVCB Vcb = Fcb->Vcb;
 
     // Check for volume open
     if(Vcb != (PVCB)Fcb || !(Ccb->CCBFlags & UDF_CCB_VOLUME_OPEN)) {
@@ -1920,33 +1705,29 @@ Return Value:
 */
 NTSTATUS
 UDFDismountVolume(
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     )
 {
     NTSTATUS RC;
 
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );
-
-    PVCB Vcb;
-    PtrUDFFCB Fcb;
-    PtrUDFCCB Ccb;
-    PPREVENT_MEDIA_REMOVAL_USER_IN Buf = NULL;
     BOOLEAN VcbAcquired = FALSE;
 
     UDFPrint(("\n ### UDFDismountVolume ###\n\n"));
 
     //  Decode the file object, the only type of opens we accept are
     //  user volume opens.
-    Ccb = (PtrUDFCCB)(IrpSp->FileObject->FsContext2);
+    PCCB Ccb = (PCCB)IrpSp->FileObject->FsContext2;
     if(!Ccb) {
         UDFPrintErr(("  !Ccb\n"));
         Irp->IoStatus.Information = 0;
         Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
         return STATUS_INVALID_PARAMETER;
     }
-    Fcb = Ccb->Fcb;
-    Vcb = Fcb->Vcb;
+
+    PFCB Fcb = Ccb->Fcb;
+    PVCB Vcb = Fcb->Vcb;
 
     // Check for volume open
     if(Vcb != (PVCB)Fcb || !(Ccb->CCBFlags & UDF_CCB_VOLUME_OPEN)) {
@@ -1977,7 +1758,6 @@ UDFDismountVolume(
             UDFReleaseResource( &(Vcb->VCBResource) );
             VcbAcquired = FALSE;
 
-            UDFStopEjectWaiter(Vcb);
             RC = STATUS_SUCCESS;
         } else
         if(/*!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) ||*/
@@ -1993,22 +1773,16 @@ UDFDismountVolume(
         } else {
 
             Vcb->Vpb->RealDevice->Flags |= DO_VERIFY_VOLUME;
-            Buf = (PPREVENT_MEDIA_REMOVAL_USER_IN)MyAllocatePool__(NonPagedPool, sizeof(PREVENT_MEDIA_REMOVAL_USER_IN));
-            if(!Buf) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-            UDFDoDismountSequence(Vcb, Buf, FALSE);
+            UDFDoDismountSequence(Vcb, FALSE);
             Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
             Vcb->WriteSecurity = FALSE;
             // disable Eject Request Waiter if any
             UDFReleaseResource( &(Vcb->VCBResource) );
             VcbAcquired = FALSE;
 
-            UDFStopEjectWaiter(Vcb);
             RC = STATUS_SUCCESS;
         }
-try_exit: NOTHING;
     } _SEH2_FINALLY {
-        //  Free memory
-        if(Buf) MyFreePool__(Buf);
         //  Release all of our resources
         if(VcbAcquired)
             UDFReleaseResource( &(Vcb->VCBResource) );
@@ -2047,7 +1821,7 @@ Return Value:
  */
 NTSTATUS
 UDFGetVolumeBitmap(
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     )
 {
@@ -2055,10 +1829,6 @@ UDFGetVolumeBitmap(
 
     PEXTENDED_IO_STACK_LOCATION IrpSp =
         (PEXTENDED_IO_STACK_LOCATION)IoGetCurrentIrpStackLocation( Irp );
-
-    PVCB Vcb;
-    PtrUDFFCB Fcb;
-    PtrUDFCCB Ccb;
 
     UDFPrint(("UDFGetVolumeBitmap\n"));
 
@@ -2077,20 +1847,21 @@ UDFGetVolumeBitmap(
 
     // Decode the file object, the only type of opens we accept are
     // user volume opens.
-    Ccb = (PtrUDFCCB)(IrpSp->FileObject->FsContext2);
+    PCCB Ccb = (PCCB)IrpSp->FileObject->FsContext2;
     if(!Ccb) {
         UDFPrintErr(("  !Ccb\n"));
         Irp->IoStatus.Information = 0;
         Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
         return STATUS_INVALID_PARAMETER;
     }
-    Fcb = Ccb->Fcb;
-    Vcb = Fcb->Vcb;
+
+    PFCB Fcb = Ccb->Fcb;
+    PVCB Vcb = Fcb->Vcb;
 
     InputBufferLength = IrpSp->Parameters.FileSystemControl.InputBufferLength;
     OutputBufferLength = IrpSp->Parameters.FileSystemControl.OutputBufferLength;
 
-    OutputBuffer = (PVOLUME_BITMAP_BUFFER)UDFGetCallersBuffer(IrpContext, Irp);
+    OutputBuffer = (PVOLUME_BITMAP_BUFFER)UDFMapUserBuffer(Irp);
     if(!OutputBuffer)
         return STATUS_INVALID_USER_BUFFER;
 
@@ -2183,7 +1954,7 @@ UDFGetVolumeBitmap(
 
 NTSTATUS
 UDFGetRetrievalPointers(
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP  Irp,
     IN ULONG Special
     )
@@ -2192,10 +1963,6 @@ UDFGetRetrievalPointers(
 
     PEXTENDED_IO_STACK_LOCATION IrpSp =
         (PEXTENDED_IO_STACK_LOCATION)IoGetCurrentIrpStackLocation( Irp );
-
-    PVCB Vcb;
-    PtrUDFFCB Fcb;
-    PtrUDFCCB Ccb;
     PUDF_FILE_INFO FileInfo;
 
     ULONG InputBufferLength;
@@ -2218,15 +1985,16 @@ UDFGetRetrievalPointers(
 
     // Decode the file object, the only type of opens we accept are
     // user volume opens.
-    Ccb = (PtrUDFCCB)(IrpSp->FileObject->FsContext2);
+    PCCB Ccb = (PCCB)IrpSp->FileObject->FsContext2;
     if(!Ccb) {
         UDFPrintErr(("  !Ccb\n"));
         Irp->IoStatus.Information = 0;
         Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
         return STATUS_INVALID_PARAMETER;
     }
-    Fcb = Ccb->Fcb;
-    Vcb = Fcb->Vcb;
+
+    PFCB Fcb = Ccb->Fcb;
+    PVCB Vcb = Fcb->Vcb;
 
     //  Get the input and output buffer lengths and pointers.
     //  Initialize some variables.
@@ -2345,17 +2113,13 @@ try_exit:   NOTHING;
 
 NTSTATUS
 UDFIsVolumeDirty(
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     )
 {
     PULONG VolumeState;
     PEXTENDED_IO_STACK_LOCATION IrpSp =
         (PEXTENDED_IO_STACK_LOCATION)IoGetCurrentIrpStackLocation( Irp );
-
-    PVCB Vcb;
-    PtrUDFFCB Fcb;
-    PtrUDFCCB Ccb;
 
     UDFPrint(("UDFIsVolumeDirty\n"));
 
@@ -2381,15 +2145,16 @@ UDFIsVolumeDirty(
 
     // Decode the file object, the only type of opens we accept are
     // user volume opens.
-    Ccb = (PtrUDFCCB)(IrpSp->FileObject->FsContext2);
+    PCCB Ccb = (PCCB)IrpSp->FileObject->FsContext2;
     if(!Ccb) {
         UDFPrintErr(("  !Ccb\n"));
         Irp->IoStatus.Information = 0;
         Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
         return STATUS_INVALID_PARAMETER;
     }
-    Fcb = Ccb->Fcb;
-    Vcb = Fcb->Vcb;
+
+    PFCB Fcb = Ccb->Fcb;
+    PVCB Vcb = Fcb->Vcb;
 
     if(Vcb != (PVCB)Fcb || !(Ccb->CCBFlags & UDF_CCB_VOLUME_OPEN)) {
         UDFPrintErr(("  !Volume\n"));
@@ -2420,14 +2185,13 @@ UDFIsVolumeDirty(
 
 NTSTATUS
 UDFInvalidateVolumes(
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     )
 {
     NTSTATUS RC;
     PEXTENDED_IO_STACK_LOCATION IrpSp =
         (PEXTENDED_IO_STACK_LOCATION)IoGetCurrentIrpStackLocation( Irp );
-    PPREVENT_MEDIA_REMOVAL_USER_IN Buf = NULL;
 
     UDFPrint(("UDFInvalidateVolumes\n"));
 
@@ -2547,17 +2311,6 @@ UDFInvalidateVolumes(
 
         if (Vcb->Vpb->RealDevice == DeviceToMarkBad) {
 
-            if(!Buf) {
-                Buf = (PPREVENT_MEDIA_REMOVAL_USER_IN)MyAllocatePool__(NonPagedPool, sizeof(PREVENT_MEDIA_REMOVAL_USER_IN)*2);
-                if(!Buf) {
-                    UDFPrintErr(("UDFInvalidateVolumes: STATUS_INSUFFICIENT_RESOURCES (2)\n"));
-                    UDFReleaseResource(&(Vcb->VCBResource));
-                    MyFreePool__(NewVpb);
-                    Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
-                    return STATUS_INSUFFICIENT_RESOURCES;
-                }
-            }
-
 #ifdef UDF_DELAYED_CLOSE
             UDFPrint(("    UDFInvalidateVolumes:     set UDF_VCB_FLAGS_NO_DELAYED_CLOSE\n"));
             Vcb->VCBFlags |= UDF_VCB_FLAGS_NO_DELAYED_CLOSE;
@@ -2577,10 +2330,9 @@ UDFInvalidateVolumes(
 
             UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
 
-            UDFDoDismountSequence(Vcb, Buf, FALSE);
+            UDFDoDismountSequence(Vcb, FALSE);
             UDFReleaseResource(&(Vcb->VCBResource));
 
-            UDFStopEjectWaiter(Vcb);
             UDFPrint(("UDFInvalidateVolumes: Vcb %x dismounted\n", Vcb));
             break;
         } else {
@@ -2594,11 +2346,6 @@ UDFInvalidateVolumes(
     UDFReleaseResource( &(UDFGlobalData.GlobalDataResource) );
 
     Irp->IoStatus.Status = STATUS_SUCCESS;
-
-    if(Buf) {
-        UDFPrint(("UDFInvalidateVolumes: free buffer\n"));
-        MyFreePool__(Buf);
-    }
 
     // drop volume completly
     UDFPrint(("UDFInvalidateVolumes: drop volume completly\n"));

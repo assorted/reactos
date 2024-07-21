@@ -303,7 +303,6 @@ While_3:
     return len;
 } // end UDFGetBitmapLen()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine scans disc free space Bitmap for minimal suitable extent.
     It returns maximal available extent if no long enough extents found.
@@ -394,7 +393,6 @@ retry_no_align:
     (*MaxExtLen) = max_len;
     return max_lba;
 } // end UDFFindMinSuitableExtent()
-#endif //UDF_READ_ONLY_BUILD
 
 #ifdef UDF_CHECK_DISK_ALLOCATION
 /*
@@ -712,7 +710,6 @@ UDFMarkSpaceAsXXX_(
 
 } // end UDFMarkSpaceAsXXX_()
 
-#ifndef UDF_READ_ONLY_BUILD
 /*
     This routine builds mapping for Length bytes in FreeSpace
     It should be used when IN_ICB method is unavailable.
@@ -834,7 +831,6 @@ no_free_space_err:
     ExtInfo->Length = Length;
     return STATUS_SUCCESS;
 } // end UDFAllocFreeExtent_()
-#endif //UDF_READ_ONLY_BUILD
 
 /*
     Returns block-count

@@ -223,7 +223,6 @@ UDFAttributesToUDF(
     return;
 } // end UDFAttributesToUDF()
 
-#ifndef _CONSOLE
 /*
     This routine fills PFILE_BOTH_DIR_INFORMATION structure (NT)
  */
@@ -241,7 +240,7 @@ UDFFileDirInfoToNT(
     USHORT Ident;
     BOOLEAN ReadSizes = FALSE;
     NTSTATUS status;
-    PtrUDFNTRequiredFCB NtReqFcb;
+    PFCB Fcb;
 
     UDFPrint(("@=%#x, FileDirNdx %x\n", &Vcb, FileDirNdx));
 
@@ -268,11 +267,11 @@ UDFFileDirInfoToNT(
         // otherwise we should read them from FileEntry
         if(FileDirNdx->FileInfo->Fcb) {
             UDFPrint(("    Fcb\n"));
-            NtReqFcb = FileDirNdx->FileInfo->Fcb->NTRequiredFCB;
-            NTFileInfo->CreationTime.QuadPart   = NtReqFcb->CreationTime.QuadPart;
-            NTFileInfo->LastWriteTime.QuadPart  = NtReqFcb->LastWriteTime.QuadPart;
-            NTFileInfo->LastAccessTime.QuadPart = NtReqFcb->LastAccessTime.QuadPart;
-            NTFileInfo->ChangeTime.QuadPart     = NtReqFcb->ChangeTime.QuadPart;
+            Fcb = FileDirNdx->FileInfo->Fcb;
+            NTFileInfo->CreationTime.QuadPart   = Fcb->CreationTime.QuadPart;
+            NTFileInfo->LastWriteTime.QuadPart  = Fcb->LastWriteTime.QuadPart;
+            NTFileInfo->LastAccessTime.QuadPart = Fcb->LastAccessTime.QuadPart;
+            NTFileInfo->ChangeTime.QuadPart     = Fcb->ChangeTime.QuadPart;
 
             NTFileInfo->AllocationSize.QuadPart = UDFGetFileAllocationSize(Vcb, FileDirNdx->FileInfo);
             NTFileInfo->EndOfFile.QuadPart = UDFGetFileSize(FileDirNdx->FileInfo);
@@ -427,8 +426,6 @@ get_name_only:
     return STATUS_SUCCESS;
 } // end UDFFileDirInfoToNT()
 
-#endif //_CONSOLE
-
 #ifndef UDF_READ_ONLY_BUILD
 /*
     This routine changes xxxTime field(s) in (Ext)FileEntry
@@ -577,8 +574,6 @@ UDFNormalizeFileName(
     }
 } // end UDFNormalizeFileName()
 
-#ifndef _CONSOLE
-
 void
 __fastcall
 UDFDOSNameOsNative(
@@ -604,8 +599,6 @@ UDFDOSNameOsNative(
     RtlGenerate8dot3Name(UdfName, FALSE, &Ctx, DosName);
 
 } // UDFDOSNameOsNative()
-
-#endif //_CONSOLE
 
 /*VOID
 UDFNormalizeFileName(
@@ -951,9 +944,7 @@ UDFDoesOSAllowFileToBeTargetForRename__(
     IN PUDF_FILE_INFO FileInfo
     )
 {
-#ifndef _CONSOLE
     NTSTATUS RC;
-#endif //_CONSOLE
 
     if(UDFIsADirectory(FileInfo))
         return STATUS_ACCESS_DENIED;
@@ -966,11 +957,11 @@ UDFDoesOSAllowFileToBeTargetForRename__(
 
     if(!FileInfo->Fcb)
         return STATUS_SUCCESS;
-#ifndef _CONSOLE
+
     RC = UDFCheckAccessRights(NULL, NULL, FileInfo->Fcb, NULL, DELETE, 0);
     if(!NT_SUCCESS(RC))
         return RC;
-#endif //_CONSOLE
+
     if(!FileInfo->Fcb)
         return STATUS_SUCCESS;
 //    RC = UDFMarkStreamsForDeletion(FileInfo->Fcb->Vcb, FileInfo->Fcb, TRUE); // Delete
@@ -1030,12 +1021,11 @@ UDFDoesOSAllowFilePretendDeleted__(
     if(!(DirNdx->FileCharacteristics & FILE_DELETED)) {
         BrutePoint();
 
-#ifndef _CONSOLE
         if(!(FileInfo->Fcb->FCBFlags & (UDF_FCB_DELETE_ON_CLOSE |
-                                        UDF_FCB_DELETED) ))
-#endif //_CONSOLE
+                                        UDF_FCB_DELETED) )) {
 
             return STATUS_CANNOT_DELETE;
+        }
     }
     return STATUS_SUCCESS;
 }

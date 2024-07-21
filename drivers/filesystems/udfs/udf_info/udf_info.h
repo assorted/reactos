@@ -379,12 +379,10 @@ OSSTATUS UDFAllocateFESpace(IN PVCB Vcb,
                             IN uint32 PartNum,
                             IN PEXTENT_INFO FEExtInfo,
                             IN uint32 Len);
-#ifndef UDF_READ_ONLY_BUILD
 // free space FE's allocation
 void UDFFreeFESpace(IN PVCB Vcb,
                     IN PUDF_FILE_INFO DirInfo,
                     IN PEXTENT_INFO FEExtInfo);
-#endif //UDF_READ_ONLY_BUILD
 
 #define FLUSH_FE_KEEP       FALSE
 #define FLUSH_FE_FOR_DEL    TRUE
@@ -755,14 +753,12 @@ OSSTATUS UDFResizeFile__(IN PVCB Vcb,
 OSSTATUS UDFRecordDirectory__(IN PVCB Vcb,
                            IN OUT PUDF_FILE_INFO DirInfo); // source (opened)
 // remove all DELETED entries from Dir & resize it.
-#ifndef UDF_READ_ONLY_BUILD
 OSSTATUS UDFPackDirectory__(IN PVCB Vcb,
                          IN OUT PUDF_FILE_INFO FileInfo);   // source (opened)
 // rebuild tags for all entries from Dir.
 OSSTATUS
 UDFReTagDirectory(IN PVCB Vcb,
                   IN OUT PUDF_FILE_INFO FileInfo);   // source (opened)
-#endif //UDF_READ_ONLY_BUILD
 // load VAT.
 OSSTATUS UDFLoadVAT(IN PVCB Vcb,
                      IN uint32 PartNdx);
@@ -1009,10 +1005,6 @@ OSSTATUS
 __fastcall UDFUnPackMapping(IN PVCB Vcb,
                           IN PEXTENT_INFO ExtInfo);   // Extent array
 //
-OSSTATUS UDFConvertFEToNonInICB(IN PVCB Vcb,
-                                IN PUDF_FILE_INFO FileInfo,
-                                IN uint8 NewAllocMode);
-//
 OSSTATUS UDFConvertFEToExtended(IN PVCB Vcb,
                                 IN PUDF_FILE_INFO FileInfo);
 //
@@ -1094,11 +1086,7 @@ UDFDirIndex(
 
 // arr - bit array,  bit - number of bit
 
-#ifdef _CONSOLE
-#define CheckAddr(addr) {ASSERT((uint32)(addr) > 0x1000);}
-#else
 #define CheckAddr(addr) {ASSERT((uint32)(addr) & 0x80000000);}
-#endif
 
 #define UDFGetBit(arr, bit) (    (BOOLEAN) ( ((((uint32*)(arr))[(bit)>>5]) >> ((bit)&31)) &1 )    )
 #define UDFSetBit(arr, bit) ( (((uint32*)(arr))[(bit)>>5]) |= (((uint32)1) << ((bit)&31)) )
@@ -1131,7 +1119,7 @@ UDFDirIndex(
 #define UDFSetZeroBits(arr,bit,bc)  UDFSetBits(arr,bit,bc)
 #define UDFClrZeroBits(arr,bit,bc)  UDFClrBits(arr,bit,bc)
 
-#if defined UDF_DBG || defined _CONSOLE
+#if defined UDF_DBG
   #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
     #define UDFSetFreeBitOwner(Vcb, i) (Vcb)->FSBM_Bitmap_owners[i] = 0;
     #define UDFSetUsedBitOwner(Vcb, i, o) (Vcb)->FSBM_Bitmap_owners[i] = o;

@@ -23,28 +23,28 @@
 
 NTSTATUS
 UDFPnpQueryRemove (
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP Irp,
     PVCB Vcb
     );
 
 NTSTATUS
 UDFPnpRemove (
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP Irp,
     PVCB Vcb
     );
 
 NTSTATUS
 UDFPnpSurpriseRemove (
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP Irp,
     PVCB Vcb
     );
 
 NTSTATUS
 UDFPnpCancelRemove (
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP Irp,
     PVCB Vcb
     );
@@ -59,7 +59,7 @@ UDFPnpCompletionRoutine (
 
 NTSTATUS
 UDFCommonPnp (
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     IN PIRP Irp
     );
 
@@ -85,7 +85,7 @@ UDFPnp (
     )
 {
     NTSTATUS RC;
-    PtrUDFIrpContext PtrIrpContext = NULL;
+    PIRP_CONTEXT PtrIrpContext = NULL;
     BOOLEAN AreWeTopLevel;
 
     UDFPrint(("UDFPnp\n"));
@@ -144,7 +144,7 @@ Return Value:
  */
 NTSTATUS
 UDFCommonPnp (
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     IN PIRP Irp
     )
 {
@@ -162,7 +162,7 @@ UDFCommonPnp (
         // field that takes us past the end of an ordinary device object.
         Vcb = (PVCB)(IrpSp->DeviceObject->DeviceExtension);
 
-        if (Vcb->NodeIdentifier.NodeType != UDF_NODE_TYPE_VCB) {
+        if (Vcb->NodeIdentifier.NodeTypeCode != UDF_NODE_TYPE_VCB) {
             // We were called with something we don't understand.
             if(Irp->Flags & IRP_INPUT_OPERATION) {
                 Irp->IoStatus.Information = 0;
@@ -234,7 +234,7 @@ Return Value:
  */
 NTSTATUS
 UDFPnpQueryRemove(
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP Irp,
     PVCB Vcb
     )
@@ -244,7 +244,6 @@ UDFPnpQueryRemove(
     BOOLEAN VcbDeleted = FALSE;
     BOOLEAN GlobalHeld = FALSE;
     BOOLEAN VcbAcquired = FALSE;
-    PPREVENT_MEDIA_REMOVAL_USER_IN Buf = NULL;
 
     //  Having said yes to a QUERY, any communication with the
     //  underlying storage stack is undefined (and may block)
@@ -266,17 +265,9 @@ UDFPnpQueryRemove(
         UDFAcquireResourceExclusive(&(Vcb->VCBResource),TRUE);
         VcbAcquired = TRUE;
 
-        Buf = (PPREVENT_MEDIA_REMOVAL_USER_IN)MyAllocatePool__(NonPagedPool, sizeof(PREVENT_MEDIA_REMOVAL_USER_IN));
         //  With the volume held locked, note that we must finalize as much
         //  as possible right now.
-        UDFDoDismountSequence(Vcb, Buf, FALSE);
-
-        // disable Eject Request Waiter if any
-        UDFReleaseResource( &(Vcb->VCBResource) );
-        VcbAcquired = FALSE;
-        UDFStopEjectWaiter(Vcb);
-        UDFAcquireResourceExclusive(&(Vcb->VCBResource),TRUE);
-        VcbAcquired = TRUE;
+        UDFDoDismountSequence(Vcb, FALSE);
 
         //  We need to pass this down before starting the dismount, which
         //  could disconnect us immediately from the stack.
@@ -379,7 +370,7 @@ Return Value:
 --*/
 NTSTATUS
 UDFPnpRemove (
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP Irp,
     PVCB Vcb
     )
@@ -388,7 +379,6 @@ UDFPnpRemove (
     KEVENT Event;
     BOOLEAN VcbDeleted;
     BOOLEAN VcbAcquired;
-    PPREVENT_MEDIA_REMOVAL_USER_IN Buf = NULL;
 
     //  REMOVE - a storage device is now gone.  We either got
     //  QUERY'd and said yes OR got a SURPRISE OR a storage
@@ -463,20 +453,14 @@ UDFPnpRemove (
         //  PnP will take care of disconnecting this stack if we
         //  couldn't get off of it immediately.
         Vcb->Vpb->RealDevice->Flags |= DO_VERIFY_VOLUME;
-        Buf = (PPREVENT_MEDIA_REMOVAL_USER_IN)MyAllocatePool__(NonPagedPool, sizeof(PREVENT_MEDIA_REMOVAL_USER_IN));
-        if(!Buf) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-        UDFDoDismountSequence(Vcb, Buf, FALSE);
+        UDFDoDismountSequence(Vcb, FALSE);
         Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
         Vcb->WriteSecurity = FALSE;
-        // disable Eject Request Waiter if any
+
         UDFReleaseResource( &(Vcb->VCBResource) );
         VcbAcquired = FALSE;
 
-        UDFStopEjectWaiter(Vcb);
-
         VcbDeleted = !UDFCheckForDismount( PtrIrpContext, Vcb, FALSE );
-
-try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
         //  Release the Vcb if it could still remain.
@@ -484,9 +468,6 @@ try_exit:   NOTHING;
             UDFReleaseResource(&(Vcb->VCBResource));
         }
         UDFReleaseResource(&(UDFGlobalData.GlobalDataResource));
-
-        if(Buf)
-            MyFreePool__(Buf);
 
         if (!_SEH2_AbnormalTermination()) {
             Irp->IoStatus.Status = RC;
@@ -503,7 +484,7 @@ try_exit:   NOTHING;
 
 NTSTATUS
 UDFPnpSurpriseRemove (
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP Irp,
     PVCB Vcb
     )
@@ -540,7 +521,6 @@ Return Value:
     KEVENT Event;
     BOOLEAN VcbDeleted;
     BOOLEAN VcbAcquired;
-    PPREVENT_MEDIA_REMOVAL_USER_IN Buf = NULL;
 
     //  SURPRISE - a device was physically yanked away without
     //  any warning.  This means external forces.
@@ -588,28 +568,18 @@ Return Value:
     _SEH2_TRY {
         //  Knock as many files down for this volume as we can.
         Vcb->Vpb->RealDevice->Flags |= DO_VERIFY_VOLUME;
-        Buf = (PPREVENT_MEDIA_REMOVAL_USER_IN)MyAllocatePool__(NonPagedPool, sizeof(PREVENT_MEDIA_REMOVAL_USER_IN));
-        if(!Buf) {
-            VcbAcquired = FALSE;
-            VcbDeleted = FALSE;
-            try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-        }
 
-        UDFDoDismountSequence(Vcb, Buf, FALSE);
+        UDFDoDismountSequence(Vcb, FALSE);
         Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
         Vcb->WriteSecurity = FALSE;
 
         UDFReleaseResource(&(Vcb->VCBResource));
         VcbAcquired = FALSE;
 
-        UDFStopEjectWaiter(Vcb);
-
         //  Now make our dismount happen.  This may not vaporize the
         //  Vcb, of course, since there could be any number of handles
         //  outstanding since this is an out of band notification.
         VcbDeleted = !UDFCheckForDismount( PtrIrpContext, Vcb, FALSE );
-
-try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
@@ -618,9 +588,6 @@ try_exit:   NOTHING;
             UDFReleaseResource(&(Vcb->VCBResource));
         }
         UDFReleaseResource(&(UDFGlobalData.GlobalDataResource));
-
-        if(Buf)
-            MyFreePool__(Buf);
 
         if (!_SEH2_AbnormalTermination()) {
             Irp->IoStatus.Status = RC;

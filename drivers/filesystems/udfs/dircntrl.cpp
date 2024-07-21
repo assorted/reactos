@@ -60,7 +60,7 @@ UDFDirControl(
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PtrUDFIrpContext    PtrIrpContext = NULL;
+    PIRP_CONTEXT PtrIrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     TmPrint(("UDFDirControl: \n"));
@@ -125,15 +125,15 @@ UDFDirControl(
 NTSTATUS
 NTAPI
 UDFCommonDirControl(
-   PtrUDFIrpContext  PtrIrpContext,
+   PIRP_CONTEXT PtrIrpContext,
    PIRP              Irp
    )
 {
     NTSTATUS                RC = STATUS_SUCCESS;
     PIO_STACK_LOCATION      IrpSp = NULL;
     PFILE_OBJECT            FileObject = NULL;
-    PtrUDFFCB               Fcb = NULL;
-    PtrUDFCCB               Ccb = NULL;
+    PFCB                    Fcb = NULL;
+    PCCB                    Ccb = NULL;
     _SEH2_VOLATILE PVCB     Vcb = NULL;
     _SEH2_VOLATILE BOOLEAN  AcquiredVcb = FALSE;
 
@@ -149,14 +149,14 @@ UDFCommonDirControl(
         ASSERT(FileObject);
 
         // Get the FCB and CCB pointers
-        Ccb = (PtrUDFCCB)(FileObject->FsContext2);
+        Ccb = (PCCB)FileObject->FsContext2;
         ASSERT(Ccb);
         Fcb = Ccb->Fcb;
         ASSERT(Fcb);
 
         Vcb = (PVCB)(PtrIrpContext->TargetDeviceObject->DeviceExtension);
         ASSERT(Vcb);
-        ASSERT(Vcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB);
+        ASSERT(Vcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB);
 //        Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
 
         UDFFlushTryBreak(Vcb);
@@ -214,17 +214,16 @@ UDFCommonDirControl(
 NTSTATUS
 NTAPI
 UDFQueryDirectory(
-    PtrUDFIrpContext            PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP                        Irp,
     PIO_STACK_LOCATION          IrpSp,
     PFILE_OBJECT                FileObject,
-    PtrUDFFCB                   Fcb,
-    PtrUDFCCB                   Ccb
+    PFCB                        Fcb,
+    PCCB                        Ccb
     )
 {
     NTSTATUS                    RC = STATUS_SUCCESS;
     BOOLEAN                     PostRequest = FALSE;
-    PtrUDFNTRequiredFCB         NtReqFcb = NULL;
     BOOLEAN                     CanWait = FALSE;
     _SEH2_VOLATILE PVCB         Vcb = NULL;
     _SEH2_VOLATILE BOOLEAN      AcquiredFCB = FALSE;
@@ -267,13 +266,12 @@ UDFQueryDirectory(
     {
 
         // Validate the sent-in FCB
-        if ((Fcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB) || !(Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+        if ((Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) || !(Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
             // We will only allow notify requests on directories.
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
 
         // Obtain the callers parameters
-        NtReqFcb = Fcb->NTRequiredFCB;
         CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
         Vcb = Fcb->Vcb;
         //Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
@@ -323,8 +321,8 @@ UDFQueryDirectory(
         // Some additional arguments that affect the FSD behavior
         ReturnSingleEntry = (IrpSp->Flags & SL_RETURN_SINGLE_ENTRY) ? TRUE : FALSE;
 
-        UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-        UDFAcquireResourceShared(&(NtReqFcb->MainResource), TRUE);
+        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+        UDFAcquireResourceShared(&Fcb->MainResource, TRUE);
         AcquiredFCB = TRUE;
 
         // We must determine the buffer pointer to be used. Since this
@@ -590,11 +588,11 @@ try_exit:   NOTHING;
         if (PostRequest) {
 
             if (AcquiredFCB) {
-                UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-                UDFReleaseResource(&(NtReqFcb->MainResource));
+                UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+                UDFReleaseResource(&Fcb->MainResource);
             }
             // Map the users buffer and then post the request.
-            RC = UDFLockCallersBuffer(PtrIrpContext, Irp, IoWriteAccess, BufferLength);
+            RC = UDFLockUserBuffer(PtrIrpContext, Irp, IoWriteAccess, BufferLength);
             ASSERT(NT_SUCCESS(RC));
 
             RC = UDFPostRequest(PtrIrpContext, Irp);
@@ -609,8 +607,8 @@ try_exit:   NOTHING;
             if(Ccb) Ccb->CurrentIndex = NextMatch;
 
             if (AcquiredFCB) {
-                UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-                UDFReleaseResource(&(NtReqFcb->MainResource));
+                UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+                UDFReleaseResource(&Fcb->MainResource);
             }
             if (!_SEH2_AbnormalTermination()) {
                 // complete the IRP
@@ -694,18 +692,17 @@ UDFFindNextMatch(
 NTSTATUS
 NTAPI
 UDFNotifyChangeDirectory(
-    PtrUDFIrpContext            PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP                        Irp,
     PIO_STACK_LOCATION          IrpSp,
     PFILE_OBJECT                FileObject,
-    PtrUDFFCB                   Fcb,
-    PtrUDFCCB                   Ccb
+    PFCB                        Fcb,
+    PCCB                        Ccb
     )
 {
     NTSTATUS                    RC = STATUS_SUCCESS;
     BOOLEAN                     CompleteRequest = FALSE;
     BOOLEAN                     PostRequest = FALSE;
-    PtrUDFNTRequiredFCB         NtReqFcb = NULL;
     BOOLEAN                     CanWait = FALSE;
     ULONG                       CompletionFilter = 0;
     BOOLEAN                     WatchTree = FALSE;
@@ -718,20 +715,19 @@ UDFNotifyChangeDirectory(
     _SEH2_TRY {
 
         // Validate the sent-in FCB
-        if ( (Fcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB) ||
+        if ( (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) ||
             !(Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
 
             CompleteRequest = TRUE;
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
 
-        NtReqFcb = Fcb->NTRequiredFCB;
         CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
         Vcb = Fcb->Vcb;
 
         // Acquire the FCB resource shared
-        UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-        if (!UDFAcquireResourceShared(&(NtReqFcb->MainResource), CanWait)) {
+        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+        if (!UDFAcquireResourceShared(&Fcb->MainResource, CanWait)) {
             PostRequest = TRUE;
             try_return(RC = STATUS_PENDING);
         }
@@ -772,8 +768,8 @@ UDFNotifyChangeDirectory(
         if (PostRequest) {
             // Perform appropriate related post processing here
             if (AcquiredFCB) {
-                UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-                UDFReleaseResource(&(NtReqFcb->MainResource));
+                UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+                UDFReleaseResource(&Fcb->MainResource);
                 AcquiredFCB = FALSE;
             }
             RC = UDFPostRequest(PtrIrpContext, Irp);
@@ -796,8 +792,8 @@ UDFNotifyChangeDirectory(
 
         // Release the FCB resources if acquired.
         if (AcquiredFCB) {
-            UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-            UDFReleaseResource(&(NtReqFcb->MainResource));
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFReleaseResource(&Fcb->MainResource);
             AcquiredFCB = FALSE;
         }
 

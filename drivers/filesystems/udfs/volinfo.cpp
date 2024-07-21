@@ -24,7 +24,7 @@ Abstract:
 //  Local support routines
 NTSTATUS
 UDFQueryFsVolumeInfo (
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_VOLUME_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -32,7 +32,7 @@ UDFQueryFsVolumeInfo (
 
 NTSTATUS
 UDFQueryFsSizeInfo (
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_SIZE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -40,7 +40,7 @@ UDFQueryFsSizeInfo (
 
 NTSTATUS
 UDFQueryFsFullSizeInfo (
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_FULL_SIZE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -48,7 +48,7 @@ UDFQueryFsFullSizeInfo (
 
 NTSTATUS
 UDFQueryFsDeviceInfo (
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_DEVICE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -56,7 +56,7 @@ UDFQueryFsDeviceInfo (
 
 NTSTATUS
 UDFQueryFsAttributeInfo (
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_ATTRIBUTE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -64,7 +64,7 @@ UDFQueryFsAttributeInfo (
 
 NTSTATUS
 UDFSetLabelInfo (
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_LABEL_INFORMATION Buffer,
     IN OUT PULONG Length);
@@ -89,7 +89,7 @@ UDFQueryVolInfo(
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PtrUDFIrpContext    PtrIrpContext = NULL;
+    PIRP_CONTEXT PtrIrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     UDFPrint(("UDFQueryVolInfo: \n"));
@@ -147,7 +147,7 @@ Return Value:
  */
 NTSTATUS
 UDFCommonQueryVolInfo(
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP             Irp
     )
 {
@@ -160,7 +160,7 @@ UDFCommonQueryVolInfo(
     BOOLEAN AcquiredVCB = FALSE;
     PFILE_OBJECT            FileObject = NULL;
 //    PtrUDFFCB               Fcb = NULL;
-    PtrUDFCCB               Ccb = NULL;
+    PCCB                    Ccb = NULL;
 
     _SEH2_TRY {
 
@@ -175,7 +175,7 @@ UDFCommonQueryVolInfo(
         ASSERT(FileObject);
 
         // Get the FCB and CCB pointers.
-        Ccb = (PtrUDFCCB)(FileObject->FsContext2);
+        Ccb = (PCCB)FileObject->FsContext2;
         ASSERT(Ccb);
 
         Vcb = (PVCB)(IrpSp->DeviceObject->DeviceExtension);
@@ -185,18 +185,6 @@ UDFCommonQueryVolInfo(
         Length = IrpSp->Parameters.QueryVolume.Length;
         //  Acquire the Vcb for this volume.
         CanWait = ((PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
-#ifdef UDF_ENABLE_SECURITY
-        RC = IoCheckFunctionAccess(
-            Ccb->PreviouslyGrantedAccess,
-            PtrIrpContext->MajorFunction,
-            PtrIrpContext->MinorFunction,
-            0,
-            NULL,
-            &(IrpSp->Parameters.QueryVolume.FsInformationClass));
-        if(!NT_SUCCESS(RC)) {
-            try_return(RC);
-        }
-#endif //UDF_ENABLE_SECURITY
 
         RtlZeroMemory(Irp->AssociatedIrp.SystemBuffer, Length);
 
@@ -298,7 +286,7 @@ Arguments:
  */
 NTSTATUS
 UDFQueryFsVolumeInfo(
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_VOLUME_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -350,7 +338,7 @@ Arguments:
  */
 NTSTATUS
 UDFQueryFsSizeInfo(
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_SIZE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -402,7 +390,7 @@ Arguments:
  */
 NTSTATUS
 UDFQueryFsFullSizeInfo(
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_FULL_SIZE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -455,7 +443,7 @@ Arguments:
  */
 NTSTATUS
 UDFQueryFsDeviceInfo(
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_DEVICE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -494,7 +482,7 @@ Arguments:
  */
 NTSTATUS
 UDFQueryFsAttributeInfo(
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_ATTRIBUTE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -515,10 +503,7 @@ UDFQueryFsAttributeInfo(
 #ifdef ALLOW_SPARSE
                                    FILE_SUPPORTS_SPARSE_FILES |
 #endif //ALLOW_SPARSE
-#ifdef UDF_ENABLE_SECURITY
-                                   (UDFNtAclSupported(Vcb) ? FILE_PERSISTENT_ACLS : 0) |
-#endif //UDF_ENABLE_SECURITY
-                   ((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) ? FILE_READ_ONLY_VOLUME : 0) |
+                                   ((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) ? FILE_READ_ONLY_VOLUME : 0) |
 
                                    FILE_UNICODE_ON_DISK;
 
@@ -529,70 +514,16 @@ UDFQueryFsAttributeInfo(
     *Length &= ~1;
     //  Determine how much of the file system name will fit.
 
+#define UDF_FS_TITLE_UDF L"UDF"
+
 #define UDFSetFsTitle(tit) \
                 FsTypeTitle = UDF_FS_TITLE_##tit; \
                 FsTypeTitleLen = sizeof(UDF_FS_TITLE_##tit) - sizeof(WCHAR);
 
-    switch(Vcb->TargetDeviceObject->DeviceType) {
-    case FILE_DEVICE_CD_ROM: {
-        if(Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK) {
-            if(!Vcb->LastLBA) {
-                UDFSetFsTitle(BLANK);
-            } else {
-                UDFSetFsTitle(UNKNOWN);
-            }
-        } else
-        if(Vcb->CDR_Mode) {
-            if(Vcb->MediaClassEx == CdMediaClass_DVDR  ||
-               Vcb->MediaClassEx == CdMediaClass_DVDRW ||
-               Vcb->MediaClassEx == CdMediaClass_DVDRAM) {
-                UDFSetFsTitle(DVDR);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDpR ||
-               Vcb->MediaClassEx == CdMediaClass_DVDpRW) {
-                UDFSetFsTitle(DVDpR);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDROM) {
-                UDFSetFsTitle(DVDROM);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_CDROM) {
-                UDFSetFsTitle(CDROM);
-            } else {
-                UDFSetFsTitle(CDR);
-            }
-        } else {
-            if(Vcb->MediaClassEx == CdMediaClass_DVDROM ||
-               Vcb->MediaClassEx == CdMediaClass_DVDR ||
-               Vcb->MediaClassEx == CdMediaClass_DVDpR) {
-                UDFSetFsTitle(DVDROM);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDR) {
-                UDFSetFsTitle(DVDR);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDRW) {
-                UDFSetFsTitle(DVDRW);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDpRW) {
-                UDFSetFsTitle(DVDpRW);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_DVDRAM) {
-                UDFSetFsTitle(DVDRAM);
-            } else
-            if(Vcb->MediaClassEx == CdMediaClass_CDROM) {
-                UDFSetFsTitle(CDROM);
-            } else {
-                UDFSetFsTitle(CDRW);
-            }
-        }
-        break;
-    }
-    default: {
-        UDFSetFsTitle(HDD);
-        break;
-    }
-    }
+    UDFSetFsTitle(UDF);
 
 #undef UDFSetFsTitle
+#undef UDF_FS_TITLE_UDF
 
     if (*Length >= FsTypeTitleLen) {
         BytesToCopy = FsTypeTitleLen;
@@ -609,9 +540,6 @@ UDFQueryFsAttributeInfo(
     return Status;
 } // end UDFQueryFsAttributeInfo()
 
-
-#ifndef UDF_READ_ONLY_BUILD
-
 NTSTATUS
 NTAPI
 UDFSetVolInfo(
@@ -620,7 +548,7 @@ UDFSetVolInfo(
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PtrUDFIrpContext    PtrIrpContext = NULL;
+    PIRP_CONTEXT PtrIrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     UDFPrint(("UDFSetVolInfo: \n"));
@@ -664,7 +592,7 @@ UDFSetVolInfo(
  */
 NTSTATUS
 UDFCommonSetVolInfo(
-    PtrUDFIrpContext                PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP                            Irp
     )
 {
@@ -677,7 +605,7 @@ UDFCommonSetVolInfo(
     BOOLEAN AcquiredVCB = FALSE;
     PFILE_OBJECT            FileObject = NULL;
 //    PtrUDFFCB               Fcb = NULL;
-    PtrUDFCCB               Ccb = NULL;
+    PCCB                    Ccb = NULL;
 
     _SEH2_TRY {
 
@@ -691,10 +619,10 @@ UDFCommonSetVolInfo(
         ASSERT(FileObject);
 
         // Get the FCB and CCB pointers.
-        Ccb = (PtrUDFCCB)(FileObject->FsContext2);
+        Ccb = (PCCB)FileObject->FsContext2;
         ASSERT(Ccb);
 
-        if(Ccb && Ccb->Fcb && (Ccb->Fcb->NodeIdentifier.NodeType != UDF_NODE_TYPE_VCB)) {
+        if(Ccb && Ccb->Fcb && (Ccb->Fcb->NodeIdentifier.NodeTypeCode != UDF_NODE_TYPE_VCB)) {
             UDFPrint(("    Can't change Label on Non-volume object\n"));
             try_return(RC = STATUS_ACCESS_DENIED);
         }
@@ -717,18 +645,7 @@ UDFCommonSetVolInfo(
             try_return (RC = STATUS_PENDING);
         }
         AcquiredVCB = TRUE;
-#ifdef UDF_ENABLE_SECURITY
-        RC = IoCheckFunctionAccess(
-            Ccb->PreviouslyGrantedAccess,
-            PtrIrpContext->MajorFunction,
-            PtrIrpContext->MinorFunction,
-            0,
-            NULL,
-            &(IrpSp->Parameters.SetVolume.FsInformationClass));
-        if(!NT_SUCCESS(RC)) {
-            try_return(RC);
-        }
-#endif //UDF_ENABLE_SECURITY
+
         switch (IrpSp->Parameters.SetVolume.FsInformationClass) {
 
         case FileFsLabelInformation:
@@ -790,7 +707,7 @@ try_exit:   NOTHING;
  */
 NTSTATUS
 UDFSetLabelInfo (
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_LABEL_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -818,5 +735,3 @@ UDFSetLabelInfo (
     UDFPrint(("  UDFSetLabelInfo: OK\n"));
     return STATUS_SUCCESS;
 } // end UDFSetLabelInfo ()
-
-#endif //UDF_READ_ONLY_BUILD

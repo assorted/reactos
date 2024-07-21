@@ -27,13 +27,13 @@ extern NTSTATUS NTAPI UDFCreate(
     IN PIRP                    Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonCreate(
-    IN PtrUDFIrpContext        PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PIRP                    Irp);
 
 extern NTSTATUS UDFFirstOpenFile(
     IN PVCB                    Vcb,                // volume control block
     IN PFILE_OBJECT            PtrNewFileObject,   // I/O Mgr. created file object
-   OUT PtrUDFFCB*              PtrNewFcb,
+   OUT PFCB*                   PtrNewFcb,
     IN PUDF_FILE_INFO          RelatedFileInfo,
     IN PUDF_FILE_INFO          NewFileInfo,
     IN PUNICODE_STRING         LocalPath,
@@ -42,10 +42,10 @@ extern NTSTATUS UDFFirstOpenFile(
 extern NTSTATUS UDFOpenFile(
     IN PVCB                    Vcb,                // volume control block
     IN PFILE_OBJECT            PtrNewFileObject,   // I/O Mgr. created file object
-    IN PtrUDFFCB               PtrNewFcb);
+    IN PFCB                    PtrNewFcb);
 
 extern NTSTATUS UDFInitializeFCB(
-    IN PtrUDFFCB               PtrNewFcb,          // FCB structure to be initialized
+    IN PFCB                    PtrNewFcb,          // FCB structure to be initialized
     IN PVCB                    Vcb,                // logical volume (VCB) pointer
     IN PtrUDFObjectName        PtrObjectName,      // name of the object
     IN ULONG                   Flags,              // is this a file/directory, etc.
@@ -59,7 +59,7 @@ PDEVICE_OBJECT              DeviceObject,       // the logical volume device obj
 PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonCleanup(
-PtrUDFIrpContext            PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                        Irp);
 
 extern NTSTATUS UDFCloseFileInfoChain(IN PVCB Vcb,
@@ -74,7 +74,7 @@ PDEVICE_OBJECT              DeviceObject,       // the logical volume device obj
 PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonClose(
-PtrUDFIrpContext            PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                        Irp,
 BOOLEAN                     CanWait);
 
@@ -100,8 +100,8 @@ extern NTSTATUS UDFCloseAllXXXDelayedInDir(IN PVCB           Vcb,
 #define UDFCloseAllSystemDelayedInDir(Vcb,FI) \
     UDFCloseAllXXXDelayedInDir(Vcb,FI,TRUE);
 
-extern NTSTATUS UDFQueueDelayedClose(PtrUDFIrpContext IrpContext,
-                                     PtrUDFFCB        Fcb);
+extern NTSTATUS UDFQueueDelayedClose(PIRP_CONTEXT IrpContext,
+                                     PFCB             Fcb);
 
 //extern VOID UDFRemoveFromDelayedQueue(PtrUDFFCB Fcb);
 #define UDFRemoveFromDelayedQueue(Fcb) \
@@ -118,24 +118,24 @@ PDEVICE_OBJECT          DeviceObject,       // the logical volume device object
 PIRP                    Irp);               // I/O Request Packet
 
 extern NTSTATUS NTAPI UDFCommonDirControl(
-PtrUDFIrpContext        PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                    Irp);
 
 extern NTSTATUS NTAPI UDFQueryDirectory(
-PtrUDFIrpContext        PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                    Irp,
 PIO_STACK_LOCATION      IrpSp,
 PFILE_OBJECT            FileObject,
-PtrUDFFCB               Fcb,
-PtrUDFCCB               Ccb);
+PFCB                    Fcb,
+PCCB                    Ccb);
 
 extern NTSTATUS NTAPI UDFNotifyChangeDirectory(
-PtrUDFIrpContext        PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                    Irp,
 PIO_STACK_LOCATION      IrpSp,
 PFILE_OBJECT            FileObject,
-PtrUDFFCB               Fcb,
-PtrUDFCCB               Ccb);
+PFCB                    Fcb,
+PCCB                    Ccb);
 
 /*************************************************************************
 * Prototypes for the file devcntrl.cpp
@@ -145,7 +145,7 @@ PDEVICE_OBJECT              DeviceObject,       // the logical volume device obj
 PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS NTAPI UDFCommonDeviceControl(
-PtrUDFIrpContext            PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                        Irp);
 
 extern NTSTATUS NTAPI UDFDevIoctlCompletion(
@@ -170,7 +170,7 @@ OUT PIO_STATUS_BLOCK        IoStatus,
 IN PDEVICE_OBJECT           DeviceObject);
 
 extern FAST_IO_POSSIBLE NTAPI UDFIsFastIoPossible(
-IN PtrUDFFCB Fcb);
+IN PFCB Fcb);
 
 extern BOOLEAN NTAPI UDFFastIoQueryBasicInfo(
 IN PFILE_OBJECT             FileObject,
@@ -293,40 +293,48 @@ UDFFastIoCopyWrite (
 /*************************************************************************
 * Prototypes for the file fileinfo.cpp
 *************************************************************************/
-extern NTSTATUS NTAPI UDFFileInfo(
+extern NTSTATUS NTAPI UDFQueryInfo(
 PDEVICE_OBJECT  DeviceObject,       // the logical volume device object
 PIRP            Irp);               // I/O Request Packet
 
-extern NTSTATUS UDFCommonFileInfo(
-PtrUDFIrpContext        PtrIrpContext,
+extern NTSTATUS NTAPI UDFSetInfo(
+PDEVICE_OBJECT  DeviceObject,       // the logical volume device object
+PIRP            Irp);               // I/O Request Packet
+
+extern NTSTATUS UDFCommonQueryInfo(
+    PIRP_CONTEXT PtrIrpContext,
+    PIRP                    Irp);
+
+extern NTSTATUS UDFCommonSetInfo(
+PIRP_CONTEXT PtrIrpContext,
 PIRP                    Irp);
 
 extern NTSTATUS UDFGetBasicInformation(
     IN PFILE_OBJECT                FileObject,
-    IN PtrUDFFCB                   Fcb,
+    IN PFCB                        Fcb,
     IN PFILE_BASIC_INFORMATION     PtrBuffer,
  IN OUT LONG*                      PtrReturnedLength);
 
 extern NTSTATUS UDFGetNetworkInformation(
-    IN PtrUDFFCB                      Fcb,
+    IN PFCB                           Fcb,
     IN PFILE_NETWORK_OPEN_INFORMATION PtrBuffer,
  IN OUT PLONG                         PtrReturnedLength);
 
 extern NTSTATUS UDFGetStandardInformation(
-    IN PtrUDFFCB                   Fcb,
+    IN PFCB                        Fcb,
     IN PFILE_STANDARD_INFORMATION  PtrBuffer,
  IN OUT PLONG                      PtrReturnedLength);
 
 extern NTSTATUS UDFGetInternalInformation(
-    PtrUDFIrpContext               PtrIrpContext,
-    IN PtrUDFFCB                   Fcb,
-    IN PtrUDFCCB                   Ccb,
+    PIRP_CONTEXT PtrIrpContext,
+    IN PFCB                        Fcb,
+    IN PCCB                        Ccb,
     IN PFILE_INTERNAL_INFORMATION  PtrBuffer,
  IN OUT PLONG                      PtrReturnedLength);
 
 extern NTSTATUS UDFGetEaInformation(
-    PtrUDFIrpContext        PtrIrpContext,
-    IN PtrUDFFCB            Fcb,
+    PIRP_CONTEXT PtrIrpContext,
+    IN PFCB                 Fcb,
     IN PFILE_EA_INFORMATION PtrBuffer,
  IN OUT PLONG               PtrReturnedLength);
 
@@ -336,7 +344,7 @@ extern NTSTATUS UDFGetFullNameInformation(
  IN OUT PLONG                      PtrReturnedLength);
 
 extern NTSTATUS UDFGetAltNameInformation(
-    IN PtrUDFFCB                   Fcb,
+    IN PFCB                        Fcb,
     IN PFILE_NAME_INFORMATION      PtrBuffer,
  IN OUT PLONG                      PtrReturnedLength);
 
@@ -346,55 +354,55 @@ extern NTSTATUS UDFGetPositionInformation(
  IN OUT PLONG                     PtrReturnedLength);
 
 extern NTSTATUS UDFGetFileStreamInformation(
-    IN PtrUDFFCB                  Fcb,
+    IN PFCB                       Fcb,
     IN PFILE_STREAM_INFORMATION   PtrBuffer,
  IN OUT PULONG                    PtrReturnedLength);
 
 extern NTSTATUS UDFSetBasicInformation(
-    IN PtrUDFFCB                   Fcb,
-    IN PtrUDFCCB                   Ccb,
+    IN PFCB                   Fcb,
+    IN PCCB                        Ccb,
     IN PFILE_OBJECT                FileObject,
     IN PFILE_BASIC_INFORMATION     PtrBuffer);
 
 extern NTSTATUS UDFMarkStreamsForDeletion(
     IN PVCB           Vcb,
-    IN PtrUDFFCB      Fcb,
+    IN PFCB           Fcb,
     IN BOOLEAN        ForDel);
 
 extern NTSTATUS UDFSetDispositionInformation(
-    IN PtrUDFFCB                       Fcb,
-    IN PtrUDFCCB                       Ccb,
+    IN PFCB                            Fcb,
+    IN PCCB                            Ccb,
     IN PVCB                            Vcb,
     IN PFILE_OBJECT                    FileObject,
     IN BOOLEAN                         Delete);
 
 extern NTSTATUS UDFSetAllocationInformation(
-    IN PtrUDFFCB                       Fcb,
-    IN PtrUDFCCB                       Ccb,
+    IN PFCB                            Fcb,
+    IN PCCB                            Ccb,
     IN PVCB                            Vcb,
     IN PFILE_OBJECT                    FileObject,
-    IN PtrUDFIrpContext                PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PIRP                            Irp,
     IN PFILE_ALLOCATION_INFORMATION    PtrBuffer);
 
 extern NTSTATUS UDFSetEOF(
     IN PIO_STACK_LOCATION              PtrSp,
-    IN PtrUDFFCB                       Fcb,
-    IN PtrUDFCCB                       Ccb,
+    IN PFCB                            Fcb,
+    IN PCCB                            Ccb,
     IN PVCB                            Vcb,
     IN PFILE_OBJECT                    FileObject,
     IN PIRP                            Irp,
     IN PFILE_END_OF_FILE_INFORMATION   PtrBuffer);
 
-extern NTSTATUS UDFRename(IN PIO_STACK_LOCATION IrpSp,
-                          IN PtrUDFFCB Fcb,
-                          IN PtrUDFCCB Ccb,
+extern NTSTATUS UDFSetRenameInfo(IN PIO_STACK_LOCATION IrpSp,
+                          IN PFCB Fcb,
+                          IN PCCB Ccb,
                           IN PFILE_OBJECT FileObject,
                           IN PFILE_RENAME_INFORMATION PtrBuffer);
 
 extern NTSTATUS UDFStoreFileId(
     IN PVCB Vcb,
-    IN PtrUDFCCB Ccb,
+    IN PCCB Ccb,
     IN PUDF_FILE_INFO fi,
     IN LONGLONG Id);
 
@@ -416,8 +424,8 @@ extern NTSTATUS UDFGetOpenParamsByFileId(
 
 extern NTSTATUS UDFHardLink(
     IN PIO_STACK_LOCATION PtrSp,
-    IN PtrUDFFCB Fcb1,
-    IN PtrUDFCCB Ccb1,
+    IN PFCB Fcb1,
+    IN PCCB Ccb1,
     IN PFILE_OBJECT FileObject1,   // Source File
     IN PFILE_LINK_INFORMATION PtrBuffer);
 /*************************************************************************
@@ -428,12 +436,12 @@ PDEVICE_OBJECT    DeviceObject,       // the logical volume device object
 PIRP              Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonFlush(
-PtrUDFIrpContext            PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                        Irp);
 
 extern ULONG UDFFlushAFile(
-PtrUDFFCB         Fcb,
-PtrUDFCCB         Ccb,
+PFCB              Fcb,
+PCCB              Ccb,
 PIO_STATUS_BLOCK  PtrIoStatus,
 IN ULONG          FlushFlags = 0);
 
@@ -444,7 +452,7 @@ OUT PIO_STATUS_BLOCK   PtrIoStatus,
 ULONG                  FlushFlags = 0);
 
 extern ULONG UDFFlushLogicalVolume(
-PtrUDFIrpContext       PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                   Irp,
 PVCB                   Vcb,
 ULONG                  FlushFlags = 0);
@@ -470,20 +478,18 @@ PDEVICE_OBJECT      DeviceObject,
 PIRP                Irp);
 
 extern NTSTATUS NTAPI UDFCommonFSControl(
-PtrUDFIrpContext    PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                Irp);                // I/O Request Packet
 
 extern NTSTATUS NTAPI UDFUserFsCtrlRequest(
-PtrUDFIrpContext    PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                Irp);
 
 extern NTSTATUS NTAPI UDFMountVolume(
-PtrUDFIrpContext    PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP Irp);
 
-extern NTSTATUS UDFStartEjectWaiter(IN PVCB Vcb);
-
-extern VOID UDFScanForDismountedVcb (IN PtrUDFIrpContext IrpContext);
+extern VOID UDFScanForDismountedVcb (IN PIRP_CONTEXT IrpContext);
 
 extern NTSTATUS UDFCompleteMount(IN PVCB Vcb);
 
@@ -491,37 +497,37 @@ extern VOID     UDFCloseResidual(IN PVCB Vcb);
 
 extern VOID     UDFCleanupVCB(IN PVCB Vcb);
 
-extern NTSTATUS UDFIsVolumeMounted(IN PtrUDFIrpContext IrpContext,
+extern NTSTATUS UDFIsVolumeMounted(IN PIRP_CONTEXT IrpContext,
                                    IN PIRP Irp);
 
-extern NTSTATUS UDFIsVolumeDirty(IN PtrUDFIrpContext IrpContext,
+extern NTSTATUS UDFIsVolumeDirty(IN PIRP_CONTEXT IrpContext,
                           IN PIRP Irp);
 
-extern NTSTATUS UDFGetStatistics(IN PtrUDFIrpContext IrpContext,
+extern NTSTATUS UDFGetStatistics(IN PIRP_CONTEXT IrpContext,
                                  IN PIRP Irp);
 
-extern NTSTATUS UDFLockVolume (IN PtrUDFIrpContext IrpContext,
+extern NTSTATUS UDFLockVolume (IN PIRP_CONTEXT IrpContext,
                                IN PIRP Irp,
                                IN ULONG PID = -1);
 
-extern NTSTATUS UDFUnlockVolume (IN PtrUDFIrpContext IrpContext,
+extern NTSTATUS UDFUnlockVolume (IN PIRP_CONTEXT IrpContext,
                                  IN PIRP Irp,
                                  IN ULONG PID = -1);
 
-extern NTSTATUS UDFIsPathnameValid(IN PtrUDFIrpContext IrpContext,
+extern NTSTATUS UDFIsPathnameValid(IN PIRP_CONTEXT IrpContext,
                                    IN PIRP Irp);
 
-extern NTSTATUS UDFDismountVolume(IN PtrUDFIrpContext IrpContext,
+extern NTSTATUS UDFDismountVolume(IN PIRP_CONTEXT IrpContext,
                                   IN PIRP Irp);
 
-extern NTSTATUS UDFGetVolumeBitmap(IN PtrUDFIrpContext IrpContext,
+extern NTSTATUS UDFGetVolumeBitmap(IN PIRP_CONTEXT IrpContext,
                                    IN PIRP Irp);
 
-extern NTSTATUS UDFGetRetrievalPointers(IN PtrUDFIrpContext IrpContext,
+extern NTSTATUS UDFGetRetrievalPointers(IN PIRP_CONTEXT IrpContext,
                                         IN PIRP  Irp,
                                         IN ULONG Special);
 
-extern NTSTATUS UDFInvalidateVolumes(IN PtrUDFIrpContext IrpContext,
+extern NTSTATUS UDFInvalidateVolumes(IN PIRP_CONTEXT IrpContext,
                                      IN PIRP Irp);
 
 /*************************************************************************
@@ -533,7 +539,7 @@ extern NTSTATUS NTAPI UDFLockControl(
     IN PIRP           Irp);               // I/O Request Packet
 
 extern NTSTATUS NTAPI UDFCommonLockControl(
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PIRP             Irp);
 
 extern BOOLEAN NTAPI UDFFastLock(
@@ -582,11 +588,11 @@ extern BOOLEAN __fastcall UDFIsIrpTopLevel(
 PIRP                        Irp);                   // the IRP sent to our dispatch routine
 
 extern long UDFExceptionFilter(
-PtrUDFIrpContext            PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PEXCEPTION_POINTERS         PtrExceptionPointers);
 
 extern NTSTATUS UDFExceptionHandler(
-PtrUDFIrpContext            PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                        Irp);
 
 extern VOID UDFLogEvent(
@@ -596,27 +602,23 @@ NTSTATUS                    RC);            // any NT error code we wish to log 
 extern PtrUDFObjectName UDFAllocateObjectName(
 VOID);
 
-extern VOID __fastcall UDFReleaseObjectName(
+extern VOID UDFReleaseObjectName(
 PtrUDFObjectName            PtrObjectName);
 
-extern PtrUDFCCB UDFAllocateCCB(
-VOID);
+extern PCCB UDFAllocateCCB(VOID);
 
-extern VOID __fastcall UDFReleaseCCB(
-PtrUDFCCB                   Ccb);
+extern VOID UDFReleaseCCB(PCCB Ccb);
 
-extern VOID __fastcall UDFCleanUpCCB(
-PtrUDFCCB         Ccb);
+extern VOID __fastcall UDFCleanUpCCB(PCCB Ccb);
 
-extern PtrUDFFCB UDFAllocateFCB(
-VOID);
+extern PFCB UDFAllocateFCB(VOID);
 
 /*extern VOID __fastcall UDFReleaseFCB(
 PtrUDFFCB                   Fcb);*/
 __inline
 VOID
 UDFReleaseFCB(
-    PtrUDFFCB Fcb
+    PFCB Fcb
     )
 {
     ASSERT(Fcb);
@@ -626,18 +628,17 @@ UDFReleaseFCB(
     return;
 }
 
-extern VOID __fastcall UDFCleanUpFCB(
-PtrUDFFCB                       Fcb) ;
+extern VOID __fastcall UDFCleanUpFCB(PFCB Fcb);
 
-extern PtrUDFIrpContext UDFAllocateIrpContext(
+extern PIRP_CONTEXT UDFAllocateIrpContext(
 PIRP                        Irp,
 PDEVICE_OBJECT              PtrTargetDeviceObject);
 
 extern VOID UDFReleaseIrpContext(
-PtrUDFIrpContext            PtrIrpContext);
+PIRP_CONTEXT PtrIrpContext);
 
 extern NTSTATUS UDFPostRequest(
-PtrUDFIrpContext            PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                        Irp);
 
 extern VOID NTAPI UDFCommonDispatch(
@@ -676,20 +677,14 @@ extern ULONG UDFRegCheckParameterValue(
     IN PCWSTR DefaultPath,
     IN ULONG DefValue = 0);
 
-extern VOID UDFInitializeIrpContextFromLite (
-    OUT PtrUDFIrpContext    *IrpContext,
-    IN PtrUDFIrpContextLite IrpContextLite);
+extern VOID UDFInitializeStackIrpContextFromLite(
+    OUT PIRP_CONTEXT IrpContext,
+    IN PIRP_CONTEXT_LITE IrpContextLite);
 
 extern NTSTATUS UDFInitializeIrpContextLite (
-    OUT PtrUDFIrpContextLite *IrpContextLite,
-    IN PtrUDFIrpContext    IrpContext,
-    IN PtrUDFFCB           Fcb);
-
-
-extern NTSTATUS NTAPI UDFQuerySetEA(
-    PDEVICE_OBJECT DeviceObject,       // the logical volume device object
-    PIRP           Irp                 // I/O Request Packet
-    );
+    OUT PIRP_CONTEXT_LITE *IrpContextLite,
+    IN PIRP_CONTEXT IrpContext,
+    IN PFCB                Fcb);
 
 extern ULONG
 UDFIsResourceAcquired(
@@ -747,9 +742,6 @@ extern OSSTATUS UDFPrepareForWriteOperation(
 extern OSSTATUS UDFReadDiscTrackInfo(PDEVICE_OBJECT DeviceObject, // the target device object
                                      PVCB           Vcb);         // Volume Control Block for ^ DevObj
 
-extern OSSTATUS UDFReadAndProcessFullToc(PDEVICE_OBJECT DeviceObject, // the target device object
-                                         PVCB           Vcb);
-
 extern OSSTATUS UDFUseStandard(PDEVICE_OBJECT DeviceObject, // the target device object
                                PVCB           Vcb);         // Volume control block fro this DevObj
 
@@ -759,21 +751,12 @@ extern OSSTATUS UDFGetBlockSize(PDEVICE_OBJECT DeviceObject, // the target devic
 extern OSSTATUS UDFGetDiskInfo(IN PDEVICE_OBJECT DeviceObject, // the target device object
                                IN PVCB           Vcb);         // Volume control block from this DevObj
 
-extern VOID NTAPI UDFEjectReqWaiter(IN PVOID Context);
-
-extern VOID     UDFStopEjectWaiter(PVCB Vcb);
-
-//extern OSSTATUS UDFPrepareForReadOperation(IN PVCB Vcb,
-//                                           IN ULONG Lba);
-//#define UDFPrepareForReadOperation(a,b) (STATUS_SUCCESS)
-
 extern VOID     UDFUpdateNWA(PVCB Vcb,
                              ULONG LBA,
                              ULONG BCount,
                              OSSTATUS RC);
 
 extern OSSTATUS UDFDoDismountSequence(IN PVCB Vcb,
-                                      IN PPREVENT_MEDIA_REMOVAL_USER_IN Buf,
                                       IN BOOLEAN Eject);
 
 // read physical sectors
@@ -853,88 +836,44 @@ extern OSSTATUS NTAPI UDFRead(
     PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFPostStackOverflowRead(
-    IN PtrUDFIrpContext PtrIrpContext,
+    IN PIRP_CONTEXT PtrIrpContext,
     IN PIRP             Irp,
-    IN PtrUDFFCB        Fcb);
+    IN PFCB             Fcb);
 
 extern VOID NTAPI UDFStackOverflowRead(
     IN PVOID Context,
     IN PKEVENT Event);
 
 extern NTSTATUS UDFCommonRead(
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP             Irp);
 
-extern PVOID UDFGetCallersBuffer(
-    PtrUDFIrpContext PtrIrpContext,
+extern PVOID UDFMapUserBuffer(
     PIRP Irp);
 
-extern NTSTATUS UDFLockCallersBuffer(
-    PtrUDFIrpContext PtrIrpContext,
+extern NTSTATUS UDFLockUserBuffer(
+    PIRP_CONTEXT PtrIrpContext,
     PIRP    Irp,
     LOCK_OPERATION LockOperation,
-    uint32  Length);
+    ULONG   Length);
 
 extern NTSTATUS UDFUnlockCallersBuffer(
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP    Irp,
     PVOID   SystemBuffer);
 
 extern VOID UDFMdlComplete(
-    PtrUDFIrpContext        PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP                    Irp,
     PIO_STACK_LOCATION      IrpSp,
     BOOLEAN                 ReadCompletion);
-
-/*************************************************************************
-* Prototypes for the file SecurSup.cpp
-*************************************************************************/
-extern NTSTATUS UDFGetSecurity(
-PDEVICE_OBJECT              DeviceObject,       // the logical volume device object
-PIRP                        Irp);               // I/O Request Packet
-
-extern NTSTATUS UDFSetSecurity(
-PDEVICE_OBJECT              DeviceObject,       // the logical volume device object
-PIRP                        Irp);               // I/O Request Packet
-
-extern NTSTATUS UDFCommonGetSecurity(
-PtrUDFIrpContext            PtrIrpContext,
-PIRP                        Irp);
-
-extern NTSTATUS UDFCommonSetSecurity(
-PtrUDFIrpContext            PtrIrpContext,
-PIRP                        Irp);
-
-extern NTSTATUS
-UDFReadSecurity(
-   IN PVCB Vcb,
-   IN PtrUDFFCB Fcb,
-   IN PSECURITY_DESCRIPTOR* SecurityDesc);
-
-extern NTSTATUS
-UDFAssignAcl(
-    IN PVCB Vcb,
-    IN PFILE_OBJECT FileObject, // OPTIONAL
-    IN PtrUDFFCB Fcb,
-    IN PtrUDFNTRequiredFCB NtReqFcb);
-
-extern VOID
-UDFDeassignAcl(
-    IN PtrUDFNTRequiredFCB NtReqFcb,
-    IN BOOLEAN AutoInherited);
-
-extern NTSTATUS
-UDFWriteSecurity(
-   IN PVCB Vcb,
-   IN PtrUDFFCB Fcb,
-   IN PSECURITY_DESCRIPTOR* SecurityDesc);
 
 extern NTSTATUS
 UDFCheckAccessRights(
     PFILE_OBJECT FileObject,
     PACCESS_STATE AccessState,
-    PtrUDFFCB    Fcb,
-    PtrUDFCCB    Ccb,
+    PFCB         Fcb,
+    PCCB         Ccb,
     ACCESS_MASK  DesiredAccess,
     USHORT       ShareAccess);
 
@@ -942,8 +881,8 @@ extern NTSTATUS
 UDFSetAccessRights(
     PFILE_OBJECT FileObject,
     PACCESS_STATE AccessState,
-    PtrUDFFCB    Fcb,
-    PtrUDFCCB    Ccb,
+    PFCB         Fcb,
+    PCCB         Ccb,
     ACCESS_MASK  DesiredAccess,
     USHORT       ShareAccess);
 
@@ -955,7 +894,7 @@ PDEVICE_OBJECT              DeviceObject,       // the logical volume device obj
 PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonShutdown(
-PtrUDFIrpContext            PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                        Irp);
 
 /*************************************************************************
@@ -1068,7 +1007,7 @@ UDFGetTrialEnd(PULONG iTrial);
 *************************************************************************/
 
 extern NTSTATUS UDFVerifyVcb (
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb
     );
 
@@ -1076,13 +1015,13 @@ extern NTSTATUS UDFVerifyVolume (
                     IN PIRP Irp);
 
 extern NTSTATUS UDFPerformVerify (
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp,
     IN PDEVICE_OBJECT DeviceToVerify
     );
 
 extern BOOLEAN UDFCheckForDismount (
-    IN PtrUDFIrpContext IrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN BOOLEAN VcbAcquired
     );
@@ -1101,13 +1040,13 @@ extern NTSTATUS UDFCompareVcb(IN PVCB OldVcb,
 extern NTSTATUS NTAPI UDFQueryVolInfo(PDEVICE_OBJECT DeviceObject,
                                       PIRP Irp);
 
-extern NTSTATUS UDFCommonQueryVolInfo (PtrUDFIrpContext PtrIrpContext,
+extern NTSTATUS UDFCommonQueryVolInfo (PIRP_CONTEXT PtrIrpContext,
                                        PIRP Irp);
 
 extern NTSTATUS NTAPI UDFSetVolInfo(PDEVICE_OBJECT DeviceObject,       // the logical volume device object
                               PIRP           Irp);               // I/O Request Packet
 
-extern NTSTATUS UDFCommonSetVolInfo(PtrUDFIrpContext PtrIrpContext,
+extern NTSTATUS UDFCommonSetVolInfo(PIRP_CONTEXT PtrIrpContext,
                                     PIRP             Irp);
 
 /*************************************************************************
@@ -1118,7 +1057,7 @@ PDEVICE_OBJECT              DeviceObject,       // the logical volume device obj
 PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonWrite(
-PtrUDFIrpContext            PtrIrpContext,
+PIRP_CONTEXT PtrIrpContext,
 PIRP                        Irp);
 
 extern VOID NTAPI UDFDeferredWriteCallBack (
@@ -1126,7 +1065,7 @@ VOID                        *Context1,          // Should be PtrIrpContext
 VOID                        *Context2);         // Should be Irp
 
 extern VOID UDFPurgeCacheEx_(
-PtrUDFNTRequiredFCB         NtReqFcb,
+PFCB                        Fcb,
 LONGLONG                    Offset,
 LONGLONG                    Length,
 //#ifndef ALLOW_SPARSE
@@ -1136,16 +1075,28 @@ PVCB                        Vcb,
 PFILE_OBJECT                FileObject
 );
 
+extern VOID UDFSetModified(
+    IN PVCB        Vcb
+);
+
+extern VOID UDFPreClrModified(
+    IN PVCB        Vcb
+);
+
+extern VOID UDFClrModified(
+    IN PVCB        Vcb
+);
+
 /*#ifdef ALLOW_SPARSE
-  #define UDFZeroDataEx(NtReqFcb, Offset, Length, CanWait) \
-      UDFPurgeCacheEx_(NtReqFcb, Offset, Length)
-  #define UDFPurgeCacheEx(NtReqFcb, Offset, Length, CanWait) \
-      UDFPurgeCacheEx_(NtReqFcb, Offset, Length)
+  #define UDFZeroDataEx(Fcb, Offset, Length, CanWait) \
+      UDFPurgeCacheEx_(Fcb, Offset, Length)
+  #define UDFPurgeCacheEx(Fcb, Offset, Length, CanWait) \
+      UDFPurgeCacheEx_(Fcb, Offset, Length)
 #else // ALLOW_SPARSE*/
-  #define UDFZeroDataEx(NtReqFcb, Offset, Length, CanWait, Vcb, FileObject) \
-      UDFPurgeCacheEx_(NtReqFcb, Offset, Length, CanWait, Vcb, FileObject)
-  #define UDFPurgeCacheEx(NtReqFcb, Offset, Length, CanWait, Vcb, FileObject) \
-      UDFPurgeCacheEx_(NtReqFcb, Offset, Length, CanWait, Vcb, FileObject)
+  #define UDFZeroDataEx(Fcb, Offset, Length, CanWait, Vcb, FileObject) \
+      UDFPurgeCacheEx_(Fcb, Offset, Length, CanWait, Vcb, FileObject)
+  #define UDFPurgeCacheEx(Fcb, Offset, Length, CanWait, Vcb, FileObject) \
+      UDFPurgeCacheEx_(Fcb, Offset, Length, CanWait, Vcb, FileObject)
 //#endif //ALLOW_SPARSE
 
 BOOLEAN

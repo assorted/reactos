@@ -144,7 +144,6 @@ UDFIsNameValid(
 } // end UDFIsNameValid()
 
 
-#ifndef _CONSOLE
 /*
 
 Routine Description:
@@ -212,7 +211,6 @@ UDFIsNameInExpression(
     return Match;
 } // end UDFIsNameInExpression()
 
-#endif
 
 BOOLEAN
 __fastcall

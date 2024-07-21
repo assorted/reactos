@@ -46,7 +46,7 @@ UDFCleanup(
     )
 {
     NTSTATUS                RC = STATUS_SUCCESS;
-    PtrUDFIrpContext        PtrIrpContext = NULL;
+    PIRP_CONTEXT PtrIrpContext = NULL;
     BOOLEAN                 AreWeTopLevel = FALSE;
 
     TmPrint(("UDFCleanup\n"));
@@ -124,7 +124,7 @@ UDFCleanup(
 *************************************************************************/
 NTSTATUS
 UDFCommonCleanup(
-    PtrUDFIrpContext PtrIrpContext,
+    PIRP_CONTEXT PtrIrpContext,
     PIRP             Irp)
 {
     IO_STATUS_BLOCK         IoStatus;
@@ -132,10 +132,9 @@ UDFCommonCleanup(
     NTSTATUS                RC2;
     PIO_STACK_LOCATION      IrpSp = NULL;
     PFILE_OBJECT            FileObject = NULL;
-    PtrUDFFCB               Fcb = NULL;
-    PtrUDFCCB               Ccb = NULL;
+    PFCB                    Fcb = NULL;
+    PCCB                    Ccb = NULL;
     PVCB                    Vcb = NULL;
-    PtrUDFNTRequiredFCB     NtReqFcb = NULL;
     ULONG                   lc = 0;
     BOOLEAN                 AcquiredVcb = FALSE;
     BOOLEAN                 AcquiredFCB = FALSE;
@@ -174,14 +173,14 @@ UDFCommonCleanup(
         }
 
         // Get the FCB and CCB pointers
-        Ccb = (PtrUDFCCB)(FileObject->FsContext2);
+        Ccb = (PCCB)(FileObject->FsContext2);
         ASSERT(Ccb);
         Fcb = Ccb->Fcb;
         ASSERT(Fcb);
 
         Vcb = (PVCB)(PtrIrpContext->TargetDeviceObject->DeviceExtension);
         ASSERT(Vcb);
-        ASSERT(Vcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB);
+        ASSERT(Vcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB);
 //        Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
 #ifdef UDF_DBG
         CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
@@ -200,9 +199,8 @@ UDFCommonCleanup(
         // (g) Inform the Cache Manager to uninitialize Cache Maps ...
         // and other similar stuff.
         //  BrutePoint();
-        NtReqFcb = Fcb->NTRequiredFCB;
 
-        if (Fcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_VCB) {
+        if (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB) {
             AdPrint(("Cleaning up Volume\n"));
             AdPrint(("UDF: OpenHandleCount: %x\n",Fcb->OpenHandleCount));
 
@@ -234,17 +232,11 @@ UDFCommonCleanup(
 
             MmPrint(("    CcUninitializeCacheMap()\n"));
             CcUninitializeCacheMap(FileObject, NULL, NULL);
-            // reset device
-            if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) &&
-                (Vcb->VCBFlags & UDF_VCB_FLAGS_OUR_DEVICE_DRIVER)) {
-                // this call doesn't modify data buffer
-                // it just requires its presence
-                UDFResetDeviceDriver(Vcb, Vcb->TargetDeviceObject, TRUE);
-            }
+
             //  We must clean up the share access at this time, since we may not
             //  get a Close call for awhile if the file was mapped through this
             //  File Object.
-            IoRemoveShareAccess( FileObject, &(NtReqFcb->FCBShareAccess) );
+            IoRemoveShareAccess( FileObject, &Fcb->FCBShareAccess);
 
             try_return(RC = STATUS_SUCCESS);
         }
@@ -262,27 +254,27 @@ UDFCommonCleanup(
 #endif //UDF_DBG
         AdPrint(("UDF: OpenHandleCount: %x\n",Fcb->OpenHandleCount));
         // Acquire parent object
-        if(Fcb->FileInfo->ParentFile) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb->NTRequiredFCB);
-            UDFAcquireResourceExclusive(&(Fcb->FileInfo->ParentFile->Fcb->NTRequiredFCB->MainResource),TRUE);
+        if (Fcb->FileInfo->ParentFile) {
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
+            UDFAcquireResourceExclusive(&(Fcb->FileInfo->ParentFile->Fcb->MainResource), TRUE);
         } else {
-            UDFAcquireResourceShared(&(Vcb->VCBResource),TRUE);
+            UDFAcquireResourceShared(&(Vcb->VCBResource), TRUE);
         }
         AcquiredParentFCB = TRUE;
         // Acquire current object
-        UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-        UDFAcquireResourceExclusive(&(NtReqFcb->MainResource),TRUE);
+        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+        UDFAcquireResourceExclusive(&Fcb->MainResource, TRUE);
         AcquiredFCB = TRUE;
         // dereference object
-        UDFInterlockedDecrement((PLONG)&(Fcb->OpenHandleCount));
-        UDFInterlockedDecrement((PLONG)&(Vcb->VCBHandleCount));
+        UDFInterlockedDecrement((PLONG)&Fcb->OpenHandleCount);
+        UDFInterlockedDecrement((PLONG)&Vcb->VCBHandleCount);
         if(FileObject->Flags & FO_CACHE_SUPPORTED) {
             // we've cached close
-            UDFInterlockedDecrement((PLONG)&(Fcb->CachedOpenHandleCount));
+            UDFInterlockedDecrement((PLONG)&Fcb->CachedOpenHandleCount);
         }
         ASSERT(Fcb->OpenHandleCount <= (Fcb->ReferenceCount-1));
+
         // check if Ccb being cleaned up has DeleteOnClose flag set
-#ifndef UDF_READ_ONLY_BUILD
         if(Ccb->CCBFlags & UDF_CCB_DELETE_ON_CLOSE) {
             AdPrint(("    DeleteOnClose\n"));
             // Ok, now we'll become 'delete on close'...
@@ -296,11 +288,10 @@ UDFCommonCleanup(
                                                 0, NULL, NULL, NULL );
             }
         }
-#endif //UDF_READ_ONLY_BUILD
 
-        if(!(Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+        if (!(Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
             //  Unlock all outstanding file locks.
-            FsRtlFastUnlockAll(&(NtReqFcb->FileLock),
+            FsRtlFastUnlockAll(&Fcb->FileLock,
                                FileObject,
                                IoGetRequestorProcess(Irp),
                                NULL);
@@ -308,7 +299,6 @@ UDFCommonCleanup(
         // get Link count
         lc = UDFGetFileLinkCount(Fcb->FileInfo);
 
-#ifndef UDF_READ_ONLY_BUILD
         if( (Fcb->FCBFlags & UDF_FCB_DELETE_ON_CLOSE) &&
            !(Fcb->OpenHandleCount)) {
             // This can be useful for Streams, those were brutally deleted
@@ -325,14 +315,14 @@ UDFCommonCleanup(
             }
             // we can release these resources 'cause UDF_FCB_DELETE_ON_CLOSE
             // flag is already set & the file can't be opened
-            UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-            UDFReleaseResource(&(NtReqFcb->MainResource));
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFReleaseResource(&Fcb->MainResource);
             AcquiredFCB = FALSE;
             if(Fcb->FileInfo->ParentFile) {
-                UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb->NTRequiredFCB);
-                UDFReleaseResource(&(Fcb->ParentFcb->NTRequiredFCB->MainResource));
+                UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
+                UDFReleaseResource(&Fcb->ParentFcb->MainResource);
             } else {
-                UDFReleaseResource(&(Vcb->VCBResource));
+                UDFReleaseResource(&Vcb->VCBResource);
             }
             AcquiredParentFCB = FALSE;
             UDFReleaseResource(&(Vcb->VCBResource));
@@ -348,34 +338,33 @@ UDFCommonCleanup(
             ASSERT(!Fcb->IrpContextLite);
 #endif //UDF_DELAYED_CLOSE
 
-            UDFAcquireResourceShared(&(Vcb->VCBResource), TRUE);
+            UDFAcquireResourceShared(&Vcb->VCBResource, TRUE);
             AcquiredVcb = TRUE;
-            if(Fcb->FileInfo->ParentFile) {
-                UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb->NTRequiredFCB);
-                UDFAcquireResourceExclusive(&(Fcb->ParentFcb->NTRequiredFCB->MainResource),TRUE);
+            if (Fcb->FileInfo->ParentFile) {
+                UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
+                UDFAcquireResourceExclusive(&(Fcb->ParentFcb->MainResource), TRUE);
             } else {
-                UDFAcquireResourceShared(&(Vcb->VCBResource),TRUE);
+                UDFAcquireResourceShared(&Vcb->VCBResource, TRUE);
             }
             AcquiredParentFCB = TRUE;
-            UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-            UDFAcquireResourceExclusive(&(NtReqFcb->MainResource),TRUE);
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFAcquireResourceExclusive(&Fcb->MainResource, TRUE);
             AcquiredFCB = TRUE;
 
             // we should set file sizes to zero if there are no more
             // links to this file
-            if(lc <= 1) {
+            if (lc <= 1) {
                 // Synchronize here with paging IO
-                UDFAcquireResourceExclusive(&(NtReqFcb->PagingIoResource),TRUE);
+                UDFAcquireResourceExclusive(&Fcb->PagingIoResource, TRUE);
                 // set file size to zero (for system cache manager)
-//                NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart =
-                NtReqFcb->CommonFCBHeader.FileSize.QuadPart =
-                NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart = 0;
-                CcSetFileSizes(FileObject, (PCC_FILE_SIZES)&(NtReqFcb->CommonFCBHeader.AllocationSize));
+//                Fcb->CommonFCBHeader.ValidDataLength.QuadPart =
+                Fcb->Header.FileSize.QuadPart =
+                    Fcb->Header.ValidDataLength.QuadPart = 0;
+                CcSetFileSizes(FileObject, (PCC_FILE_SIZES)&Fcb->Header.AllocationSize);
 
-                UDFReleaseResource(&(NtReqFcb->PagingIoResource));
+                UDFReleaseResource(&Fcb->PagingIoResource);
             }
         }
-#endif //UDF_READ_ONLY_BUILD
 
 #ifdef UDF_DELAYED_CLOSE
         if ((Fcb->ReferenceCount == 1) &&
@@ -387,7 +376,6 @@ UDFCommonCleanup(
 
         NextFileInfo = Fcb->FileInfo;
 
-#ifndef UDF_READ_ONLY_BUILD
         // do we need to delete it now ?
         if( (Fcb->FCBFlags & UDF_FCB_DELETE_ON_CLOSE) &&
            !(Fcb->OpenHandleCount)) {
@@ -404,12 +392,12 @@ UDFCommonCleanup(
             if (lc <= 1) {
                 // Synchronize here with paging IO
                 BOOLEAN AcquiredPagingIo;
-                AcquiredPagingIo = UDFAcquireResourceExclusiveWithCheck(&(NtReqFcb->PagingIoResource));
+                AcquiredPagingIo = UDFAcquireResourceExclusiveWithCheck(&Fcb->PagingIoResource);
                 // set file size to zero (for UdfInfo package)
                 // we should not do this for directories and linked files
                 UDFResizeFile__(Vcb, NextFileInfo, 0);
                 if(AcquiredPagingIo) {
-                    UDFReleaseResource(&(NtReqFcb->PagingIoResource));
+                    UDFReleaseResource(&Fcb->PagingIoResource);
                 }
             }
             // mark parent object for deletion if requested
@@ -469,7 +457,7 @@ NotifyDelete:
             // We should prevent SetEOF operations on completly
             // deleted data streams
             if(lc < 1) {
-                NtReqFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_DELETED;
+                Fcb->NtReqFCBFlags |= UDF_NTREQ_FCB_DELETED;
             }
             // Report that we have removed an entry.
             if(UDFIsAStream(NextFileInfo)) {
@@ -490,7 +478,6 @@ DiscardDelete:
                                      0,
                                      UDFIsAStream(NextFileInfo) ? FILE_ACTION_MODIFIED_STREAM : FILE_ACTION_MODIFIED);
         }
-#endif //UDF_READ_ONLY_BUILD
 
         if(Fcb->FCBFlags & UDF_FCB_DIRECTORY) {
             //  Report to the dir notify package for a directory.
@@ -502,8 +489,8 @@ DiscardDelete:
             ForcedCleanUp = FALSE;
         }
 
-        if ( (FileObject->Flags & FO_CACHE_SUPPORTED) &&
-             (NtReqFcb->SectionObject.DataSectionObject) ) {
+        if (FileObject->Flags & FO_CACHE_SUPPORTED &&
+             Fcb->SectionObject.DataSectionObject) {
             BOOLEAN LastNonCached = (!Fcb->CachedOpenHandleCount &&
                                       Fcb->OpenHandleCount);
             // If this was the last cached open, and there are open
@@ -517,22 +504,21 @@ DiscardDelete:
                 (!Fcb->OpenHandleCount &&
                  !ForcedCleanUp) ) {
 
-#ifndef UDF_READ_ONLY_BUILD
                 LONGLONG OldFileSize, NewFileSize;
 
-                if( (OldFileSize = NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart) <
-                    (NewFileSize = NtReqFcb->CommonFCBHeader.FileSize.QuadPart)) {
+                if ((OldFileSize = Fcb->Header.ValidDataLength.QuadPart) <
+                    (NewFileSize = Fcb->Header.FileSize.QuadPart)) {
                     UDFZeroData(Vcb,
                                 FileObject,
                                 OldFileSize,
                                 NewFileSize - OldFileSize,
                                 TRUE);
 
-                    NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart = NewFileSize;
+                    Fcb->Header.ValidDataLength.QuadPart = NewFileSize;
                 }
-#endif //UDF_READ_ONLY_BUILD
+
                 MmPrint(("    CcFlushCache()\n"));
-                CcFlushCache( &(NtReqFcb->SectionObject), NULL, 0, &IoStatus );
+                CcFlushCache(&Fcb->SectionObject, NULL, 0, &IoStatus);
                 if(!NT_SUCCESS(IoStatus.Status)) {
                     MmPrint(("    CcFlushCache() error: %x\n", IoStatus.Status));
                     RC = IoStatus.Status;
@@ -541,17 +527,16 @@ DiscardDelete:
             // If file is deleted or it is last cached open, but there are
             // some non-cached handles we should purge cache section
             if(ForcedCleanUp || LastNonCached) {
-                if(NtReqFcb->SectionObject.DataSectionObject) {
+                if(Fcb->SectionObject.DataSectionObject) {
                     MmPrint(("    CcPurgeCacheSection()\n"));
-                    CcPurgeCacheSection( &(NtReqFcb->SectionObject), NULL, 0, FALSE );
+                    CcPurgeCacheSection(&Fcb->SectionObject, NULL, 0, FALSE);
                 }
 /*                MmPrint(("    CcPurgeCacheSection()\n"));
-                CcPurgeCacheSection( &(NtReqFcb->SectionObject), NULL, 0, FALSE );*/
+                CcPurgeCacheSection(&Fcb->SectionObject, NULL, 0, FALSE);*/
             }
             // we needn't Flush here. It will be done in UDFCloseFileInfoChain()
         }
 
-#ifndef UDF_READ_ONLY_BUILD
         // Update FileTimes & Attrs
         if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) &&
            !(Fcb->FCBFlags & (UDF_FCB_DELETE_ON_CLOSE |
@@ -579,8 +564,8 @@ DiscardDelete:
                 if(!(Ccb->CCBFlags & UDF_CCB_WRITE_TIME_SET) &&
                     (Vcb->CompatFlags & UDF_VCB_IC_UPDATE_MODIFY_TIME)) {
                     UDFSetFileXTime(NextFileInfo, NULL, &NtTime, NULL, &NtTime);
-                    NtReqFcb->LastWriteTime.QuadPart =
-                    NtReqFcb->LastAccessTime.QuadPart = NtTime;
+                    Fcb->LastWriteTime.QuadPart =
+                    Fcb->LastAccessTime.QuadPart = NtTime;
                     ChangeTime = TRUE;
                 }
             }
@@ -588,12 +573,12 @@ DiscardDelete:
                 // Update sizes in DirIndex
                 if(!Fcb->OpenHandleCount) {
                     ASize = UDFGetFileAllocationSize(Vcb, NextFileInfo);
-//                        NtReqFcb->CommonFCBHeader.AllocationSize.QuadPart;
+//                        Fcb->CommonFCBHeader.AllocationSize.QuadPart;
                     UDFSetFileSizeInDirNdx(Vcb, NextFileInfo, &ASize);
                 } else
                 if(FileObject->Flags & FO_FILE_SIZE_CHANGED) {
                     ASize = //UDFGetFileAllocationSize(Vcb, NextFileInfo);
-                        NtReqFcb->CommonFCBHeader.AllocationSize.QuadPart;
+                    Fcb->Header.AllocationSize.QuadPart;
                     UDFSetFileSizeInDirNdx(Vcb, NextFileInfo, &ASize);
                 }
             }
@@ -602,7 +587,7 @@ DiscardDelete:
                !(Ccb->CCBFlags & UDF_CCB_ACCESS_TIME_SET) &&
                 (Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ACCESS_TIME)) {
                 UDFSetFileXTime(NextFileInfo, NULL, &NtTime, NULL, NULL);
-                NtReqFcb->LastAccessTime.QuadPart = NtTime;
+                Fcb->LastAccessTime.QuadPart = NtTime;
 //                ChangeTime = TRUE;
             }
             // ChangeTime (AttrTime)
@@ -613,10 +598,9 @@ DiscardDelete:
                                                  UDF_CCB_ACCESS_TIME_SET |
                                                  UDF_CCB_WRITE_TIME_SET))) ) {
                 UDFSetFileXTime(NextFileInfo, NULL, NULL, &NtTime, NULL);
-                NtReqFcb->ChangeTime.QuadPart = NtTime;
+                Fcb->ChangeTime.QuadPart = NtTime;
             }
         }
-#endif //UDF_READ_ONLY_BUILD
 
         if(!(Fcb->FCBFlags & UDF_FCB_DIRECTORY) &&
             ForcedCleanUp) {
@@ -630,15 +614,15 @@ DiscardDelete:
 
         // release resources now.
         // they'll be acquired in UDFCloseFileInfoChain()
-        UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-        UDFReleaseResource(&(NtReqFcb->MainResource));
+        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+        UDFReleaseResource(&Fcb->MainResource);
         AcquiredFCB = FALSE;
 
         if(Fcb->FileInfo->ParentFile) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb->NTRequiredFCB);
-            UDFReleaseResource(&(Fcb->FileInfo->ParentFile->Fcb->NTRequiredFCB->MainResource));
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
+            UDFReleaseResource(&Fcb->FileInfo->ParentFile->Fcb->MainResource);
         } else {
-            UDFReleaseResource(&(Vcb->VCBResource));
+            UDFReleaseResource(&Vcb->VCBResource);
         }
         AcquiredParentFCB = FALSE;
         // close the chain
@@ -652,9 +636,9 @@ DiscardDelete:
         //  We must clean up the share access at this time, since we may not
         //  get a Close call for awhile if the file was mapped through this
         //  File Object.
-        IoRemoveShareAccess( FileObject, &(NtReqFcb->FCBShareAccess) );
+        IoRemoveShareAccess(FileObject, &Fcb->FCBShareAccess);
 
-        NtReqFcb->CommonFCBHeader.IsFastIoPossible = UDFIsFastIoPossible(Fcb);
+        Fcb->Header.IsFastIoPossible = UDFIsFastIoPossible(Fcb);
 
         FileObject->Flags |= FO_CLEANUP_COMPLETE;
 
@@ -663,21 +647,21 @@ try_exit: NOTHING;
     } _SEH2_FINALLY {
 
         if(AcquiredFCB) {
-            UDF_CHECK_PAGING_IO_RESOURCE(NtReqFcb);
-            UDFReleaseResource(&(NtReqFcb->MainResource));
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFReleaseResource(&Fcb->MainResource);
         }
 
         if(AcquiredParentFCB) {
             if(Fcb->FileInfo->ParentFile) {
-                UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb->NTRequiredFCB);
-                UDFReleaseResource(&(Fcb->FileInfo->ParentFile->Fcb->NTRequiredFCB->MainResource));
+                UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
+                UDFReleaseResource(&Fcb->FileInfo->ParentFile->Fcb->MainResource);
             } else {
-                UDFReleaseResource(&(Vcb->VCBResource));
+                UDFReleaseResource(&Vcb->VCBResource);
             }
         }
 
         if(AcquiredVcb) {
-            UDFReleaseResource(&(Vcb->VCBResource));
+            UDFReleaseResource(&Vcb->VCBResource);
             AcquiredVcb = FALSE;
         }
 
@@ -708,8 +692,8 @@ UDFCloseFileInfoChain(
     )
 {
     PUDF_FILE_INFO ParentFI;
-    PtrUDFFCB Fcb;
-    PtrUDFFCB ParentFcb = NULL;
+    PFCB Fcb;
+    PFCB ParentFcb = NULL;
     NTSTATUS RC = STATUS_SUCCESS;
     NTSTATUS RC2;
 
@@ -729,31 +713,26 @@ UDFCloseFileInfoChain(
         if((ParentFI = fi->ParentFile)) {
             ParentFcb = fi->Fcb->ParentFcb;
             ASSERT(ParentFcb);
-            ASSERT(ParentFcb->NTRequiredFCB);
-            UDF_CHECK_PAGING_IO_RESOURCE(ParentFcb->NTRequiredFCB);
-            UDFAcquireResourceExclusive(&(ParentFcb->NTRequiredFCB->MainResource),TRUE);
-            ASSERT(ParentFcb->NodeIdentifier.NodeType == UDF_NODE_TYPE_FCB);
-            ASSERT(ParentFcb->NTRequiredFCB->CommonFCBHeader.NodeTypeCode == UDF_NODE_TYPE_NT_REQ_FCB);
+            UDF_CHECK_PAGING_IO_RESOURCE(ParentFcb);
+            UDFAcquireResourceExclusive(&ParentFcb->MainResource,TRUE);
+            ASSERT(ParentFcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_FCB);
         } else {
             AdPrint(("Acquiring VCB...\n"));
-            UDFAcquireResourceShared(&(Vcb->VCBResource),TRUE);
+            UDFAcquireResourceShared(&Vcb->VCBResource,TRUE);
             AdPrint(("Done\n"));
         }
         // acquire current file/dir
         // we must assure that no more threads try to reuse this object
         if((Fcb = fi->Fcb)) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->NTRequiredFCB);
-            UDFAcquireResourceExclusive(&(Fcb->NTRequiredFCB->MainResource),TRUE);
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFAcquireResourceExclusive(&Fcb->MainResource, TRUE);
             ASSERT_REF(Fcb->ReferenceCount >= fi->RefCount);
-            if(!(Fcb->FCBFlags & UDF_FCB_DELETED) &&
-                (Fcb->FCBFlags & UDF_FCB_VALID))
-                UDFWriteSecurity(Vcb, Fcb, &(Fcb->NTRequiredFCB->SecurityDesc));
             RC2 = UDFCloseFile__(Vcb,fi);
             if(!NT_SUCCESS(RC2))
                 RC = RC2;
             ASSERT_REF(Fcb->ReferenceCount > fi->RefCount);
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->NTRequiredFCB);
-            UDFReleaseResource(&(Fcb->NTRequiredFCB->MainResource));
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFReleaseResource(&Fcb->MainResource);
         } else {
             BrutePoint();
             RC2 = UDFCloseFile__(Vcb,fi);
@@ -762,16 +741,16 @@ UDFCloseFileInfoChain(
         }
 
         if(ParentFI) {
-            UDF_CHECK_PAGING_IO_RESOURCE(ParentFcb->NTRequiredFCB);
-            UDFReleaseResource(&(ParentFcb->NTRequiredFCB->MainResource));
+            UDF_CHECK_PAGING_IO_RESOURCE(ParentFcb);
+            UDFReleaseResource(&ParentFcb->MainResource);
         } else {
-            UDFReleaseResource(&(Vcb->VCBResource));
+            UDFReleaseResource(&Vcb->VCBResource);
         }
         fi = ParentFI;
     }
 
     if(!VcbAcquired)
-        UDFReleaseResource(&(Vcb->VCBResource));
+        UDFReleaseResource(&Vcb->VCBResource);
 
     return RC;
 
