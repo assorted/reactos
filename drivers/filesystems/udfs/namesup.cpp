@@ -131,10 +131,15 @@ UDFIsNameValid(
         }
         c0 = c;
     }
-    // According to NT IFS documentation neither SPACE nor DOT can be
+    // According to NT IFS documentation neither SPACE nor DOT nor COLONS can be
     // a trailing character
-    if((c0 == L' ') ||
-       (c0 == L'.')) return FALSE;
+    if (c0 == L' ' ||
+        c0 == L':' ||
+        c0 == L'.') {
+
+        return FALSE;
+    }
+
     return TRUE;
 } // end UDFIsNameValid()
 
