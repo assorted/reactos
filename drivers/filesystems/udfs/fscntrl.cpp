@@ -645,7 +645,7 @@ try_raw_mount:
                        Vcb->VolIdent.Buffer,
                        Vcb->VolIdent.Length );
 
-        Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_MOUNTED;
+        Vcb->VcbCondition = VcbMounted;
 
         UDFInterlockedDecrement((PLONG)&(Vcb->VCBOpenCount));
         Vcb->TotalAllocUnits = UDFGetTotalSpace(Vcb);
@@ -800,12 +800,14 @@ insuf_res_1:
     UDFPrint(("UDFCompleteMount: open Root Dir\n"));
     // Open Root Directory
     RC = UDFOpenRootFile__( Vcb, &(Vcb->RootLbAddr), RootFcb->FileInfo );
-    if(!NT_SUCCESS(RC)) {
-insuf_res_2:
+
+    if (!NT_SUCCESS(RC)) {
+
         UDFCleanUpFile__(Vcb, RootFcb->FileInfo);
         MyFreePool__(RootFcb->FileInfo);
         goto insuf_res_1;
     }
+
     RootFcb->FileInfo->Fcb = RootFcb;
 
     if(!RootFcb->FileInfo->Dloc->CommonFcb) {
@@ -1299,10 +1301,11 @@ UDFScanForDismountedVcb(
 
         // If dismount is already underway then check if this Vcb can
         // go away.
-        if((Vcb->VCBFlags & UDF_VCB_FLAGS_BEING_DISMOUNTED) ||
-            ((!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) && (Vcb->VCBOpenCount <= UDF_RESIDUAL_REFERENCE))) {
+        if ((Vcb->VcbCondition == VcbDismountInProgress) ||
+            (Vcb->VcbCondition == VcbInvalid) ||
+            ((Vcb->VcbCondition == VcbNotMounted) && (Vcb->VCBOpenCount <= UDF_RESIDUAL_REFERENCE))) {
 
-            UDFCheckForDismount( IrpContext, Vcb, FALSE );
+            UDFCheckForDismount(IrpContext, Vcb, FALSE);
         }
     }
 
@@ -1753,12 +1756,12 @@ UDFDismountVolume(
         //  Mark the volume as needs to be verified, but only do it if
         //  the vcb is locked by this handle and the volume is currently mounted.
 
-        if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) {
-            // disable Eject Request Waiter if any
+        if(Vcb->VcbCondition != VcbMounted) {
+
             UDFReleaseResource( &(Vcb->VCBResource) );
             VcbAcquired = FALSE;
 
-            RC = STATUS_SUCCESS;
+            RC = STATUS_VOLUME_DISMOUNTED;
         } else
         if(/*!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) ||*/
            !(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) ||
@@ -1774,11 +1777,19 @@ UDFDismountVolume(
 
             Vcb->Vpb->RealDevice->Flags |= DO_VERIFY_VOLUME;
             UDFDoDismountSequence(Vcb, FALSE);
-            Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
+
+            if (Vcb->VcbCondition != VcbDismountInProgress) {
+                Vcb->VcbCondition = VcbInvalid;
+            }
+
             Vcb->WriteSecurity = FALSE;
             // disable Eject Request Waiter if any
             UDFReleaseResource( &(Vcb->VCBResource) );
             VcbAcquired = FALSE;
+
+            //  Set flag to tell the close path that we want to force dismount
+            //  the volume when this handle is closed.
+            SetFlag(Ccb->CCBFlags, UDF_CCB_FLAG_DISMOUNT_ON_CLOSE);
 
             RC = STATUS_SUCCESS;
         }
@@ -2162,7 +2173,7 @@ UDFIsVolumeDirty(
         return STATUS_INVALID_PARAMETER;
     }
 
-    if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) {
+    if (Vcb->VcbCondition != VcbMounted) {
         UDFPrintErr(("  !Mounted\n"));
         Irp->IoStatus.Status = STATUS_VOLUME_DISMOUNTED;
         return STATUS_VOLUME_DISMOUNTED;
@@ -2190,22 +2201,15 @@ UDFInvalidateVolumes(
     )
 {
     NTSTATUS RC;
-    PEXTENDED_IO_STACK_LOCATION IrpSp =
-        (PEXTENDED_IO_STACK_LOCATION)IoGetCurrentIrpStackLocation( Irp );
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
     UDFPrint(("UDFInvalidateVolumes\n"));
 
     KIRQL SavedIrql;
-
     LUID TcbPrivilege = {SE_TCB_PRIVILEGE, 0};
-
     HANDLE Handle;
-
-    PVPB NewVpb;
     PVCB Vcb;
-
     PLIST_ENTRY Link;
-
     PFILE_OBJECT FileToMarkBad;
     PDEVICE_OBJECT DeviceToMarkBad;
 
@@ -2216,8 +2220,8 @@ UDFInvalidateVolumes(
     if (IrpSp->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL &&
         IrpSp->MinorFunction == IRP_MN_USER_FS_REQUEST &&
         IrpSp->Parameters.FileSystemControl.FsControlCode == FSCTL_INVALIDATE_VOLUMES &&
-        !SeSinglePrivilegeCheck( TcbPrivilege, UserMode )) {
-        UDFPrintErr(("UDFInvalidateVolumes: STATUS_PRIVILEGE_NOT_HELD\n"));
+        !SeSinglePrivilegeCheck(TcbPrivilege, Irp->RequestorMode)) {
+
         Irp->IoStatus.Status = STATUS_PRIVILEGE_NOT_HELD;
         return STATUS_PRIVILEGE_NOT_HELD;
     }
@@ -2264,41 +2268,11 @@ UDFInvalidateVolumes(
     //  Grab the DeviceObject from the FileObject.
     DeviceToMarkBad = FileToMarkBad->DeviceObject;
 
-    //  Create a new Vpb for this device so that any new opens will mount
-    //  a new volume.
-    NewVpb = (PVPB)DbgAllocatePoolWithTag( NonPagedPool, sizeof( VPB ), 'bpvU' );
-    if(!NewVpb) {
-        UDFPrintErr(("UDFInvalidateVolumes: STATUS_INSUFFICIENT_RESOURCES\n"));
-        Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-    RtlZeroMemory( NewVpb, sizeof( VPB ) );
-
-    NewVpb->Type = IO_TYPE_VPB;
-    NewVpb->Size = sizeof( VPB );
-    NewVpb->RealDevice = DeviceToMarkBad;
-    NewVpb->Flags = DeviceToMarkBad->Vpb->Flags & VPB_REMOVE_PENDING;
-
     // Acquire GlobalDataResource
     UDFAcquireResourceExclusive(&(UDFGlobalData.GlobalDataResource), TRUE);
 
-    //  Nothing can go wrong now.
-    IoAcquireVpbSpinLock( &SavedIrql );
-    if (DeviceToMarkBad->Vpb->Flags & VPB_MOUNTED) {
-        DeviceToMarkBad->Vpb = NewVpb;
-        NewVpb = NULL;
-    }
-    ASSERT( DeviceToMarkBad->Vpb->DeviceObject == NULL );
-    IoReleaseVpbSpinLock( SavedIrql );
-
-    if (NewVpb) {
-        DbgFreePool( NewVpb );
-    }
-
     // Walk through all of the Vcb's attached to the global data.
     Link = UDFGlobalData.VCBQueue.Flink;
-
-    //ASSERT(FALSE);
 
     while (Link != &(UDFGlobalData.VCBQueue)) {
         // Get 'next' Vcb
@@ -2310,6 +2284,36 @@ UDFInvalidateVolumes(
         UDFAcquireResourceExclusive(&(Vcb->VCBResource), TRUE);
 
         if (Vcb->Vpb->RealDevice == DeviceToMarkBad) {
+
+            // Take the VPB spinlock,  and look to see if this volume is the 
+            // one currently mounted on the actual device.  If it is,  pull it 
+            // off immediately.
+            IoAcquireVpbSpinLock(&SavedIrql);
+
+            if (DeviceToMarkBad->Vpb == Vcb->Vpb) {
+
+                PVPB NewVpb = Vcb->SwapVpb;
+
+                ASSERT(FlagOn(Vcb->Vpb->Flags, VPB_MOUNTED));
+                ASSERT(NewVpb);
+
+                RtlZeroMemory(NewVpb, sizeof(VPB));
+
+                NewVpb->Type = IO_TYPE_VPB;
+                NewVpb->Size = sizeof(VPB);
+                NewVpb->RealDevice = DeviceToMarkBad;
+                NewVpb->Flags = FlagOn(DeviceToMarkBad->Vpb->Flags, VPB_REMOVE_PENDING);
+
+                DeviceToMarkBad->Vpb = NewVpb;
+                Vcb->SwapVpb = NULL;
+            }
+
+            IoReleaseVpbSpinLock(SavedIrql);
+
+            if (Vcb->VcbCondition != VcbDismountInProgress) {
+
+                Vcb->VcbCondition = VcbInvalid;
+            }
 
 #ifdef UDF_DELAYED_CLOSE
             UDFPrint(("    UDFInvalidateVolumes:     set UDF_VCB_FLAGS_NO_DELAYED_CLOSE\n"));

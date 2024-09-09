@@ -119,7 +119,7 @@ UDFIsFastIoPossible(
     IN PFCB Fcb
     )
 {
-    if( !(Fcb->Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) /*||
+    if (Fcb->Vcb->VcbCondition != VcbMounted /*||
         !FsRtlOplockIsFastIoPossible(&(Fcb->Oplock))*/ ) {
         UDFPrint(("    FastIoIsNotPossible\n"));
         return FastIoIsNotPossible;

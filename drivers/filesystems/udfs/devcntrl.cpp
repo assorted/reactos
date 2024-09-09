@@ -342,7 +342,7 @@ UDFCommonDeviceControl(
             case SCSIOP_SET_STREAMING:
                 UDFPrint(("UDF Direct media modification via pass-through (%2.2x)\n", ScsiCommand));
 unsafe_direct_scsi_cmd:
-                if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED))
+                if(Vcb->VcbCondition != VcbMounted)
                     goto ioctl_do_default;
 
                 UDFPrint(("Forget this volume\n"));
@@ -365,7 +365,11 @@ unsafe_direct_scsi_cmd:
                 UDFDoDismountSequence(Vcb, FALSE);
                 Vcb->MediaLockCount = 0;
 
-                Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
+                if (Vcb->VcbCondition != VcbDismountInProgress) {
+
+                    Vcb->VcbCondition = VcbInvalid;
+                }
+
                 Vcb->WriteSecurity = FALSE;
 
                 // Release the Vcb resource.
@@ -451,7 +455,7 @@ notify_media_change:
             UDFPrint(("UDF Lock/Unlock\n"));
             PPREVENT_MEDIA_REMOVAL buffer = (PPREVENT_MEDIA_REMOVAL)(Irp->AssociatedIrp.SystemBuffer);
             if(!buffer) {
-                if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) {
+                if(Vcb->VcbCondition != VcbMounted) {
                     UDFPrint(("!mounted\n"));
                     goto ioctl_do_default;
                 }
@@ -466,7 +470,7 @@ notify_media_change:
                !Vcb->MediaLockCount) {
 
                 UDFPrint(("!locked + unlock req\n"));
-                if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) {
+                if(Vcb->VcbCondition != VcbMounted) {
                     UDFPrint(("!mounted\n"));
                     goto ioctl_do_default;
                 }
@@ -511,7 +515,7 @@ ignore_lock:
                     Vcb->MediaLockCount--;
                 }
             }
-            if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) {
+            if(Vcb->VcbCondition != VcbMounted) {
                 UDFPrint(("!mounted\n"));
                 goto ioctl_do_default;
             }

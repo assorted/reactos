@@ -111,6 +111,7 @@
 // Downgrade unsupported NT6.2+ features.
 #undef MdlMappingNoExecute
 #define MdlMappingNoExecute 0
+#define NonPagedPoolNx NonPagedPool
 #endif
 
 #define PEXTENDED_IO_STACK_LOCATION  PIO_STACK_LOCATION
@@ -158,6 +159,21 @@ extern CCHAR   DefLetter[];
 #define try_return(S)   { S; goto try_exit; }
 #define try_return1(S)  { S; goto try_exit1; }
 #define try_return2(S)  { S; goto try_exit2; }
+
+//  Encapsulate safe pool freeing
+
+inline
+VOID
+UDFFreePool(
+    _Inout_ _At_(*Pool, __drv_freesMem(Mem) _Post_null_) PVOID *Pool
+    )
+{
+    if (*Pool != NULL) {
+
+        ExFreePool(*Pool);
+        *Pool = NULL;
+    }
+}
 
 // some global (helpful) macros
 

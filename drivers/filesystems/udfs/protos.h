@@ -667,7 +667,7 @@ UDFGetCfgParameter(
     IN ULONG DefValue
     );
 
-extern VOID UDFReleaseVCB(
+extern VOID UDFDeleteVCB(
     PVCB Vcb);
 
 extern ULONG UDFRegCheckParameterValue(

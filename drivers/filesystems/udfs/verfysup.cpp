@@ -86,7 +86,8 @@ UDFVerifyVcb(
     UDFPrint(("UDFVerifyVCB: Modified=%d\n", Vcb->Modified));
     //  Fail immediately if the volume is in the progress of being dismounted
     //  or has been marked invalid.
-    if (Vcb->VCBFlags & UDF_VCB_FLAGS_BEING_DISMOUNTED) {
+    if (Vcb->VcbCondition == VcbInvalid ||
+        Vcb->VcbCondition == VcbDismountInProgress) {
         return STATUS_FILE_INVALID;
     }
 
@@ -115,7 +116,7 @@ UDFVerifyVcb(
         //  then mark the volume to be verified.
 
         if ( (RC == STATUS_VERIFY_REQUIRED) ||
-             (UDFIsRawDevice(RC) && (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) ||
+             (UDFIsRawDevice(RC) && (Vcb->VcbCondition == VcbMounted)) ||
              (NT_SUCCESS(RC) && (Vcb->MediaChangeCount != MediaChangeCount)) ) {
 
             UDFPrint(("  set DO_VERIFY_VOLUME\n"));
@@ -127,7 +128,7 @@ UDFVerifyVcb(
             //  has actually changed and this Vcb is valid again, this will have
             //  done nothing.  We are already synchronized since the caller has
             //  the Vcb.
-            if (!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) &&
+            if (Vcb->VcbCondition != VcbMounted &&
                 NT_SUCCESS(RC) ) {
                 Vcb->MediaChangeCount = MediaChangeCount;
             }
@@ -156,7 +157,7 @@ UDFVerifyVcb(
     }
 
     UDFPrint(("UDFVerifyVCB: Modified=%d\n", Vcb->Modified));
-    if (!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) {
+    if (Vcb->VcbCondition != VcbMounted) {
         UDFPrint(("  !UDF_VCB_FLAGS_VOLUME_MOUNTED -> IoSetHardErrorOrVerifyDevice()\n"));
         Vcb->Vpb->RealDevice->Flags |= DO_VERIFY_VOLUME;
         IoSetHardErrorOrVerifyDevice( IrpContext->Irp, Vcb->Vpb->RealDevice );
@@ -166,7 +167,7 @@ UDFVerifyVcb(
 //        UDFRaiseStatus(IrpContext, STATUS_UNRECOGNIZED_VOLUME);
         ASSERT(Nop);
     }
-    if ((Vcb->VCBFlags & UDF_VCB_FLAGS_BEING_DISMOUNTED)) {
+    if (Vcb->VcbCondition == VcbDismountInProgress) {
         UDFPrint(("  UDF_VCB_FLAGS_BEING_DISMOUNTED\n"));
         RC = STATUS_FILE_INVALID;
         UDFRaiseStatus( IrpContext, RC );
@@ -343,7 +344,7 @@ UDFVerifyVolume(
                             WCACHE_CACHE_WHOLE_PACKET, // enable cache whole packet
                             WCACHE_MARK_BAD_BLOCKS | WCACHE_RO_BAD_BLOCKS);  // let user retry request on Bad Blocks
 
-            NewVcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_MOUNTED;
+            NewVcb->VcbCondition = VcbMounted;
             // Compare logical parameters (phase 2)
             UDFPrint(("UDFVerifyVolume: Modified=%d\n", Vcb->Modified));
             RC = UDFCompareVcb(Vcb,NewVcb, FALSE);
@@ -361,7 +362,7 @@ skip_logical_check:;
         UDFPrint(("UDFVerifyVolume: Modified=%d\n", Vcb->Modified));
         if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED)) {
             UDFPrint(("UDFVerifyVolume: set UDF_VCB_FLAGS_VOLUME_MOUNTED\n"));
-            Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_MOUNTED;
+            Vcb->VcbCondition = VcbMounted;
         }
         ClearFlag( Vpb->RealDevice->Flags, DO_VERIFY_VOLUME );
 
@@ -376,11 +377,11 @@ try_exit: NOTHING;
         // If we got the wrong volume, mark the Vcb as not mounted.
         if(RC == STATUS_WRONG_VOLUME) {
             UDFPrint(("UDFVerifyVolume: clear UDF_VCB_FLAGS_VOLUME_MOUNTED\n"));
-            Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
+            Vcb->VcbCondition = VcbNotMounted;
             Vcb->WriteSecurity = FALSE;
         } else
-        if(NT_SUCCESS(RC) &&
-           (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)){
+        if (NT_SUCCESS(RC) &&
+            Vcb->VcbCondition == VcbMounted) {
             BOOLEAN CacheInitialized = FALSE;
             UDFPrint(("    !!! VerifyVolume - QUICK REMOUNT !!!\n"));
             // Initialize internal cache
@@ -549,7 +550,7 @@ UDFPerformVerify(
             //  STATUS_WRONG_VOLUME from the verify, and our volume
             //  is now mounted, commute the status to STATUS_SUCCESS.
             if ((RC == STATUS_WRONG_VOLUME) &&
-                (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) {
+                (Vcb->VcbCondition == VcbMounted)) {
                 RC = STATUS_SUCCESS;
             }
 
@@ -559,10 +560,10 @@ UDFPerformVerify(
             //  the Reparse path.
 
             //  If the device might need to go away then call our dismount routine.
-            if ( (!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) ||
-                   (Vcb->VCBFlags & UDF_VCB_FLAGS_BEING_DISMOUNTED)) &&
-                   (Vcb->VCBOpenCount <= UDF_RESIDUAL_REFERENCE) )
-            {
+            if (Vcb->VcbCondition == VcbDismountInProgress ||
+                Vcb->VcbCondition == VcbInvalid ||
+              ((Vcb->VcbCondition == VcbNotMounted) && (Vcb->VCBOpenCount <= UDF_RESIDUAL_REFERENCE))) {
+
                 UDFPrint(("UDFPerformVerify: UDFCheckForDismount\n"));
                 UDFAcquireResourceExclusive(&(UDFGlobalData.GlobalDataResource), TRUE);
                 UDFCheckForDismount( IrpContext, Vcb, FALSE );
@@ -678,7 +679,7 @@ UDFCheckForDismount(
     //  If the dismount is not already underway then check if the
     //  user reference count has gone to zero.  If so start the teardown
     //  on the Vcb.
-    if (!(Vcb->VCBFlags & UDF_VCB_FLAGS_BEING_DISMOUNTED)) {
+    if (Vcb->VcbCondition != VcbDismountInProgress) {
         if (Vcb->VCBOpenCount <= UDF_RESIDUAL_REFERENCE) {
             VcbPresent = UDFDismountVcb(Vcb, VcbAcquired);
         }
@@ -698,7 +699,7 @@ UDFCheckForDismount(
             IoReleaseVpbSpinLock( SavedIrql );
             if(VcbAcquired)
                 UDFReleaseResource(&(Vcb->VCBResource));
-            UDFReleaseVCB(Vcb);
+            UDFDeleteVCB(Vcb);
             VcbAcquired =
             VcbPresent = FALSE;
 
@@ -744,29 +745,19 @@ UDFDismountVcb(
     IN BOOLEAN VcbAcquired
     )
 {
-
     PVPB OldVpb;
-    PVPB NewVpb;
     BOOLEAN VcbPresent = TRUE;
     KIRQL SavedIrql;
 
     BOOLEAN FinalReference;
 
     UDFPrint(("UDFDismountVcb:\n"));
+
     //  We should only take this path once.
-    ASSERT( !(Vcb->VCBFlags & UDF_VCB_FLAGS_BEING_DISMOUNTED) );
+    ASSERT(Vcb->VcbCondition != VcbDismountInProgress);
 
     //  Mark the Vcb as DismountInProgress.
-    Vcb->VCBFlags |= UDF_VCB_FLAGS_BEING_DISMOUNTED;
-
-    //  Allocate a new Vpb in case we will need it.
-    NewVpb = (PVPB)DbgAllocatePoolWithTag( NonPagedPool, sizeof( VPB ), 'bpvU' );
-    if(!NewVpb) {
-        Vcb->VCBFlags &= ~UDF_VCB_FLAGS_BEING_DISMOUNTED;
-        return TRUE;
-    }
-
-    RtlZeroMemory( NewVpb, sizeof(VPB) );
+    Vcb->VcbCondition = VcbDismountInProgress;
 
     OldVpb = Vcb->Vpb;
 
@@ -794,14 +785,23 @@ UDFDismountVcb(
         //  If not the final reference then swap out the Vpb.
         if (!FinalReference) {
 
-            NewVpb->Type = IO_TYPE_VPB;
-            NewVpb->Size = sizeof( VPB );
-            NewVpb->RealDevice = OldVpb->RealDevice;
+            ASSERT(Vcb->SwapVpb != NULL);
 
-            NewVpb->RealDevice->Vpb = NewVpb;
+            ASSERT( Vcb->SwapVpb != NULL );
 
-            NewVpb = NULL;
+            Vcb->SwapVpb->Type = IO_TYPE_VPB;
+            Vcb->SwapVpb->Size = sizeof( VPB );
+            Vcb->SwapVpb->RealDevice = OldVpb->RealDevice;
+
+            Vcb->SwapVpb->RealDevice->Vpb = Vcb->SwapVpb;
+
+            Vcb->SwapVpb->Flags = FlagOn(OldVpb->Flags, VPB_REMOVE_PENDING);
+
             IoReleaseVpbSpinLock(SavedIrql);
+
+            // Indicate we used up the swap.
+            Vcb->SwapVpb = NULL;
+
         //  We want to leave the Vpb for the IO system.  Mark it
         //  as being not mounted.  Go ahead and delete the Vcb as
         //  well.
@@ -812,7 +812,8 @@ UDFDismountVcb(
             OldVpb->ReferenceCount--;
 
             OldVpb->DeviceObject = NULL;
-            Vcb->Vpb->Flags &= ~VPB_MOUNTED;
+            ClearFlag(Vcb->Vpb->Flags, VPB_MOUNTED);
+            ClearFlag(Vcb->Vpb->Flags, VPB_LOCKED);
 
             //  Clear the Vpb flag so we know not to delete it.
             Vcb->Vpb = NULL;
@@ -820,7 +821,7 @@ UDFDismountVcb(
             IoReleaseVpbSpinLock(SavedIrql);
             if(VcbAcquired)
                 UDFReleaseResource(&(Vcb->VCBResource));
-            UDFReleaseVCB(Vcb);
+            UDFDeleteVCB(Vcb);
             VcbPresent = FALSE;
         }
 
@@ -831,10 +832,10 @@ UDFDismountVcb(
         //  Make sure to remove the last reference on the Vpb.
         OldVpb->ReferenceCount--;
 
-        IoReleaseVpbSpinLock( SavedIrql );
+        IoReleaseVpbSpinLock(SavedIrql);
         if(VcbAcquired)
             UDFReleaseResource(&(Vcb->VCBResource));
-        UDFReleaseVCB(Vcb);
+        UDFDeleteVCB(Vcb);
         VcbPresent = FALSE;
 
     //  The current Vpb is no longer the Vpb for the device (the IO system
@@ -842,15 +843,7 @@ UDFDismountVcb(
     //  Vpb and will be responsible for deleting it at a later time.
     } else {
 
-        OldVpb->DeviceObject = NULL;
-        Vcb->Vpb->Flags &= ~VPB_MOUNTED;
-
-        IoReleaseVpbSpinLock( SavedIrql );
-    }
-
-    //  Deallocate the new Vpb if we don't need it.
-    if (NewVpb != NULL) {
-        DbgFreePool( NewVpb );
+        IoReleaseVpbSpinLock(SavedIrql);
     }
 
     //  Let our caller know whether the Vcb is still present.
