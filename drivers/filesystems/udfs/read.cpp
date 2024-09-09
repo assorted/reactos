@@ -432,7 +432,7 @@ UDFCommonRead(
             if(!SystemBuffer) {
                 try_return(RC = STATUS_INVALID_USER_BUFFER);
             }
-            if(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) {
+            if (Vcb->VcbCondition == VcbMounted) {
                  RC = UDFReadData(Vcb, TRUE, ByteOffset.QuadPart,
                                 ReadLength, FALSE, (PCHAR)SystemBuffer,
                                 &NumberBytesRead);
@@ -966,10 +966,7 @@ UDFUnlockCallersBuffer(
             KeFlushIoBuffers( Irp->MdlAddress,
                               ((IoGetCurrentIrpStackLocation(Irp))->MajorFunction) == IRP_MJ_READ,
                               FALSE );
-        } else
-        { ; }
-
-try_exit:   NOTHING;
+        }
 
     } _SEH2_FINALLY {
         NOTHING;

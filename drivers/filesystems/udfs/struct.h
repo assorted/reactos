@@ -151,6 +151,7 @@ using PCCB = CCB*;
 
 #define UDF_CCB_CASE_SENSETIVE                  (0x00000400)
 #define UDF_CCB_DELETE_ON_CLOSE                 (0x00000800)
+#define UDF_CCB_FLAG_DISMOUNT_ON_CLOSE          (0x00040000)
 
 // this CCB was allocated for a "volume open" operation
 #define UDF_CCB_VOLUME_OPEN                     (0x00001000)
@@ -331,11 +332,19 @@ enum UDFFSD_MEDIA_TYPE {
     MediaDvdrw
 };
 
+enum VCB_CONDITION {
+
+    VcbNotMounted = 0,
+    VcbMountInProgress,
+    VcbMounted,
+    VcbInvalid,
+    VcbDismountInProgress
+};
+
 struct VCB : FCB {
 
-    //---------------
-    // Vcb-only data
-    //---------------
+    // Condition flag for the Vcb.
+    VCB_CONDITION VcbCondition;
 
     uint32                              VCBOpenCount;
     uint32                              VCBOpenCountRO;
@@ -649,6 +658,10 @@ struct VCB : FCB {
 
     uint32          CompatFlags;
     UCHAR           ShowBlankCd;
+
+    // Preallocated VPB for swapout, so we are not forced to consider
+    // must succeed pool.
+    PVPB SwapVpb;
 };
 
 using PVCB = VCB*;
@@ -815,11 +828,10 @@ typedef struct _UDFData {
 #define TAG_OBJECT_NAME         'nodU'
 #define TAG_FCB_NONPAGED        'nfdU'
 #define TAG_CCB                 'ccdU'
+#define TAG_VPB                 'pvdU'
 
 // some valid flags for the VCB
-#define         UDF_VCB_FLAGS_VOLUME_MOUNTED        (0x00000001)
 #define         UDF_VCB_FLAGS_VOLUME_LOCKED         (0x00000002)
-#define         UDF_VCB_FLAGS_BEING_DISMOUNTED      (0x00000004)
 #define         UDF_VCB_FLAGS_SHUTDOWN              (0x00000008)
 #define         UDF_VCB_FLAGS_VOLUME_READ_ONLY      (0x00000010)
 
@@ -842,7 +854,6 @@ typedef struct _UDFData {
 #define         UDF_VCB_FLAGS_EJECT_REQ             (0x02000000)
 #define         UDF_VCB_FLAGS_FORCE_SYNC_CACHE      (0x04000000)
 
-#define         UDF_VCB_FLAGS_USE_CAV               (0x08000000)
 #define         UDF_VCB_FLAGS_UNSAFE_IOCTL          (0x10000000)
 #define         UDF_VCB_FLAGS_DEAD                  (0x20000000)  // device unexpectedly disappeared
 

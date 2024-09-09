@@ -1311,6 +1311,16 @@ UDFInitializeVCB(
             sizeof(FILE_SYSTEM_STATISTICS);
     }
 
+    // Pick up a VPB right now so we know we can pull this filesystem stack off
+    // of the storage stack on demand.
+    Vcb->SwapVpb = (PVPB)FsRtlAllocatePoolWithTag(NonPagedPoolNx, sizeof(VPB), TAG_VPB);
+
+    if(!Vcb->SwapVpb) {
+        try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+    }
+
+    RtlZeroMemory(Vcb->SwapVpb, sizeof(VPB));
+
     // We know the target device object.
     // Note that this is not neccessarily a pointer to the actual
     // physical/virtual device on which the logical volume should
@@ -1863,16 +1873,16 @@ UDFGetCfgParameter(
 } // end UDFGetCfgParameter()
 
 VOID
-UDFReleaseVCB(
+UDFDeleteVCB(
     PVCB  Vcb
     )
 {
     LARGE_INTEGER delay;
-    UDFPrint(("UDFReleaseVCB\n"));
+    UDFPrint(("UDFDeleteVCB\n"));
 
     delay.QuadPart = -500000; // 0.05 sec
     while(Vcb->PostedRequestCount) {
-        UDFPrint(("UDFReleaseVCB: PostedRequestCount = %d\n", Vcb->PostedRequestCount));
+        UDFPrint(("UDFDeleteVCB: PostedRequestCount = %d\n", Vcb->PostedRequestCount));
         // spin until all queues IRPs are processed
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
         delay.QuadPart -= 500000; // grow delay 0.05 sec
@@ -1930,6 +1940,12 @@ UDFReleaseVCB(
         BrutePoint();
     } _SEH2_END;
 
+    // Chuck the backpocket Vpb we kept just in case.
+    UDFFreePool((PVOID*)&Vcb->SwapVpb);
+
+    // If there is a Vpb then we must delete it ourselves.
+    UDFFreePool((PVOID*)&Vcb->Vpb);
+
     _SEH2_TRY {
         UDFPrint(("UDF: Delete DO\n"));
         IoDeleteDevice(Vcb->VCBDeviceObject);
@@ -1937,7 +1953,7 @@ UDFReleaseVCB(
         BrutePoint();
     } _SEH2_END;
 
-} // end UDFReleaseVCB()
+} // end UDFDeleteVCB()
 
 /*
     Read DWORD from Registry

@@ -240,7 +240,7 @@ UDFCommonClose(
         // check if this is the last Close (no more Handles)
         // and try to Delay it....
         if((Fcb->FCBFlags & UDF_FCB_DELAY_CLOSE) &&
-           (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) &&
+           Vcb->VcbCondition == VcbMounted &&
           !(Vcb->VCBFlags & UDF_VCB_FLAGS_NO_DELAYED_CLOSE) &&
           !(Fcb->OpenHandleCount)) {
             UDFReleaseResource(&(Vcb->VCBResource));
@@ -310,8 +310,9 @@ UDFCommonClose(
             //AdPrint(("UDF: Closing volume, reset driver (e.g. stop BGF)\n"));
             //UDFResetDeviceDriver(Vcb, Vcb->TargetDeviceObject, FALSE);
 
-            if((Vcb->VCBFlags & UDF_VCB_FLAGS_BEING_DISMOUNTED) ||
-                ((!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED)) && (Vcb->VCBOpenCount <= UDF_RESIDUAL_REFERENCE))) {
+            if(Vcb->VcbCondition == VcbDismountInProgress ||
+               Vcb->VcbCondition == VcbInvalid ||
+             ((Vcb->VcbCondition == VcbNotMounted) && (Vcb->VCBOpenCount <= UDF_RESIDUAL_REFERENCE))) {
                 // Try to KILL dismounted volume....
                 // w2k requires this, NT4 - recomends
                 AcquiredVcb = UDFCheckForDismount(PtrIrpContext, Vcb, TRUE);

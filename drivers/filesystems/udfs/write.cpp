@@ -291,7 +291,7 @@ UDFCommonWrite(
             VcbAcquired = TRUE;
 
             // I dislike the idea of writing to mounted media too, but M$ has another point of view...
-            if(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) {
+            if(Vcb->VcbCondition == VcbMounted) {
                 // flush system cache
                 UDFFlushLogicalVolume(NULL, NULL, Vcb, 0);
             }

@@ -509,7 +509,7 @@ UDFCommonCreate(
 
         UDFConvertExclusiveToSharedLite(&(Vcb->VCBResource));
 
-        ASSERT(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED);
+        ASSERT(Vcb->VcbCondition == VcbMounted);
 
         // We fail in the following cases for Read-Only volumes
         //      - Open a target directory.
@@ -735,7 +735,7 @@ op_vol_accs_dnd:
         }
         // we could mount blank R/RW media in order to allow
         // user-mode applications to get access with Write privileges
-        ASSERT(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED);
+        ASSERT(Vcb->VcbCondition == VcbMounted);
 
         // The FSD might wish to implement the open-by-id option. The "id"
         //  is some unique numerical representation of the on-disk object.

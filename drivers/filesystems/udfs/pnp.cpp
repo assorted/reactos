@@ -310,8 +310,9 @@ UDFPnpQueryRemove(
         //  of this call.  This would leave references on the target device
         //  even though we are disconnected!
         if (NT_SUCCESS( RC )) {
-            VcbDeleted = !UDFCheckForDismount( PtrIrpContext, Vcb, TRUE );
-            ASSERT( VcbDeleted );
+
+            VcbDeleted = !UDFCheckForDismount(PtrIrpContext, Vcb, TRUE);
+            ASSERT(VcbDeleted || Vcb->VcbCondition == VcbDismountInProgress);
         }
 
         //  Release the Vcb if it could still remain.
@@ -454,7 +455,15 @@ UDFPnpRemove (
         //  couldn't get off of it immediately.
         Vcb->Vpb->RealDevice->Flags |= DO_VERIFY_VOLUME;
         UDFDoDismountSequence(Vcb, FALSE);
-        Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
+
+       //  If the volume had not been locked, we must invalidate the
+       //  volume to ensure it goes away properly.  The remove will
+       //  succeed.
+        if (Vcb->VcbCondition != VcbDismountInProgress) {
+
+            Vcb->VcbCondition = VcbInvalid;
+        }
+
         Vcb->WriteSecurity = FALSE;
 
         UDFReleaseResource( &(Vcb->VCBResource) );
@@ -570,7 +579,16 @@ Return Value:
         Vcb->Vpb->RealDevice->Flags |= DO_VERIFY_VOLUME;
 
         UDFDoDismountSequence(Vcb, FALSE);
-        Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_MOUNTED;
+
+        // Invalidate the volume right now.
+        // The intent here is to make every subsequent operation
+        // on the volume fail and grease the rails toward dismount.
+        // By definition there is no going back from a SURPRISE.
+        if (Vcb->VcbCondition != VcbDismountInProgress) {
+
+            Vcb->VcbCondition = VcbInvalid;
+        }
+
         Vcb->WriteSecurity = FALSE;
 
         UDFReleaseResource(&(Vcb->VCBResource));

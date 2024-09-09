@@ -503,7 +503,7 @@ UDFFlushLogicalVolume(
             return 0;
         if(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)
             return 0;
-        if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED))
+        if(Vcb->VcbCondition != VcbMounted)
             return 0;
 
         // NOTE: This function may also be invoked internally as part of
