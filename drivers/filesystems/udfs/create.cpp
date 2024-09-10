@@ -290,7 +290,7 @@ UDFCommonCreate(
 
         // If the caller cannot block, post the request to be handled
         //  asynchronously
-        if (!(PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK)) {
+        if (!(PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK)) {
             // We must defer processing of this request since we could
             //  block anytime while performing the create/open ...
             ASSERT(FALSE);
@@ -611,7 +611,7 @@ UDFCommonCreate(
                     // we should complete all pending requests (Close)
 
                     UDFPrint(("  set UDF_IRP_CONTEXT_FLUSH2_REQUIRED\n"));
-                    PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
+                    PtrIrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
 /*
                     UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
@@ -642,10 +642,10 @@ UDFCommonCreate(
                     UDFPrint(("  !FILE_SHARE_READ + open handles (%d)\n", Vcb->VCBHandleCount));
                     try_return(RC = STATUS_SHARING_VIOLATION);
                 }
-                if(PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
+                if(PtrIrpContext->Flags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
 
                     UDFPrint(("  perform flush\n"));
-                    PtrIrpContext->IrpContextFlags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
+                    PtrIrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
                     UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
                     UDFReleaseResource(&(Vcb->VCBResource));
@@ -682,7 +682,7 @@ UDFCommonCreate(
                 } else
                 if(DesiredAccess & ((GENERIC_WRITE | FILE_GENERIC_WRITE) & ~(SYNCHRONIZE | READ_CONTROL))) {
                     UDFPrint(("  set UDF_IRP_CONTEXT_FLUSH_REQUIRED\n"));
-                    PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_FLUSH_REQUIRED;
+                    PtrIrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH_REQUIRED;
                 }
             }
 

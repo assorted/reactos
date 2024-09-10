@@ -128,7 +128,7 @@ UDFCommonFlush(
     _SEH2_TRY {
 
         // Get some of the parameters supplied to us
-        CanWait = ((PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
+        CanWait = ((PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
         // If we cannot wait, post the request immediately since a flush is inherently blocking/synchronous.
         if (!CanWait) {
             PostRequest = TRUE;

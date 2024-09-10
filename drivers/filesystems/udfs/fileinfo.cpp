@@ -220,7 +220,7 @@ UDFCommonQueryInfo(
         Fcb = Ccb->Fcb;
         ASSERT(Fcb);
 
-        CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
 
         // If the caller has opened a logical volume and is attempting to
         // query information for it as a file stream, return an error.
@@ -449,7 +449,7 @@ UDFCommonSetInfo(
         Fcb = Ccb->Fcb;
         ASSERT(Fcb);
 
-        CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
 
         // If the caller has opened a logical volume and is attempting to
         // query information for it as a file stream, return an error.

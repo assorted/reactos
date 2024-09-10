@@ -183,7 +183,7 @@ UDFCommonClose(
             Ccb = (PCCB)FileObject->FsContext2;
             ASSERT(Ccb);
             if(Ccb->CCBFlags & UDF_CCB_READ_ONLY) {
-                PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_READ_ONLY;
+                PtrIrpContext->Flags |= UDF_IRP_CONTEXT_READ_ONLY;
             }
             Fcb = Ccb->Fcb;
         } else {
@@ -267,7 +267,7 @@ UDFCommonClose(
         InterlockedDecrement((PLONG)&(Fcb->CcbCount));
 
         UDFInterlockedDecrement((PLONG)&(Vcb->VCBOpenCount));
-        if(PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_READ_ONLY)
+        if(PtrIrpContext->Flags & UDF_IRP_CONTEXT_READ_ONLY)
             UDFInterlockedDecrement((PLONG)&(Vcb->VCBOpenCountRO));
 
         if(!i || (Fcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB)) {

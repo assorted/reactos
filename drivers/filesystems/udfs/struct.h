@@ -368,7 +368,6 @@ struct VCB : FCB {
     // have mounted ourselves. The I/O Manager passes us a pointer to this
     // device object when requesting a mount operation.
     PDEVICE_OBJECT                      TargetDeviceObject;
-    UNICODE_STRING                      TargetDevName;
     PCWSTR                               DefaultRegName;
     // the volume structure contains a pointer to the root directory FCB
     FCB* RootDirFCB;
@@ -695,7 +694,7 @@ typedef struct _UDFFS_DEV_EXTENSION {
 **************************************************************************/
 typedef struct _IRP_CONTEXT {
     UDFIdentifier                   NodeIdentifier;
-    ULONG                           IrpContextFlags;
+    ULONG                           Flags;
     // copied from the IRP
     UCHAR                           MajorFunction;
     // copied from the IRP

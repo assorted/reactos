@@ -183,7 +183,7 @@ UDFCommonCleanup(
         ASSERT(Vcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB);
 //        Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
 #ifdef UDF_DBG
-        CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
         AdPrint(("   %s\n", CanWait ? "Wt" : "nw"));
         ASSERT(CanWait);
 #endif // UDF_DBG

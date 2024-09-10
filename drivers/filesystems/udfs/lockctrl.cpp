@@ -140,7 +140,7 @@ UDFCommonLockControl(
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
 
-        CanWait = ((PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
+        CanWait = ((PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
 
         // Acquire the FCB resource shared
         UDF_CHECK_PAGING_IO_RESOURCE(Fcb);

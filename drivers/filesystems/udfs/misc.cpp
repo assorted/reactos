@@ -18,12 +18,6 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID                UDF_FILE_MISC
 
-#define FILE_DEVICE_CDRW        0x00000999
-#define CDRW_CTL_CODE_R(a,b)    CTL_CODE(FILE_DEVICE_CDRW, a,b, FILE_READ_DATA)
-#define IOCTL_CDRW_GET_DEVICE_NAME      CDRW_CTL_CODE_R(0x827, METHOD_BUFFERED)
-
-//CCHAR   DefLetter[] = {""};
-
 /*
 
  Function: UDFInitializeZones()
@@ -264,7 +258,7 @@ UDFExceptionFilter(
 
     if (PtrIrpContext) {
         PtrIrpContext->SavedExceptionCode = ExceptionCode;
-        SetFlag(PtrIrpContext->IrpContextFlags, UDF_IRP_CONTEXT_EXCEPTION);
+        SetFlag(PtrIrpContext->Flags, UDF_IRP_CONTEXT_EXCEPTION);
     }
 
     // check if we should propagate this exception or not
@@ -426,7 +420,7 @@ UDFExceptionHandler(
         //  they have been disabled for this request.
         //
 
-        if (FlagOn( PtrIrpContext->IrpContextFlags, UDF_IRP_CONTEXT_FLAG_DISABLE_POPUPS )) {
+        if (FlagOn(PtrIrpContext->Flags, UDF_IRP_CONTEXT_FLAG_DISABLE_POPUPS)) {
 
             UDFPrint(("  DISABLE_POPUPS, complete Irp and return\n"));
             Irp->IoStatus.Status = ExceptionCode;
@@ -899,10 +893,10 @@ UDFAllocateIrpContext(
         // implementations on the Windows NT system) has to override the flag
         // below.
         if (IrpSp->FileObject == NULL) {
-            NewIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_CAN_BLOCK;
+            NewIrpContext->Flags |= UDF_IRP_CONTEXT_CAN_BLOCK;
         } else {
             if (IoIsOperationSynchronous(Irp)) {
-                NewIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_CAN_BLOCK;
+                NewIrpContext->Flags |= UDF_IRP_CONTEXT_CAN_BLOCK;
             }
         }
     }
@@ -911,7 +905,7 @@ UDFAllocateIrpContext(
     // later (and also by the FSD dispatch routine)
     if (IoGetTopLevelIrp() != Irp) {
         // We are not top-level. Note this fact in the context structure
-        SetFlag(NewIrpContext->IrpContextFlags, UDF_IRP_CONTEXT_NOT_TOP_LEVEL);
+        SetFlag(NewIrpContext->Flags, UDF_IRP_CONTEXT_NOT_TOP_LEVEL);
     }
 
     return NewIrpContext;
@@ -938,7 +932,7 @@ UDFReleaseIrpContext(
 {
     ASSERT(IrpContext);
 
-    if (!FlagOn(IrpContext->IrpContextFlags, UDF_IRP_CONTEXT_FLAG_ON_STACK)) {
+    if (!FlagOn(IrpContext->Flags, UDF_IRP_CONTEXT_FLAG_ON_STACK)) {
 
         ExFreeToNPagedLookasideList(&UDFGlobalData.IrpContextLookasideList, IrpContext);
     }
@@ -1081,7 +1075,7 @@ UDFCommonDispatch(
         Irp = PtrIrpContext->Irp;
         // Now, check if the FSD was top level when the IRP was originally invoked
         // and set the thread context (for the worker thread) appropriately
-        if (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_NOT_TOP_LEVEL) {
+        if (PtrIrpContext->Flags & UDF_IRP_CONTEXT_NOT_TOP_LEVEL) {
             // The FSD is not top level for the original request
             // Set a constant value in TLS to reflect this fact
             IoSetTopLevelIrp((PIRP)FSRTL_FSP_TOP_LEVEL_IRP);
@@ -1092,7 +1086,7 @@ UDFCommonDispatch(
         // Since the FSD routine will now be invoked in the context of this worker
         // thread, we should inform the FSD that it is perfectly OK to block in
         // the context of this thread
-        PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_CAN_BLOCK;
+        PtrIrpContext->Flags |= UDF_IRP_CONTEXT_CAN_BLOCK;
 
         _SEH2_TRY {
 
@@ -1405,58 +1399,6 @@ UDFInitializeVCB(
     UDFAcquireResourceExclusive(&(UDFGlobalData.GlobalDataResource), TRUE);
     InsertTailList(&(UDFGlobalData.VCBQueue), &(Vcb->NextVCB));
 
-    Vcb->TargetDevName.Buffer = (PWCHAR)MyAllocatePool__(NonPagedPool, sizeof(MOUNTDEV_NAME));
-    if(!Vcb->TargetDevName.Buffer)
-        try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-
-    RC = UDFPhSendIOCTL(IOCTL_CDRW_GET_DEVICE_NAME /*IOCTL_MOUNTDEV_QUERY_DEVICE_NAME*/, Vcb->TargetDeviceObject,
-                    NULL,0,
-                    (PVOID)(Vcb->TargetDevName.Buffer),sizeof(MOUNTDEV_NAME),
-                    FALSE, NULL);
-    if(!NT_SUCCESS(RC)) {
-
-        if(RC == STATUS_BUFFER_OVERFLOW) {
-            if(!MyReallocPool__((PCHAR)(Vcb->TargetDevName.Buffer), sizeof(MOUNTDEV_NAME),
-                             (PCHAR*)&(Vcb->TargetDevName.Buffer), Vcb->TargetDevName.Buffer[0]+sizeof(MOUNTDEV_NAME)) ) {
-                goto Kill_DevName_buffer;
-            }
-
-            RC = UDFPhSendIOCTL(IOCTL_CDRW_GET_DEVICE_NAME /*IOCTL_MOUNTDEV_QUERY_DEVICE_NAME*/, Vcb->TargetDeviceObject,
-                            NULL,0,
-                            (PVOID)(Vcb->TargetDevName.Buffer), Vcb->TargetDevName.Buffer[0]+sizeof(MOUNTDEV_NAME),
-                            FALSE, NULL);
-            if(!NT_SUCCESS(RC))
-                goto Kill_DevName_buffer;
-
-        } else {
-Kill_DevName_buffer:
-            if(!MyReallocPool__((PCHAR)Vcb->TargetDevName.Buffer, sizeof(MOUNTDEV_NAME),
-                                (PCHAR*)&(Vcb->TargetDevName.Buffer), sizeof(REG_NAMELESS_DEV)))
-                try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-            RtlCopyMemory(Vcb->TargetDevName.Buffer, REG_NAMELESS_DEV, sizeof(REG_NAMELESS_DEV));
-            Vcb->TargetDevName.Length = sizeof(REG_NAMELESS_DEV)-sizeof(WCHAR);
-            Vcb->TargetDevName.MaximumLength = sizeof(REG_NAMELESS_DEV);
-            goto read_reg;
-        }
-    }
-
-    Vcb->TargetDevName.MaximumLength =
-    (Vcb->TargetDevName.Length = Vcb->TargetDevName.Buffer[0]) + sizeof(WCHAR);
-    RtlMoveMemory((PVOID)(Vcb->TargetDevName.Buffer), (PVOID)(Vcb->TargetDevName.Buffer+1), Vcb->TargetDevName.Buffer[0]);
-    Vcb->TargetDevName.Buffer[i = (SHORT)(Vcb->TargetDevName.Length/sizeof(WCHAR))] = 0;
-
-    for(;i>=0;i--) {
-        if(Vcb->TargetDevName.Buffer[i] == L'\\') {
-
-            Vcb->TargetDevName.Length -= i*sizeof(WCHAR);
-            RtlMoveMemory((PVOID)(Vcb->TargetDevName.Buffer), (PVOID)(Vcb->TargetDevName.Buffer+i), Vcb->TargetDevName.Length);
-            Vcb->TargetDevName.Buffer[Vcb->TargetDevName.Length/sizeof(WCHAR)] = 0;
-            break;
-        }
-    }
-
-    UDFPrint(("  TargetDevName: %S\n", Vcb->TargetDevName.Buffer));
-
     // Initialize caching for the stream file object.
     //CcInitializeCacheMap(Vcb->PtrStreamFileObject, (PCC_FILE_SIZES)(&(Vcb->AllocationSize)),
     //                            TRUE,       // We will use pinned access.
@@ -1476,8 +1418,7 @@ try_exit:   NOTHING;
     } _SEH2_FINALLY {
 
         if(!NT_SUCCESS(RC)) {
-            if(Vcb->TargetDevName.Buffer)
-                MyFreePool__(Vcb->TargetDevName.Buffer);
+
             if(Vcb->Statistics)
                 MyFreePool__(Vcb->Statistics);
 
@@ -1730,7 +1671,7 @@ UDFGetRegParameter(
 {
     return UDFRegCheckParameterValue(&(UDFGlobalData.SavedRegPath),
                                      Name,
-                                     Vcb ? &(Vcb->TargetDevName) : NULL,
+                                     NULL,
                                      Vcb ? Vcb->DefaultRegName : NULL,
                                      DefValue);
 } // end UDFGetRegParameter()
@@ -2176,10 +2117,10 @@ UDFInitializeStackIrpContextFromLite(
     IrpContext->TargetDeviceObject = IrpContextLite->RealDevice;
 
     // Note that this is from the stack.
-    SetFlag(IrpContext->IrpContextFlags, UDF_IRP_CONTEXT_FLAG_ON_STACK);
+    SetFlag(IrpContext->Flags, UDF_IRP_CONTEXT_FLAG_ON_STACK);
 
     // Set the wait parameter
-    SetFlag(IrpContext->IrpContextFlags, UDF_IRP_CONTEXT_CAN_BLOCK);
+    SetFlag(IrpContext->Flags, UDF_IRP_CONTEXT_CAN_BLOCK);
 
 } // end UDFInitializeStackIrpContextFromLite()
 

@@ -511,8 +511,7 @@ extern NTSTATUS UDFLockVolume (IN PIRP_CONTEXT IrpContext,
                                IN ULONG PID = -1);
 
 extern NTSTATUS UDFUnlockVolume (IN PIRP_CONTEXT IrpContext,
-                                 IN PIRP Irp,
-                                 IN ULONG PID = -1);
+                                 IN PIRP Irp);
 
 extern NTSTATUS UDFIsPathnameValid(IN PIRP_CONTEXT IrpContext,
                                    IN PIRP Irp);
