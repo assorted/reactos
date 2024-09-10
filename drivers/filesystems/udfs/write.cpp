@@ -231,7 +231,7 @@ UDFCommonWrite(
 
         ByteOffset = IrpSp->Parameters.Write.ByteOffset;
 
-        CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
         PagingIo = (Irp->Flags & IRP_PAGING_IO) ? TRUE : FALSE;
         NonCachedIo = (Irp->Flags & IRP_NOCACHE) ? TRUE : FALSE;
         SynchronousIo = (FileObject->Flags & FO_SYNCHRONOUS_IO) ? TRUE : FALSE;
@@ -272,10 +272,10 @@ UDFCommonWrite(
                 try_return(RC = STATUS_ACCESS_DENIED);
             }
 
-            if(PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
+            if(PtrIrpContext->Flags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
 
                 UDFPrint(("  UDF_IRP_CONTEXT_FLUSH2_REQUIRED\n"));
-                PtrIrpContext->IrpContextFlags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
+                PtrIrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
                 if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK)) {
                     UDFCloseAllSystemDelayedInDir(Vcb, Vcb->RootDirFCB->FileInfo);
@@ -350,14 +350,14 @@ UDFCommonWrite(
         // operations. To determine whether we are retrying the operation
         // or now, use Flags in the IrpContext structure we have created
 
-        IsThisADeferredWrite = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_DEFERRED_WRITE) ? TRUE : FALSE;
+        IsThisADeferredWrite = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_DEFERRED_WRITE) ? TRUE : FALSE;
 
         if (!NonCachedIo) {
             MmPrint(("    CcCanIWrite()\n"));
             if (!CcCanIWrite(FileObject, WriteLength, CanWait, IsThisADeferredWrite)) {
                 // Cache Manager and/or the VMM does not want us to perform
                 // the write at this time. Post the request.
-                PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_DEFERRED_WRITE;
+                PtrIrpContext->Flags |= UDF_IRP_CONTEXT_DEFERRED_WRITE;
                 UDFPrint(("UDFCommonWrite: Defer write\n"));
                 MmPrint(("    CcDeferWrite()\n"));
                 CcDeferWrite(FileObject, UDFDeferredWriteCallBack, PtrIrpContext, Irp, WriteLength, IsThisADeferredWrite);
@@ -524,7 +524,7 @@ UDFCommonWrite(
         }*/
 
         if ((Irp->Flags & IRP_SYNCHRONOUS_PAGING_IO) &&
-             (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_NOT_TOP_LEVEL)) {
+             (PtrIrpContext->Flags & UDF_IRP_CONTEXT_NOT_TOP_LEVEL)) {
 
             //  This clause determines if the top level request was
             //  in the FastIo path.
@@ -540,7 +540,7 @@ UDFCommonWrite(
                     (IrpStack->FileObject->FsContext == FileObject->FsContext)) {
 
                     RecursiveWriteThrough = TRUE;
-                    PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_WRITE_THROUGH;
+                    PtrIrpContext->Flags |= UDF_IRP_CONTEXT_WRITE_THROUGH;
                 }
             }
         }
@@ -689,7 +689,7 @@ UDFCommonWrite(
                 }
             }
 
-            WriteFileSizeToDirNdx = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_WRITE_THROUGH) ?
+            WriteFileSizeToDirNdx = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_WRITE_THROUGH) ?
                                     TRUE : FALSE;
             // Check and see if this request requires a MDL returned to the caller
             if (IrpSp->MinorFunction & IRP_MN_MDL) {

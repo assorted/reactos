@@ -199,7 +199,7 @@ UDFStackOverflowRead(
 
     UDFPrint(("UDFStackOverflowRead: \n"));
     //  Make it now look like we can wait for I/O to complete
-    PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_CAN_BLOCK;
+    PtrIrpContext->Flags |= UDF_IRP_CONTEXT_CAN_BLOCK;
 
     //  Do the read operation protected by a try-except clause
     _SEH2_TRY {
@@ -344,7 +344,7 @@ UDFCommonRead(
 
         ByteOffset = IrpSp->Parameters.Read.ByteOffset;
 
-        CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
         PagingIo = (Irp->Flags & IRP_PAGING_IO) ? TRUE : FALSE;
         NonCachedIo = (Irp->Flags & IRP_NOCACHE) ? TRUE : FALSE;
         SynchronousIo = (FileObject->Flags & FO_SYNCHRONOUS_IO) ? TRUE : FALSE;
@@ -383,10 +383,10 @@ UDFCommonRead(
                 try_return(RC = STATUS_PENDING);
 
 
-            if(PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
+            if(PtrIrpContext->Flags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
 
                 UDFPrint(("  UDF_IRP_CONTEXT_FLUSH2_REQUIRED\n"));
-                PtrIrpContext->IrpContextFlags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
+                PtrIrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
                 if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK)) {
                     UDFCloseAllSystemDelayedInDir(Vcb, Vcb->RootDirFCB->FileInfo);
@@ -397,10 +397,10 @@ UDFCommonRead(
 
             }
 
-            if(PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_FLUSH_REQUIRED) {
+            if(PtrIrpContext->Flags & UDF_IRP_CONTEXT_FLUSH_REQUIRED) {
 
                 UDFPrint(("  UDF_IRP_CONTEXT_FLUSH_REQUIRED\n"));
-                PtrIrpContext->IrpContextFlags &= ~UDF_IRP_CONTEXT_FLUSH_REQUIRED;
+                PtrIrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH_REQUIRED;
 
                 // Acquire the volume resource exclusive
                 UDFAcquireResourceExclusive(&Vcb->VCBResource, TRUE);

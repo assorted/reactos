@@ -272,7 +272,7 @@ UDFQueryDirectory(
         }
 
         // Obtain the callers parameters
-        CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
         Vcb = Fcb->Vcb;
         //Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
         FNM_Flags |= (Ccb->CCBFlags & UDF_CCB_CASE_SENSETIVE) ? 0 : UDF_FNM_FLAG_IGNORE_CASE;
@@ -722,7 +722,7 @@ UDFNotifyChangeDirectory(
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
 
-        CanWait = (PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
         Vcb = Fcb->Vcb;
 
         // Acquire the FCB resource shared

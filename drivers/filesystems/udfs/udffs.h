@@ -151,8 +151,6 @@ extern UDFData              UDFGlobalData;
 #include "errmsg.h"
 #include "mem.h"
 
-extern CCHAR   DefLetter[];
-
 #define Add2Ptr(P,I) ((PVOID)((PUCHAR)(P) + (I)))
 
 // try-finally simulation

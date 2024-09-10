@@ -1249,7 +1249,6 @@ UDFCleanupVCB(
 
     MyFreeMemoryAndPointer(Vcb->Statistics);
     MyFreeMemoryAndPointer(Vcb->VolIdent.Buffer);
-    MyFreeMemoryAndPointer(Vcb->TargetDevName.Buffer);
 
     if(Vcb->ZBuffer) {
         DbgFreePool(Vcb->ZBuffer);
@@ -1348,7 +1347,7 @@ UDFIsVolumeMounted(
        !(Fcb->Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) ) {
 
         // Disable PopUps, we want to return any error.
-        IrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_FLAG_DISABLE_POPUPS;
+        IrpContext->Flags |= UDF_IRP_CONTEXT_FLAG_DISABLE_POPUPS;
 
         // Verify the Vcb.  This will raise in the error condition.
         UDFVerifyVcb( IrpContext, Fcb->Vcb );
@@ -1484,6 +1483,45 @@ try_exit:   NOTHING;
 
     return RC;
 } // end UDFIsPathnameValid()
+
+/*
+    This routine performs the actual unlock volume operation.
+    The volume must be held exclusive by the caller.
+
+Arguments:
+    Vcb - The volume being locked.
+    FileObject - File corresponding to the handle locking the volume.  If this
+        is not specified, a system lock is assumed.
+
+Return Value:
+    NTSTATUS - The return status for the operation
+    Attempting to remove a system lock that did not exist is OK.
+*/
+NTSTATUS
+UDFUnlockVolumeInternal (
+    IN PVCB Vcb,
+    IN PFILE_OBJECT FileObject OPTIONAL
+    )
+{
+    KIRQL SavedIrql;
+    NTSTATUS Status = STATUS_NOT_LOCKED;
+
+    IoAcquireVpbSpinLock(&SavedIrql);
+
+    if (FlagOn(Vcb->Vpb->Flags, VPB_LOCKED) && FileObject == Vcb->VolumeLockFileObject) {
+
+        // This one locked it, unlock the volume
+        ClearFlag(Vcb->Vpb->Flags, VPB_LOCKED | VPB_DIRECT_WRITES_ALLOWED);
+        ClearFlag(Vcb->VCBFlags, UDF_VCB_FLAGS_VOLUME_LOCKED);
+        Vcb->VolumeLockFileObject = NULL;
+
+        Status = STATUS_SUCCESS;
+    }
+
+    IoReleaseVpbSpinLock(SavedIrql);
+
+    return Status;
+} // end UDFUnlockVolumeInternal()
 
 /*
     This routine performs the lock volume operation.  It is responsible for
@@ -1629,16 +1667,12 @@ Return Value:
 NTSTATUS
 UDFUnlockVolume(
     IN PIRP_CONTEXT IrpContext,
-    IN PIRP             Irp,
-    IN ULONG            PID
+    IN PIRP Irp
     )
 {
-    NTSTATUS RC = STATUS_INVALID_PARAMETER;
+    NTSTATUS Status;
 
-    KIRQL SavedIrql;
-    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );
-
-    UDFPrint(("UDFUnlockVolume: PID %x\n", PID));
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
     //  Decode the file object, the only type of opens we accept are
     //  user volume opens.
@@ -1660,38 +1694,26 @@ UDFUnlockVolume(
         return STATUS_INVALID_PARAMETER;
     }
 
-    //  Acquire exclusive access to the Vcb/Vpb.
-    IoAcquireVpbSpinLock( &SavedIrql );
+    // Acquire the volume resource exclusive
+    UDFAcquireResourceExclusive(&Vcb->VCBResource, TRUE);
 
-    _SEH2_TRY {
+    // We won't check for a valid Vcb for this request.  An unlock will always
+    // succeed on a locked volume.
+    Status = UDFUnlockVolumeInternal(Vcb, IrpSp->FileObject);
 
-        //  We won't check for a valid Vcb for this request.  An unlock will always
-        //  succeed on a locked volume.
-        if(Vcb->Vpb->Flags & VPB_LOCKED ||
-           Vcb->VolumeLockPID == PID) {
-            Vcb->Vpb->Flags &= ~VPB_LOCKED;
-            Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_LOCKED;
-            Vcb->VolumeLockFileObject = NULL;
-            Vcb->VolumeLockPID = -1;
-            UDFNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_UNLOCK);
-            RC = STATUS_SUCCESS;
-        } else {
-            RC = STATUS_NOT_LOCKED;
-            RC = STATUS_SUCCESS;
-            RC = STATUS_VOLUME_DISMOUNTED;
-        }
+    // Release all of our resources
+    UDFReleaseResource(&Vcb->VCBResource);
 
-    } _SEH2_FINALLY {
-        ;
-    } _SEH2_END;
+    // Send notification that the volume is avaliable.
+    if (NT_SUCCESS(Status)) {
 
-    //  Release all of our resources
-    IoReleaseVpbSpinLock( SavedIrql );
+        FsRtlNotifyVolumeEvent( IrpSp->FileObject, FSRTL_VOLUME_UNLOCK );
+    }
 
     //  Complete the request if there haven't been any exceptions.
     Irp->IoStatus.Information = 0;
-    Irp->IoStatus.Status = RC;
-    return RC;
+    Irp->IoStatus.Status = Status;
+    return Status;
 } // end UDFUnlockVolume()
 
 

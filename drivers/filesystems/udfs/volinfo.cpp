@@ -184,7 +184,7 @@ UDFCommonQueryVolInfo(
         //  Reference our input parameters to make things easier
         Length = IrpSp->Parameters.QueryVolume.Length;
         //  Acquire the Vcb for this volume.
-        CanWait = ((PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
+        CanWait = ((PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
 
         RtlZeroMemory(Irp->AssociatedIrp.SystemBuffer, Length);
 
@@ -639,7 +639,7 @@ UDFCommonSetVolInfo(
 
         Length = IrpSp->Parameters.SetVolume.Length;
         //  Acquire the Vcb for this volume.
-        CanWait = ((PtrIrpContext->IrpContextFlags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
+        CanWait = ((PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
         if (!UDFAcquireResourceShared(&(Vcb->VCBResource), CanWait)) {
             PostRequest = TRUE;
             try_return (RC = STATUS_PENDING);

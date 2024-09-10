@@ -174,7 +174,7 @@ UDFCommonPnp (
         }
 
         // Force everything to wait.
-        PtrIrpContext->IrpContextFlags |= UDF_IRP_CONTEXT_CAN_BLOCK;
+        PtrIrpContext->Flags |= UDF_IRP_CONTEXT_CAN_BLOCK;
 
         // Case on the minor code.
         switch ( IrpSp->MinorFunction ) {
