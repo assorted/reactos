@@ -93,8 +93,6 @@ VOID UDFNotifyFullReportChange(PVCB V,
                                PUDF_FILE_INFO FI,
                                ULONG E,
                                ULONG A);
-VOID UDFNotifyVolumeEvent(IN PFILE_OBJECT FileObject,
-                          IN ULONG EventCode);
 #else // UDF_DBG
 __inline VOID UDFNotifyFullReportChange(
     PVCB V,

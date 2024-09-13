@@ -727,7 +727,7 @@ try_exit: NOTHING;
                 // Set mount event
 
                 UDFPrint(("UDFMountVolume: complete req RC %x\n", RC));
-                UDFNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_MOUNT);
+                FsRtlNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_MOUNT);
                 // Complete the IRP.
                 Irp->IoStatus.Status = RC;
                 IoCompleteRequest(Irp, IO_NO_INCREMENT);
@@ -1567,7 +1567,7 @@ UDFLockVolume(
         return STATUS_INVALID_PARAMETER;
     }
 
-    UDFNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_LOCK);
+    FsRtlNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_LOCK);
 
     _SEH2_TRY {
 
@@ -1647,7 +1647,7 @@ UDFLockVolume(
     IoReleaseVpbSpinLock( SavedIrql );
 
     if(!NT_SUCCESS(RC)) {
-        UDFNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_LOCK_FAILED);
+        FsRtlNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_LOCK_FAILED);
     }
 
     //  Complete the request if there haven't been any exceptions.
@@ -1761,7 +1761,7 @@ UDFDismountVolume(
         return STATUS_INVALID_PARAMETER;
     }
 
-    UDFNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_DISMOUNT);
+    FsRtlNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_DISMOUNT);
 
     if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK))
         UDFCloseAllSystemDelayedInDir(Vcb, Vcb->RootDirFCB->FileInfo);
@@ -1822,7 +1822,7 @@ UDFDismountVolume(
     } _SEH2_END;
 
     if(!NT_SUCCESS(RC)) {
-        UDFNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_DISMOUNT_FAILED);
+        FsRtlNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_DISMOUNT_FAILED);
     }
 
     //  Complete the request if there haven't been any exceptions.

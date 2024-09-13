@@ -616,16 +616,5 @@ UDFNotifyFullReportChange(
     }
 } // end UDFNotifyFullReportChange()
 
-VOID
-UDFNotifyVolumeEvent(
-    IN PFILE_OBJECT FileObject,
-    IN ULONG EventCode
-    )
-{
-/* ReactOS FIXME This is always true, and we return anyway. */
-//    if(!FsRtlNotifyVolumeEvent)
-        return;
-    //FsRtlNotifyVolumeEvent(FileObject, EventCode);
-} // end UDFNotifyVolumeEvent()
 #endif // UDF_DBG
 

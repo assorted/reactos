@@ -166,7 +166,7 @@ UDFFastIoQueryBasicInfo(
 {
     BOOLEAN          ReturnedStatus = FALSE;     // fast i/o failed/not allowed
     NTSTATUS         RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     LONG             Length = sizeof(FILE_BASIC_INFORMATION);
     PFCB             Fcb;
     PCCB             Ccb;
@@ -204,9 +204,9 @@ UDFFastIoQueryBasicInfo(
             ReturnedStatus =
                 ((RC = UDFGetBasicInformation(FileObject, Fcb, Buffer, &Length)) == STATUS_SUCCESS);
 
-        } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+        } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(PtrIrpContext, NULL);
+            RC = UDFExceptionHandler(IrpContext, NULL);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
 
@@ -261,7 +261,7 @@ UDFFastIoQueryStdInfo(
 {
     BOOLEAN          ReturnedStatus = FALSE;     // fast i/o failed/not allowed
     NTSTATUS         RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     LONG             Length = sizeof(FILE_STANDARD_INFORMATION);
     PFCB             Fcb;
     PCCB             Ccb;
@@ -299,9 +299,9 @@ UDFFastIoQueryStdInfo(
             ReturnedStatus =
                 ((RC = UDFGetStandardInformation(Fcb, Buffer, &Length)) == STATUS_SUCCESS);
 
-        } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+        } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(PtrIrpContext, NULL);
+            RC = UDFExceptionHandler(IrpContext, NULL);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
 

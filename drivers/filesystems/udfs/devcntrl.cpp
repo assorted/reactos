@@ -73,7 +73,7 @@ UDFDeviceControl(
     PIRP                    Irp)                // I/O Request Packet
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     TmPrint(("UDFDeviceControl: \n"));
@@ -89,9 +89,9 @@ UDFDeviceControl(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonDeviceControl(PtrIrpContext, Irp);
+        IrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonDeviceControl(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -100,9 +100,9 @@ UDFDeviceControl(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -615,7 +615,7 @@ UDFDevIoctlCompletion(
 {
 /*    PIO_STACK_LOCATION      IrpSp = NULL;
     ULONG                   IoControlCode = 0;*/
-    PIRP_CONTEXT PtrIrpContext = (PIRP_CONTEXT)Context;
+    PIRP_CONTEXT IrpContext = (PIRP_CONTEXT)Context;
 
     UDFPrint(("UDFDevIoctlCompletion Irp %x, ctx %x\n", Irp, Context));
     if (Irp->PendingReturned) {
@@ -623,7 +623,7 @@ UDFDevIoctlCompletion(
         IoMarkIrpPending(Irp);
     }
 
-    UDFReleaseIrpContext(PtrIrpContext);
+    UDFReleaseIrpContext(IrpContext);
 /*    if(Irp->IoStatus.Status == STATUS_SUCCESS) {
         IrpSp = IoGetCurrentIrpStackLocation(Irp);
         IoControlCode = IrpSp->Parameters.DeviceIoControl.IoControlCode;

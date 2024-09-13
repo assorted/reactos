@@ -813,7 +813,7 @@ UDFDismountVcb(
 
             OldVpb->DeviceObject = NULL;
             ClearFlag(Vcb->Vpb->Flags, VPB_MOUNTED);
-            ClearFlag(Vcb->Vpb->Flags, VPB_LOCKED);
+            ClearFlag(Vcb->Vpb->Flags, VPB_LOCKED | VPB_DIRECT_WRITES_ALLOWED);
 
             //  Clear the Vpb flag so we know not to delete it.
             Vcb->Vpb = NULL;
