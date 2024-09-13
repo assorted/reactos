@@ -53,7 +53,7 @@ UDFCreate(
     PIRP                    Irp)                // I/O Request Packet
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext;
+    PIRP_CONTEXT IrpContext;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     TmPrint(("UDFCreate:\n"));
@@ -88,9 +88,9 @@ UDFCreate(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonCreate(PtrIrpContext, Irp);
+        IrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonCreate(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -99,9 +99,9 @@ UDFCreate(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -717,7 +717,7 @@ op_vol_accs_dnd:
             RequestedOptions |= FILE_NO_INTERMEDIATE_BUFFERING;
 
             ReturnedInformation = FILE_OPENED;
-            UDFNotifyVolumeEvent(PtrNewFileObject, FSRTL_VOLUME_LOCK);
+            FsRtlNotifyVolumeEvent(PtrNewFileObject, FSRTL_VOLUME_LOCK);
             try_return(RC);
         }
 

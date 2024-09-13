@@ -62,7 +62,7 @@ UDFRead(
     PIRP           Irp)                // I/O Request Packet
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     TmPrint(("UDFRead: \n"));
@@ -78,9 +78,9 @@ UDFRead(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonRead(PtrIrpContext, Irp);
+        IrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonRead(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -89,9 +89,9 @@ UDFRead(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -194,18 +194,18 @@ UDFStackOverflowRead(
     IN PKEVENT Event
     )
 {
-    PIRP_CONTEXT PtrIrpContext = (PIRP_CONTEXT)Context;
+    PIRP_CONTEXT IrpContext = (PIRP_CONTEXT)Context;
     NTSTATUS RC;
 
     UDFPrint(("UDFStackOverflowRead: \n"));
     //  Make it now look like we can wait for I/O to complete
-    PtrIrpContext->Flags |= UDF_IRP_CONTEXT_CAN_BLOCK;
+    IrpContext->Flags |= UDF_IRP_CONTEXT_CAN_BLOCK;
 
     //  Do the read operation protected by a try-except clause
     _SEH2_TRY {
-        UDFCommonRead(PtrIrpContext, PtrIrpContext->Irp);
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
-        RC = UDFExceptionHandler(PtrIrpContext, PtrIrpContext->Irp);
+        UDFCommonRead(IrpContext, IrpContext->Irp);
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
+        RC = UDFExceptionHandler(IrpContext, IrpContext->Irp);
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
 
