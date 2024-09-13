@@ -1707,7 +1707,7 @@ UDFUnlockVolume(
     // Send notification that the volume is avaliable.
     if (NT_SUCCESS(Status)) {
 
-        FsRtlNotifyVolumeEvent( IrpSp->FileObject, FSRTL_VOLUME_UNLOCK );
+        FsRtlNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_UNLOCK);
     }
 
     //  Complete the request if there haven't been any exceptions.

@@ -21,6 +21,10 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID                UDF_FILE_CLEANUP
 
+VOID
+UDFAutoUnlock (
+    IN PVCB Vcb
+    );
 
 /*************************************************************************
 *
@@ -139,6 +143,7 @@ UDFCommonCleanup(
     BOOLEAN                 AcquiredVcb = FALSE;
     BOOLEAN                 AcquiredFCB = FALSE;
     BOOLEAN                 AcquiredParentFCB = FALSE;
+    BOOLEAN SendUnlockNotification = FALSE;
 
 //    BOOLEAN                 CompleteIrp = TRUE;
 //    BOOLEAN                 PostRequest = FALSE;
@@ -222,12 +227,11 @@ UDFCommonCleanup(
             }
             // User may decide to close locked volume without call to unlock proc
             // So, handle this situation properly & unlock it now...
-            if (FileObject == Vcb->VolumeLockFileObject) {
-                Vcb->VolumeLockFileObject = NULL;
-                Vcb->VolumeLockPID = -1;
-                Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_LOCKED;
-                Vcb->Vpb->Flags &= ~VPB_LOCKED;
-                UDFNotifyVolumeEvent(FileObject, FSRTL_VOLUME_UNLOCK);
+            if (FlagOn(Vcb->VCBFlags, UDF_VCB_FLAGS_VOLUME_LOCKED) &&
+                FileObject == Vcb->VolumeLockFileObject) {
+
+                UDFAutoUnlock(Vcb);
+                SendUnlockNotification = TRUE;
             }
 
             MmPrint(("    CcUninitializeCacheMap()\n"));
@@ -665,6 +669,11 @@ try_exit: NOTHING;
             AcquiredVcb = FALSE;
         }
 
+        if (SendUnlockNotification) {
+
+            FsRtlNotifyVolumeEvent(FileObject, FSRTL_VOLUME_UNLOCK);
+        }
+
         if (!_SEH2_AbnormalTermination()) {
             // complete the IRP
             Irp->IoStatus.Status = RC;
@@ -755,3 +764,21 @@ UDFCloseFileInfoChain(
     return RC;
 
 } // end UDFCloseFileInfoChain()
+
+VOID
+UDFAutoUnlock (
+    IN PVCB Vcb
+    )
+{
+    KIRQL SavedIrql;
+
+    //  Unlock the volume.
+ 
+    IoAcquireVpbSpinLock( &SavedIrql );
+
+    ClearFlag(Vcb->Vpb->Flags, VPB_LOCKED | VPB_DIRECT_WRITES_ALLOWED);
+    ClearFlag(Vcb->VCBFlags, UDF_VCB_FLAGS_VOLUME_LOCKED);
+    Vcb->VolumeLockFileObject = NULL;
+
+    IoReleaseVpbSpinLock( SavedIrql );
+}
