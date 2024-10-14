@@ -727,7 +727,8 @@ try_exit: NOTHING;
                 // Set mount event
 
                 UDFPrint(("UDFMountVolume: complete req RC %x\n", RC));
-                FsRtlNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_MOUNT);
+                //TODO: fix BSOD with IRQL
+                //FsRtlNotifyVolumeEvent(IrpSp->FileObject, FSRTL_VOLUME_MOUNT);
                 // Complete the IRP.
                 Irp->IoStatus.Status = RC;
                 IoCompleteRequest(Irp, IO_NO_INCREMENT);
