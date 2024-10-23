@@ -89,7 +89,7 @@ UDFDeviceControl(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        IrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
         if(IrpContext) {
             RC = UDFCommonDeviceControl(IrpContext, Irp);
         } else {
@@ -137,7 +137,7 @@ UDFDeviceControl(
 NTSTATUS
 NTAPI
 UDFCommonDeviceControl(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp
     )
 {
@@ -172,7 +172,7 @@ UDFCommonDeviceControl(
         FileObject = IrpSp->FileObject;
         ASSERT(FileObject);
 
-        FSDevObj = UDFIsFSDevObj(PtrIrpContext->TargetDeviceObject);
+        FSDevObj = UDFIsFSDevObj(IrpContext->TargetDeviceObject);
 
         if(FSDevObj) {
 
@@ -264,7 +264,7 @@ UDFCommonDeviceControl(
             AcquiredVcb = TRUE;
         }
 
-        UDFPrint(("UDF Irp %x, ctx %x, DevIoCtl %x\n", Irp, PtrIrpContext, IoControlCode));
+        UDFPrint(("UDF Irp %x, ctx %x, DevIoCtl %x\n", Irp, IrpContext, IoControlCode));
 
         // We may wish to allow only   volume open operations.
         switch (IoControlCode) {
@@ -416,7 +416,7 @@ notify_media_change:
             UDFPrint(("UDFUserFsCtrlRequest: FSCTL_IS_VOLUME_DIRTY\n"));
             // DASD i/o is always permitted
             // So, no-op this call
-            RC = UDFIsVolumeDirty(PtrIrpContext, Irp);
+            RC = UDFIsVolumeDirty(IrpContext, Irp);
             CompleteIrp = TRUE;
             break;
 
@@ -433,7 +433,7 @@ notify_media_change:
             CompleteIrp = TRUE;
             //  Verify the Vcb in this case to detect if the volume has changed.
             Irp->IoStatus.Information = 0;
-            RC = UDFVerifyVcb(PtrIrpContext,Vcb);
+            RC = UDFVerifyVcb(IrpContext,Vcb);
             if(!NT_SUCCESS(RC))
                 try_return(RC);
 
@@ -523,7 +523,7 @@ ignore_lock:
         }
         default:
 
-            UDFPrint(("default processing Irp %x, ctx %x, DevIoCtl %x\n", Irp, PtrIrpContext, IoControlCode));
+            UDFPrint(("default processing Irp %x, ctx %x, DevIoCtl %x\n", Irp, IrpContext, IoControlCode));
 ioctl_do_default:
 
             // make sure volume is Sync'ed BEFORE sending unsafe IOCTL
@@ -551,13 +551,13 @@ ioctl_do_default:
             IoSkipCurrentIrpStackLocation(Irp);
 /*
             // Set a completion routine.
-            IoSetCompletionRoutine(Irp, UDFDevIoctlCompletion, PtrIrpContext, TRUE, TRUE, TRUE);
+            IoSetCompletionRoutine(Irp, UDFDevIoctlCompletion, IrpContext, TRUE, TRUE, TRUE);
             // Send the request.
 */
             RC = IoCallDriver(Vcb->TargetDeviceObject, Irp);
             if(!CompleteIrp) {
                 // since now we do not use IoSetCompletionRoutine()
-                UDFReleaseIrpContext(PtrIrpContext);
+                UDFReleaseIrpContext(IrpContext);
             }
             break;
         }
@@ -579,12 +579,12 @@ try_exit: NOTHING;
         if (!_SEH2_AbnormalTermination() &&
             CompleteIrp) {
             UDFPrint(("  complete Irp %x, ctx %x, status %x, iolen %x\n",
-                Irp, PtrIrpContext, RC, Irp->IoStatus.Information));
+                Irp, IrpContext, RC, Irp->IoStatus.Information));
             Irp->IoStatus.Status = RC;
             // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             // Release the IRP context
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFReleaseIrpContext(IrpContext);
         }
     } _SEH2_END;
 

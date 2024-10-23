@@ -603,7 +603,7 @@ UDFFastIoQueryNetInfo(
 {
     BOOLEAN          ReturnedStatus = FALSE;     // fast i/o failed/not allowed
     NTSTATUS         RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     LONG             Length = sizeof(FILE_NETWORK_OPEN_INFORMATION);
     PFCB             Fcb;
     PCCB             Ccb;
@@ -641,9 +641,9 @@ UDFFastIoQueryNetInfo(
             ReturnedStatus =
                 ((RC = UDFGetNetworkInformation(Fcb, Buffer, &Length)) == STATUS_SUCCESS);
 
-        } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+        } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(PtrIrpContext, NULL);
+            RC = UDFExceptionHandler(IrpContext, NULL);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
 
@@ -698,7 +698,7 @@ IN PDEVICE_OBJECT           DeviceObject)
 {
     BOOLEAN ReturnedStatus = FALSE;     // fast i/o failed/not allowed
     NTSTATUS RC = STATUS_SUCCESS;
-    PtrUDFIrpContext PtrIrpContext = NULL;
+    PtrUDFIrpContext IrpContext = NULL;
 
     FsRtlEnterFileSystem();
 
@@ -711,9 +711,9 @@ IN PDEVICE_OBJECT           DeviceObject)
             NOTHING;
 
 
-        } __except (UDFExceptionFilter(PtrIrpContext, GetExceptionInformation())) {
+        } __except (UDFExceptionFilter(IrpContext, GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(PtrIrpContext, NULL);
+            RC = UDFExceptionHandler(IrpContext, NULL);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
 
@@ -754,7 +754,7 @@ IN PDEVICE_OBJECT               DeviceObject)
 {
     BOOLEAN             ReturnedStatus = FALSE;     // fast i/o failed/not allowed
     NTSTATUS                RC = STATUS_SUCCESS;
-   PtrUDFIrpContext PtrIrpContext = NULL;
+   PtrUDFIrpContext IrpContext = NULL;
 
     FsRtlEnterFileSystem();
 
@@ -766,9 +766,9 @@ IN PDEVICE_OBJECT               DeviceObject)
             // stub here.
             NOTHING;
 
-        } __except (UDFExceptionFilter(PtrIrpContext, GetExceptionInformation())) {
+        } __except (UDFExceptionFilter(IrpContext, GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(PtrIrpContext, NULL);
+            RC = UDFExceptionHandler(IrpContext, NULL);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
 
@@ -813,7 +813,7 @@ UDFFastIoPrepareMdlWrite(
 {
     BOOLEAN              ReturnedStatus = FALSE; // fast i/o failed/not allowed
     NTSTATUS             RC = STATUS_SUCCESS;
-   PtrUDFIrpContext PtrIrpContext = NULL;
+   PtrUDFIrpContext IrpContext = NULL;
 
     FsRtlEnterFileSystem();
 
@@ -825,9 +825,9 @@ UDFFastIoPrepareMdlWrite(
             // stub here.
             NOTHING;
 
-        } __except (UDFExceptionFilter(PtrIrpContext, GetExceptionInformation())) {
+        } __except (UDFExceptionFilter(IrpContext, GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(PtrIrpContext, NULL);
+            RC = UDFExceptionHandler(IrpContext, NULL);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
 
@@ -869,7 +869,7 @@ IN PDEVICE_OBJECT               DeviceObject)
 {
     BOOLEAN             ReturnedStatus = FALSE;     // fast i/o failed/not allowed
     NTSTATUS                RC = STATUS_SUCCESS;
-   PtrUDFIrpContext PtrIrpContext = NULL;
+   PtrUDFIrpContext IrpContext = NULL;
 
     FsRtlEnterFileSystem();
 
@@ -881,9 +881,9 @@ IN PDEVICE_OBJECT               DeviceObject)
             // stub here.
             NOTHING;
 
-        } __except (UDFExceptionFilter(PtrIrpContext, GetExceptionInformation())) {
+        } __except (UDFExceptionFilter(IrpContext, GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(PtrIrpContext, NULL);
+            RC = UDFExceptionHandler(IrpContext, NULL);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
 

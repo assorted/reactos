@@ -223,8 +223,6 @@ struct UDFNTRequiredFCB {
 };
 using PtrUDFNTRequiredFCB = UDFNTRequiredFCB*;
 
-#define     UDF_NTREQ_FCB_SD_MODIFIED   (0x00000001)
-#define     UDF_NTREQ_FCB_INLIST        (0x00000002)
 #define     UDF_NTREQ_FCB_DELETED       (0x00000004)
 #define     UDF_NTREQ_FCB_MODIFIED      (0x00000008)
 #define     UDF_NTREQ_FCB_VALID         (0x40000000)
@@ -712,21 +710,25 @@ typedef struct _IRP_CONTEXT {
     ULONG                           TreeLength;
     IO_CONTEXT* IoContext;
     VCB*      Vcb;
-} IRP_CONTEXT, *PIRP_CONTEXT;
+} IRP_CONTEXT;
+typedef IRP_CONTEXT *PIRP_CONTEXT;
 
-#define         UDF_IRP_CONTEXT_CAN_BLOCK           (0x00000001)
-#define         UDF_IRP_CONTEXT_WRITE_THROUGH       (0x00000002)
-#define         UDF_IRP_CONTEXT_EXCEPTION           (0x00000004)
-#define         UDF_IRP_CONTEXT_DEFERRED_WRITE      (0x00000008)
-#define         UDF_IRP_CONTEXT_ASYNC_PROCESSING    (0x00000010)
-#define         UDF_IRP_CONTEXT_NOT_TOP_LEVEL       (0x00000020)
-#define         UDF_IRP_CONTEXT_FLAG_DISABLE_POPUPS (0x00000040)
-#define         UDF_IRP_CONTEXT_FLUSH_REQUIRED      (0x00000080)
-#define         UDF_IRP_CONTEXT_FLUSH2_REQUIRED     (0x00000100)
-#define         UDF_IRP_CONTEXT_FLAG_ON_STACK       (0x00000200)
-#define         UDF_IRP_CONTEXT_READ_ONLY           (0x00010000)
-#define         UDF_IRP_CONTEXT_RES1_ACQ            (0x01000000)
-#define         UDF_IRP_CONTEXT_RES2_ACQ            (0x02000000)
+#define IRP_CONTEXT_FLAG_ON_STACK               (0x00000001)
+#define IRP_CONTEXT_FLAG_MORE_PROCESSING        (0x00000002)
+#define IRP_CONTEXT_FLAG_WAIT                   (0x00000004)
+#define IRP_CONTEXT_FLAG_FORCE_POST             (0x00000008)
+#define IRP_CONTEXT_FLAG_TOP_LEVEL              (0x00000010)
+#define IRP_CONTEXT_FLAG_TOP_LEVEL_UDFS         (0x00000020)
+#define IRP_CONTEXT_FLAG_IN_FSP                 (0x00000040)
+#define IRP_CONTEXT_FLAG_IN_TEARDOWN            (0x00000080)
+#define IRP_CONTEXT_FLAG_ALLOC_IO               (0x00000100)
+#define IRP_CONTEXT_FLAG_DISABLE_POPUPS         (0x00000200)
+#define IRP_CONTEXT_FLAG_DEFERRED_WRITE         (0x00000400)
+#define IRP_CONTEXT_FLAG_WRITE_THROUGH          (0x00020000)
+
+#define UDF_IRP_CONTEXT_NOT_TOP_LEVEL           (0x10000000)
+#define UDF_IRP_CONTEXT_FLUSH_REQUIRED          (0x20000000)
+#define UDF_IRP_CONTEXT_FLUSH2_REQUIRED         (0x40000000)
 
 /**************************************************************************
     Following structure is used to queue a request to the delayed close queue.

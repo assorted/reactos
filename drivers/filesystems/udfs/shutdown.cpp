@@ -50,7 +50,7 @@ UDFShutdown(
     )
 {
     NTSTATUS         RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN          AreWeTopLevel = FALSE;
 
     UDFPrint(("UDFShutDown\n"));
@@ -67,9 +67,9 @@ UDFShutdown(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonShutdown(PtrIrpContext, Irp);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonShutdown(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -78,9 +78,9 @@ UDFShutdown(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -113,7 +113,7 @@ UDFShutdown(
 *************************************************************************/
 NTSTATUS
 UDFCommonShutdown(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp
     )
 {
@@ -275,7 +275,7 @@ UDFCommonShutdown(
             Irp->IoStatus.Status = RC;
             Irp->IoStatus.Information = 0;
             // Free up the Irp Context
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFReleaseIrpContext(IrpContext);
                 // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }

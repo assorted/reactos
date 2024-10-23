@@ -23,28 +23,28 @@
 
 NTSTATUS
 UDFPnpQueryRemove (
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP Irp,
     PVCB Vcb
     );
 
 NTSTATUS
 UDFPnpRemove (
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP Irp,
     PVCB Vcb
     );
 
 NTSTATUS
 UDFPnpSurpriseRemove (
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP Irp,
     PVCB Vcb
     );
 
 NTSTATUS
 UDFPnpCancelRemove (
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP Irp,
     PVCB Vcb
     );
@@ -59,7 +59,7 @@ UDFPnpCompletionRoutine (
 
 NTSTATUS
 UDFCommonPnp (
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     );
 
@@ -85,7 +85,7 @@ UDFPnp (
     )
 {
     NTSTATUS RC;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN AreWeTopLevel;
 
     UDFPrint(("UDFPnp\n"));
@@ -104,9 +104,9 @@ UDFPnp (
         //  operations, this is a bit nitpicky.
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonPnp(PtrIrpContext, Irp);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonPnp(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -115,9 +115,9 @@ UDFPnp (
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter( PtrIrpContext, _SEH2_GetExceptionInformation() )) {
+    } _SEH2_EXCEPT(UDFExceptionFilter( IrpContext, _SEH2_GetExceptionInformation() )) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
 
@@ -144,7 +144,7 @@ Return Value:
  */
 NTSTATUS
 UDFCommonPnp (
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     )
 {
@@ -174,25 +174,25 @@ UDFCommonPnp (
         }
 
         // Force everything to wait.
-        PtrIrpContext->Flags |= UDF_IRP_CONTEXT_CAN_BLOCK;
+        IrpContext->Flags |= IRP_CONTEXT_FLAG_WAIT;
 
         // Case on the minor code.
         switch ( IrpSp->MinorFunction ) {
 
             case IRP_MN_QUERY_REMOVE_DEVICE:
-                RC = UDFPnpQueryRemove( PtrIrpContext, Irp, Vcb );
+                RC = UDFPnpQueryRemove(IrpContext, Irp, Vcb);
                 break;
 
             case IRP_MN_SURPRISE_REMOVAL:
-                RC = UDFPnpSurpriseRemove( PtrIrpContext, Irp, Vcb );
+                RC = UDFPnpSurpriseRemove(IrpContext, Irp, Vcb);
                 break;
 
             case IRP_MN_REMOVE_DEVICE:
-                RC = UDFPnpRemove( PtrIrpContext, Irp, Vcb );
+                RC = UDFPnpRemove(IrpContext, Irp, Vcb);
                 break;
 
 /*            case IRP_MN_CANCEL_REMOVE_DEVICE:
-                RC = UDFPnpCancelRemove( PtrIrpContext, Irp, Vcb );
+                RC = UDFPnpCancelRemove( IrpContext, Irp, Vcb );
                 break;*/
 
             default:
@@ -209,7 +209,7 @@ UDFCommonPnp (
 try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
-        UDFReleaseIrpContext(PtrIrpContext);
+        UDFReleaseIrpContext(IrpContext);
     } _SEH2_END;
 
     return RC;
@@ -234,7 +234,7 @@ Return Value:
  */
 NTSTATUS
 UDFPnpQueryRemove(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP Irp,
     PVCB Vcb
     )
@@ -311,7 +311,7 @@ UDFPnpQueryRemove(
         //  even though we are disconnected!
         if (NT_SUCCESS( RC )) {
 
-            VcbDeleted = !UDFCheckForDismount(PtrIrpContext, Vcb, TRUE);
+            VcbDeleted = !UDFCheckForDismount(IrpContext, Vcb, TRUE);
             ASSERT(VcbDeleted || Vcb->VcbCondition == VcbDismountInProgress);
         }
 
@@ -344,7 +344,7 @@ UDFPnpQueryRemove(
         if (!_SEH2_AbnormalTermination()) {
             Irp->IoStatus.Status = RC;
             // Free up the Irp Context
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFReleaseIrpContext(IrpContext);
             // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
@@ -371,7 +371,7 @@ Return Value:
 --*/
 NTSTATUS
 UDFPnpRemove (
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP Irp,
     PVCB Vcb
     )
@@ -469,7 +469,7 @@ UDFPnpRemove (
         UDFReleaseResource( &(Vcb->VCBResource) );
         VcbAcquired = FALSE;
 
-        VcbDeleted = !UDFCheckForDismount( PtrIrpContext, Vcb, FALSE );
+        VcbDeleted = !UDFCheckForDismount( IrpContext, Vcb, FALSE );
 
     } _SEH2_FINALLY {
         //  Release the Vcb if it could still remain.
@@ -481,7 +481,7 @@ UDFPnpRemove (
         if (!_SEH2_AbnormalTermination()) {
             Irp->IoStatus.Status = RC;
             // Free up the Irp Context
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFReleaseIrpContext(IrpContext);
             // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
@@ -493,7 +493,7 @@ UDFPnpRemove (
 
 NTSTATUS
 UDFPnpSurpriseRemove (
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP Irp,
     PVCB Vcb
     )
@@ -597,7 +597,7 @@ Return Value:
         //  Now make our dismount happen.  This may not vaporize the
         //  Vcb, of course, since there could be any number of handles
         //  outstanding since this is an out of band notification.
-        VcbDeleted = !UDFCheckForDismount( PtrIrpContext, Vcb, FALSE );
+        VcbDeleted = !UDFCheckForDismount( IrpContext, Vcb, FALSE );
 
     } _SEH2_FINALLY {
 
@@ -610,7 +610,7 @@ Return Value:
         if (!_SEH2_AbnormalTermination()) {
             Irp->IoStatus.Status = RC;
             // Free up the Irp Context
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFReleaseIrpContext(IrpContext);
             // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
@@ -622,7 +622,7 @@ Return Value:
 /*
 NTSTATUS
 UDFPnpCancelRemove (
-    PtrUDFIrpContext PtrIrpContext,
+    PtrUDFIrpContext IrpContext,
     PIRP Irp,
     PVCB Vcb
     )
@@ -685,7 +685,7 @@ Return Value:
         //  the first stages of a QUERY_REMOVE; i.e., we decided we
         //  could place a lock on the volume.
         if (NT_SUCCESS( RC )) {
-            FatSetupAllocationSupport( PtrIrpContext, Vcb );
+            FatSetupAllocationSupport( IrpContext, Vcb );
         }
 
     } finally {
@@ -702,7 +702,7 @@ Return Value:
 //    if (!AbnormalTermination()) {
         Irp->IoStatus.Status = RC;
         // Free up the Irp Context
-        UDFReleaseIrpContext(PtrIrpContext);
+        UDFReleaseIrpContext(IrpContext);
         // complete the IRP
         IoCompleteRequest(Irp, IO_DISK_INCREMENT);
 //    }

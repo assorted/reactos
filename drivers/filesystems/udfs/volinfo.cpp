@@ -24,7 +24,7 @@ Abstract:
 //  Local support routines
 NTSTATUS
 UDFQueryFsVolumeInfo (
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_VOLUME_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -32,7 +32,7 @@ UDFQueryFsVolumeInfo (
 
 NTSTATUS
 UDFQueryFsSizeInfo (
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_SIZE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -40,7 +40,7 @@ UDFQueryFsSizeInfo (
 
 NTSTATUS
 UDFQueryFsFullSizeInfo (
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_FULL_SIZE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -48,7 +48,7 @@ UDFQueryFsFullSizeInfo (
 
 NTSTATUS
 UDFQueryFsDeviceInfo (
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_DEVICE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -56,7 +56,7 @@ UDFQueryFsDeviceInfo (
 
 NTSTATUS
 UDFQueryFsAttributeInfo (
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_ATTRIBUTE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -64,7 +64,7 @@ UDFQueryFsAttributeInfo (
 
 NTSTATUS
 UDFSetLabelInfo (
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_LABEL_INFORMATION Buffer,
     IN OUT PULONG Length);
@@ -89,7 +89,7 @@ UDFQueryVolInfo(
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     UDFPrint(("UDFQueryVolInfo: \n"));
@@ -105,9 +105,9 @@ UDFQueryVolInfo(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonQueryVolInfo(PtrIrpContext, Irp);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonQueryVolInfo(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -116,9 +116,9 @@ UDFQueryVolInfo(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -147,7 +147,7 @@ Return Value:
  */
 NTSTATUS
 UDFCommonQueryVolInfo(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp
     )
 {
@@ -166,7 +166,7 @@ UDFCommonQueryVolInfo(
 
         UDFPrint(("UDFCommonQueryVolInfo: \n"));
 
-        ASSERT(PtrIrpContext);
+        ASSERT(IrpContext);
         ASSERT(Irp);
 
         PAGED_CODE();
@@ -184,7 +184,7 @@ UDFCommonQueryVolInfo(
         //  Reference our input parameters to make things easier
         Length = IrpSp->Parameters.QueryVolume.Length;
         //  Acquire the Vcb for this volume.
-        CanWait = ((PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
+        CanWait = ((IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE);
 
         RtlZeroMemory(Irp->AssociatedIrp.SystemBuffer, Length);
 
@@ -202,27 +202,27 @@ UDFCommonQueryVolInfo(
             }
             AcquiredVCB = TRUE;
 
-            RC = UDFQueryFsVolumeInfo( PtrIrpContext, Vcb, (PFILE_FS_VOLUME_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            RC = UDFQueryFsVolumeInfo( IrpContext, Vcb, (PFILE_FS_VOLUME_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
             break;
 
         case FileFsSizeInformation:
 
-            RC = UDFQueryFsSizeInfo( PtrIrpContext, Vcb, (PFILE_FS_SIZE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            RC = UDFQueryFsSizeInfo( IrpContext, Vcb, (PFILE_FS_SIZE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
             break;
 
         case FileFsDeviceInformation:
 
-            RC = UDFQueryFsDeviceInfo( PtrIrpContext, Vcb, (PFILE_FS_DEVICE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            RC = UDFQueryFsDeviceInfo( IrpContext, Vcb, (PFILE_FS_DEVICE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
             break;
 
         case FileFsAttributeInformation:
 
-            RC = UDFQueryFsAttributeInfo( PtrIrpContext, Vcb, (PFILE_FS_ATTRIBUTE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            RC = UDFQueryFsAttributeInfo( IrpContext, Vcb, (PFILE_FS_ATTRIBUTE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
             break;
 
         case FileFsFullSizeInformation:
 
-            RC = UDFQueryFsFullSizeInfo( PtrIrpContext, Vcb, (PFILE_FS_FULL_SIZE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            RC = UDFQueryFsFullSizeInfo( IrpContext, Vcb, (PFILE_FS_FULL_SIZE_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
             break;
 
         default:
@@ -253,14 +253,14 @@ try_exit:   NOTHING;
 
             // Perform the post operation which will mark the IRP pending
             // and will return STATUS_PENDING back to us
-            RC = UDFPostRequest(PtrIrpContext, Irp);
+            RC = UDFPostRequest(IrpContext, Irp);
 
         } else
         if(!_SEH2_AbnormalTermination()) {
 
             Irp->IoStatus.Status = RC;
             // Free up the Irp Context
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFReleaseIrpContext(IrpContext);
             // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         } // can we complete the IRP ?
@@ -286,7 +286,7 @@ Arguments:
  */
 NTSTATUS
 UDFQueryFsVolumeInfo(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_VOLUME_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -338,7 +338,7 @@ Arguments:
  */
 NTSTATUS
 UDFQueryFsSizeInfo(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_SIZE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -390,7 +390,7 @@ Arguments:
  */
 NTSTATUS
 UDFQueryFsFullSizeInfo(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_FULL_SIZE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -443,7 +443,7 @@ Arguments:
  */
 NTSTATUS
 UDFQueryFsDeviceInfo(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_DEVICE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -482,7 +482,7 @@ Arguments:
  */
 NTSTATUS
 UDFQueryFsAttributeInfo(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_ATTRIBUTE_INFORMATION Buffer,
     IN OUT PULONG Length
@@ -548,7 +548,7 @@ UDFSetVolInfo(
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     UDFPrint(("UDFSetVolInfo: \n"));
@@ -564,14 +564,14 @@ UDFSetVolInfo(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        ASSERT(PtrIrpContext);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
+        ASSERT(IrpContext);
 
-        RC = UDFCommonSetVolInfo(PtrIrpContext, Irp);
+        RC = UDFCommonSetVolInfo(IrpContext, Irp);
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -592,7 +592,7 @@ UDFSetVolInfo(
  */
 NTSTATUS
 UDFCommonSetVolInfo(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP                            Irp
     )
 {
@@ -610,7 +610,7 @@ UDFCommonSetVolInfo(
     _SEH2_TRY {
 
         UDFPrint(("UDFCommonSetVolInfo: \n"));
-        ASSERT(PtrIrpContext);
+        ASSERT(IrpContext);
         ASSERT(Irp);
 
         PAGED_CODE();
@@ -639,7 +639,7 @@ UDFCommonSetVolInfo(
 
         Length = IrpSp->Parameters.SetVolume.Length;
         //  Acquire the Vcb for this volume.
-        CanWait = ((PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
+        CanWait = ((IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE);
         if (!UDFAcquireResourceShared(&(Vcb->VCBResource), CanWait)) {
             PostRequest = TRUE;
             try_return (RC = STATUS_PENDING);
@@ -650,7 +650,7 @@ UDFCommonSetVolInfo(
 
         case FileFsLabelInformation:
 
-            RC = UDFSetLabelInfo( PtrIrpContext, Vcb, (PFILE_FS_LABEL_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
+            RC = UDFSetLabelInfo( IrpContext, Vcb, (PFILE_FS_LABEL_INFORMATION)(Irp->AssociatedIrp.SystemBuffer), &Length );
             Irp->IoStatus.Information = 0;
             break;
 
@@ -682,7 +682,7 @@ try_exit:   NOTHING;
 
             // Perform the post operation which will mark the IRP pending
             // and will return STATUS_PENDING back to us
-            RC = UDFPostRequest(PtrIrpContext, Irp);
+            RC = UDFPostRequest(IrpContext, Irp);
 
         } else {
 
@@ -691,7 +691,7 @@ try_exit:   NOTHING;
                 Irp->IoStatus.Status = RC;
 
                 // Free up the Irp Context
-                UDFReleaseIrpContext(PtrIrpContext);
+                UDFReleaseIrpContext(IrpContext);
                 // complete the IRP
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             }
@@ -707,7 +707,7 @@ try_exit:   NOTHING;
  */
 NTSTATUS
 UDFSetLabelInfo (
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PFILE_FS_LABEL_INFORMATION Buffer,
     IN OUT PULONG Length

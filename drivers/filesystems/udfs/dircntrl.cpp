@@ -76,7 +76,7 @@ UDFDirControl(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        IrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
         if(IrpContext) {
             RC = UDFCommonDirControl(IrpContext, Irp);
         } else {
@@ -125,7 +125,7 @@ UDFDirControl(
 NTSTATUS
 NTAPI
 UDFCommonDirControl(
-   PIRP_CONTEXT PtrIrpContext,
+   PIRP_CONTEXT IrpContext,
    PIRP              Irp
    )
 {
@@ -154,7 +154,7 @@ UDFCommonDirControl(
         Fcb = Ccb->Fcb;
         ASSERT(Fcb);
 
-        Vcb = (PVCB)(PtrIrpContext->TargetDeviceObject->DeviceExtension);
+        Vcb = (PVCB)(IrpContext->TargetDeviceObject->DeviceExtension);
         ASSERT(Vcb);
         ASSERT(Vcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB);
 //        Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
@@ -165,10 +165,10 @@ UDFCommonDirControl(
         // Get some of the parameters supplied to us
         switch (IrpSp->MinorFunction) {
         case IRP_MN_QUERY_DIRECTORY:
-            RC = UDFQueryDirectory(PtrIrpContext, Irp, IrpSp, FileObject, Fcb, Ccb);
+            RC = UDFQueryDirectory(IrpContext, Irp, IrpSp, FileObject, Fcb, Ccb);
             break;
         case IRP_MN_NOTIFY_CHANGE_DIRECTORY:
-            RC = UDFNotifyChangeDirectory(PtrIrpContext, Irp, IrpSp, FileObject, Fcb, Ccb);
+            RC = UDFNotifyChangeDirectory(IrpContext, Irp, IrpSp, FileObject, Fcb, Ccb);
             break;
         default:
             // This should not happen.
@@ -177,7 +177,7 @@ UDFCommonDirControl(
             Irp->IoStatus.Information = 0;
 
             // Free up the Irp Context
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFReleaseIrpContext(IrpContext);
 
             // complete the IRP
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
@@ -214,7 +214,7 @@ UDFCommonDirControl(
 NTSTATUS
 NTAPI
 UDFQueryDirectory(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP                        Irp,
     PIO_STACK_LOCATION          IrpSp,
     PFILE_OBJECT                FileObject,
@@ -256,7 +256,7 @@ UDFQueryDirectory(
     // do some pre-init...
     SearchPattern.Buffer = NULL;
 
-    UDFPrint(("UDFQueryDirectory: @=%#x\n", &PtrIrpContext));
+    UDFPrint(("UDFQueryDirectory: @=%#x\n", &IrpContext));
 
 #define CanBe8dot3    (FNM_Flags & UDF_FNM_FLAG_CAN_BE_8D3)
 #define IgnoreCase    (FNM_Flags & UDF_FNM_FLAG_IGNORE_CASE)
@@ -272,7 +272,7 @@ UDFQueryDirectory(
         }
 
         // Obtain the callers parameters
-        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE;
         Vcb = Fcb->Vcb;
         //Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
         FNM_Flags |= (Ccb->CCBFlags & UDF_CCB_CASE_SENSETIVE) ? 0 : UDF_FNM_FLAG_IGNORE_CASE;
@@ -592,10 +592,10 @@ try_exit:   NOTHING;
                 UDFReleaseResource(&Fcb->MainResource);
             }
             // Map the users buffer and then post the request.
-            RC = UDFLockUserBuffer(PtrIrpContext, Irp, IoWriteAccess, BufferLength);
+            RC = UDFLockUserBuffer(IrpContext, Irp, IoWriteAccess, BufferLength);
             ASSERT(NT_SUCCESS(RC));
 
-            RC = UDFPostRequest(PtrIrpContext, Irp);
+            RC = UDFPostRequest(IrpContext, Irp);
 
         } else {
 #ifdef UDF_DBG
@@ -616,7 +616,7 @@ try_exit:   NOTHING;
                 Irp->IoStatus.Information = Information;
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
                 // Free up the Irp Context
-                UDFReleaseIrpContext(PtrIrpContext);
+                UDFReleaseIrpContext(IrpContext);
             }
         }
 
@@ -692,7 +692,7 @@ UDFFindNextMatch(
 NTSTATUS
 NTAPI
 UDFNotifyChangeDirectory(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP                        Irp,
     PIO_STACK_LOCATION          IrpSp,
     PFILE_OBJECT                FileObject,
@@ -722,7 +722,7 @@ UDFNotifyChangeDirectory(
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
 
-        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE;
         Vcb = Fcb->Vcb;
 
         // Acquire the FCB resource shared
@@ -772,14 +772,14 @@ UDFNotifyChangeDirectory(
                 UDFReleaseResource(&Fcb->MainResource);
                 AcquiredFCB = FALSE;
             }
-            RC = UDFPostRequest(PtrIrpContext, Irp);
+            RC = UDFPostRequest(IrpContext, Irp);
         } else if (CompleteRequest) {
 
             if (!_SEH2_AbnormalTermination()) {
                 Irp->IoStatus.Status = RC;
                 Irp->IoStatus.Information = 0;
                 // Free up the Irp Context
-                UDFReleaseIrpContext(PtrIrpContext);
+                UDFReleaseIrpContext(IrpContext);
                 // complete the IRP
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             }
@@ -787,7 +787,7 @@ UDFNotifyChangeDirectory(
         } else {
             // Simply free up the IrpContext since the IRP has been queued
             if (!_SEH2_AbnormalTermination())
-                UDFReleaseIrpContext(PtrIrpContext);
+                UDFReleaseIrpContext(IrpContext);
         }
 
         // Release the FCB resources if acquired.

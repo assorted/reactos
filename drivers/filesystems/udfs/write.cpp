@@ -43,7 +43,7 @@ UDFWrite(
     )
 {
     NTSTATUS                RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN                 AreWeTopLevel = FALSE;
 
     TmPrint(("UDFWrite: , thrd:%8.8x\n",PsGetCurrentThread()));
@@ -59,10 +59,10 @@ UDFWrite(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
 
-            RC = UDFCommonWrite(PtrIrpContext, Irp);
+            RC = UDFCommonWrite(IrpContext, Irp);
 
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
@@ -72,9 +72,9 @@ UDFWrite(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT (UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT (UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -108,7 +108,7 @@ UDFWrite(
 *************************************************************************/
 NTSTATUS
 UDFCommonWrite(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp)
 {
     NTSTATUS                RC = STATUS_SUCCESS;
@@ -197,7 +197,7 @@ UDFCommonWrite(
         if (IrpSp->MinorFunction & IRP_MN_COMPLETE) {
             // Caller wants to tell the Cache Manager that a previously
             // allocated MDL can be freed.
-            UDFMdlComplete(PtrIrpContext, Irp, IrpSp, FALSE);
+            UDFMdlComplete(IrpContext, Irp, IrpSp, FALSE);
             // The IRP has been completed.
             try_return(RC = STATUS_SUCCESS);
         }
@@ -231,7 +231,7 @@ UDFCommonWrite(
 
         ByteOffset = IrpSp->Parameters.Write.ByteOffset;
 
-        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE;
         PagingIo = (Irp->Flags & IRP_PAGING_IO) ? TRUE : FALSE;
         NonCachedIo = (Irp->Flags & IRP_NOCACHE) ? TRUE : FALSE;
         SynchronousIo = (FileObject->Flags & FO_SYNCHRONOUS_IO) ? TRUE : FALSE;
@@ -272,10 +272,10 @@ UDFCommonWrite(
                 try_return(RC = STATUS_ACCESS_DENIED);
             }
 
-            if(PtrIrpContext->Flags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
+            if(IrpContext->Flags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
 
                 UDFPrint(("  UDF_IRP_CONTEXT_FLUSH2_REQUIRED\n"));
-                PtrIrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
+                IrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
                 if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK)) {
                     UDFCloseAllSystemDelayedInDir(Vcb, Vcb->RootDirFCB->FileInfo);
@@ -304,7 +304,7 @@ UDFCommonWrite(
 #endif
             // Forward the request to the lower level driver
             // Lock the callers buffer
-            if (!NT_SUCCESS(RC = UDFLockUserBuffer(PtrIrpContext, Irp, IoReadAccess, WriteLength))) {
+            if (!NT_SUCCESS(RC = UDFLockUserBuffer(IrpContext, Irp, IoReadAccess, WriteLength))) {
                 try_return(RC);
             }
             SystemBuffer = UDFMapUserBuffer(Irp);
@@ -321,7 +321,7 @@ UDFCommonWrite(
             RC = UDFTWrite(Vcb, SystemBuffer, WriteLength,
                            (ULONG)(ByteOffset.QuadPart >> Vcb->BlockSizeBits),
                            &NumberBytesWritten);
-            UDFUnlockCallersBuffer(PtrIrpContext, Irp, SystemBuffer);
+            UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
             try_return(RC);
         }
 
@@ -350,19 +350,18 @@ UDFCommonWrite(
         // operations. To determine whether we are retrying the operation
         // or now, use Flags in the IrpContext structure we have created
 
-        IsThisADeferredWrite = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_DEFERRED_WRITE) ? TRUE : FALSE;
+        IsThisADeferredWrite = BooleanFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_DEFERRED_WRITE);
 
-        if (!NonCachedIo) {
-            MmPrint(("    CcCanIWrite()\n"));
-            if (!CcCanIWrite(FileObject, WriteLength, CanWait, IsThisADeferredWrite)) {
-                // Cache Manager and/or the VMM does not want us to perform
-                // the write at this time. Post the request.
-                PtrIrpContext->Flags |= UDF_IRP_CONTEXT_DEFERRED_WRITE;
-                UDFPrint(("UDFCommonWrite: Defer write\n"));
-                MmPrint(("    CcDeferWrite()\n"));
-                CcDeferWrite(FileObject, UDFDeferredWriteCallBack, PtrIrpContext, Irp, WriteLength, IsThisADeferredWrite);
-                try_return(RC = STATUS_PENDING);
-            }
+        if (!NonCachedIo &&
+            !CcCanIWrite(FileObject, WriteLength, CanWait, IsThisADeferredWrite)) {
+
+            // Cache Manager and/or the VMM does not want us to perform
+            // the write at this time. Post the request.
+
+            SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_DEFERRED_WRITE);
+
+            CcDeferWrite(FileObject, UDFDeferredWriteCallBack, IrpContext, Irp, WriteLength, IsThisADeferredWrite);
+            try_return(RC = STATUS_PENDING);
         }
 
         // If the write request is directed to a page file,
@@ -524,7 +523,7 @@ UDFCommonWrite(
         }*/
 
         if ((Irp->Flags & IRP_SYNCHRONOUS_PAGING_IO) &&
-             (PtrIrpContext->Flags & UDF_IRP_CONTEXT_NOT_TOP_LEVEL)) {
+             (IrpContext->Flags & UDF_IRP_CONTEXT_NOT_TOP_LEVEL)) {
 
             //  This clause determines if the top level request was
             //  in the FastIo path.
@@ -540,7 +539,7 @@ UDFCommonWrite(
                     (IrpStack->FileObject->FsContext == FileObject->FsContext)) {
 
                     RecursiveWriteThrough = TRUE;
-                    PtrIrpContext->Flags |= UDF_IRP_CONTEXT_WRITE_THROUGH;
+                    IrpContext->Flags |= IRP_CONTEXT_FLAG_WRITE_THROUGH;
                 }
             }
         }
@@ -689,7 +688,7 @@ UDFCommonWrite(
                 }
             }
 
-            WriteFileSizeToDirNdx = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_WRITE_THROUGH) ?
+            WriteFileSizeToDirNdx = (IrpContext->Flags & IRP_CONTEXT_FLAG_WRITE_THROUGH) ?
                                     TRUE : FALSE;
             // Check and see if this request requires a MDL returned to the caller
             if (IrpSp->MinorFunction & IRP_MN_MDL) {
@@ -725,7 +724,7 @@ UDFCommonWrite(
                 try_return(RC = STATUS_PENDING);
             }
 
-            UDFUnlockCallersBuffer(PtrIrpContext, Irp, SystemBuffer);
+            UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
             // We have the data
             RC = STATUS_SUCCESS;
             NumberBytesWritten = TruncatedLength;
@@ -791,7 +790,7 @@ UDFCommonWrite(
             PerfPrint(("UDFCommonWrite: Physical write %x bytes at %x\n", TruncatedLength, ByteOffset.LowPart));
 
             // Lock the callers buffer
-            if (!NT_SUCCESS(RC = UDFLockUserBuffer(PtrIrpContext, Irp, IoReadAccess, TruncatedLength))) {
+            if (!NT_SUCCESS(RC = UDFLockUserBuffer(IrpContext, Irp, IoReadAccess, TruncatedLength))) {
                 try_return(RC);
             }
 
@@ -803,7 +802,7 @@ UDFCommonWrite(
             RC = UDFWriteFile__(Vcb, Fcb->FileInfo, ByteOffset.QuadPart, TruncatedLength,
                            CacheLocked, (PCHAR)SystemBuffer, &NumberBytesWritten);
 
-            UDFUnlockCallersBuffer(PtrIrpContext, Irp, SystemBuffer);
+            UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
 
 #if defined(_MSC_VER) && !defined(__clang__)
 /* FIXME */
@@ -845,13 +844,13 @@ try_exit:   NOTHING;
             // Lock the callers buffer here. Then invoke a common routine to
             // perform the post operation.
             if (!(IrpSp->MinorFunction & IRP_MN_MDL)) {
-                RC = UDFLockUserBuffer(PtrIrpContext, Irp, IoReadAccess, WriteLength);
+                RC = UDFLockUserBuffer(IrpContext, Irp, IoReadAccess, WriteLength);
                 ASSERT(NT_SUCCESS(RC));
             }
 
             // Perform the post operation which will mark the IRP pending
             // and will return STATUS_PENDING back to us
-            RC = UDFPostRequest(PtrIrpContext, Irp);
+            RC = UDFPostRequest(IrpContext, Irp);
 
         } else {
             // For synchronous I/O, the FSD must maintain the current byte offset
@@ -934,7 +933,7 @@ try_exit:   NOTHING;
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             }
             // Free up the Irp Context
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFReleaseIrpContext(IrpContext);
 
         } // can we complete the IRP ?
     } _SEH2_END; // end of "__finally" processing
@@ -963,7 +962,7 @@ try_exit:   NOTHING;
 VOID
 NTAPI
 UDFDeferredWriteCallBack(
-    IN PVOID Context1,          // Should be PtrIrpContext
+    IN PVOID Context1,          // Should be IrpContext
     IN PVOID Context2           // Should be Irp
     )
 {

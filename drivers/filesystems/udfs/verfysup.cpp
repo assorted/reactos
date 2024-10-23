@@ -542,9 +542,7 @@ UDFPerformVerify(
 
             //  If the verify operation completed it will return
             //  either STATUS_SUCCESS or STATUS_WRONG_VOLUME, exactly.
-            if (RC == STATUS_SUCCESS) {
-                IrpContext->Flags &= ~UDF_IRP_CONTEXT_EXCEPTION;
-            }
+
             //  If UDFVerifyVolume encountered an error during
             //  processing, it will return that error.  If we got
             //  STATUS_WRONG_VOLUME from the verify, and our volume

@@ -40,7 +40,7 @@ UDFLockControl(
     IN PIRP           Irp)                // I/O Request Packet
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     UDFPrint(("UDFLockControl\n"));
@@ -57,9 +57,9 @@ UDFLockControl(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonLockControl(PtrIrpContext, Irp);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonLockControl(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -68,9 +68,9 @@ UDFLockControl(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -103,7 +103,7 @@ UDFLockControl(
 NTSTATUS
 NTAPI
 UDFCommonLockControl(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP             Irp)
 {
     NTSTATUS            RC = STATUS_SUCCESS;
@@ -140,7 +140,7 @@ UDFCommonLockControl(
             try_return(RC = STATUS_INVALID_PARAMETER);
         }
 
-        CanWait = ((PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
+        CanWait = ((IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE);
 
         // Acquire the FCB resource shared
         UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
@@ -165,12 +165,12 @@ try_exit: NOTHING;
         }
         if (PostRequest) {
             // Perform appropriate post related processing here
-            RC = UDFPostRequest(PtrIrpContext, Irp);
+            RC = UDFPostRequest(IrpContext, Irp);
         } else
         if(!_SEH2_AbnormalTermination()) {
             // Simply free up the IrpContext since the IRP has been queued or
             // Completed by FsRtlProcessFileLock
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFReleaseIrpContext(IrpContext);
         }
     } _SEH2_END; // end of "__finally" processing
 

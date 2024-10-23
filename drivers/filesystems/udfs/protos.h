@@ -27,7 +27,7 @@ extern NTSTATUS NTAPI UDFCreate(
     IN PIRP                    Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonCreate(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP                    Irp);
 
 extern NTSTATUS UDFFirstOpenFile(
@@ -59,7 +59,7 @@ PDEVICE_OBJECT              DeviceObject,       // the logical volume device obj
 PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonCleanup(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                        Irp);
 
 extern NTSTATUS UDFCloseFileInfoChain(IN PVCB Vcb,
@@ -74,7 +74,7 @@ PDEVICE_OBJECT              DeviceObject,       // the logical volume device obj
 PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonClose(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                        Irp,
 BOOLEAN                     CanWait);
 
@@ -118,11 +118,11 @@ PDEVICE_OBJECT          DeviceObject,       // the logical volume device object
 PIRP                    Irp);               // I/O Request Packet
 
 extern NTSTATUS NTAPI UDFCommonDirControl(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                    Irp);
 
 extern NTSTATUS NTAPI UDFQueryDirectory(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                    Irp,
 PIO_STACK_LOCATION      IrpSp,
 PFILE_OBJECT            FileObject,
@@ -130,7 +130,7 @@ PFCB                    Fcb,
 PCCB                    Ccb);
 
 extern NTSTATUS NTAPI UDFNotifyChangeDirectory(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                    Irp,
 PIO_STACK_LOCATION      IrpSp,
 PFILE_OBJECT            FileObject,
@@ -145,7 +145,7 @@ PDEVICE_OBJECT              DeviceObject,       // the logical volume device obj
 PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS NTAPI UDFCommonDeviceControl(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                        Irp);
 
 extern NTSTATUS NTAPI UDFDevIoctlCompletion(
@@ -302,11 +302,11 @@ PDEVICE_OBJECT  DeviceObject,       // the logical volume device object
 PIRP            Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonQueryInfo(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP                    Irp);
 
 extern NTSTATUS UDFCommonSetInfo(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                    Irp);
 
 extern NTSTATUS UDFGetBasicInformation(
@@ -326,14 +326,14 @@ extern NTSTATUS UDFGetStandardInformation(
  IN OUT PLONG                      PtrReturnedLength);
 
 extern NTSTATUS UDFGetInternalInformation(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     IN PFCB                        Fcb,
     IN PCCB                        Ccb,
     IN PFILE_INTERNAL_INFORMATION  PtrBuffer,
  IN OUT PLONG                      PtrReturnedLength);
 
 extern NTSTATUS UDFGetEaInformation(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     IN PFCB                 Fcb,
     IN PFILE_EA_INFORMATION PtrBuffer,
  IN OUT PLONG               PtrReturnedLength);
@@ -381,7 +381,7 @@ extern NTSTATUS UDFSetAllocationInformation(
     IN PCCB                            Ccb,
     IN PVCB                            Vcb,
     IN PFILE_OBJECT                    FileObject,
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP                            Irp,
     IN PFILE_ALLOCATION_INFORMATION    PtrBuffer);
 
@@ -431,12 +431,12 @@ extern NTSTATUS UDFHardLink(
 /*************************************************************************
 * Prototypes for the file flush.cpp
 *************************************************************************/
-extern NTSTATUS NTAPI UDFFlush(
+extern NTSTATUS NTAPI UDFFlushBuffers(
 PDEVICE_OBJECT    DeviceObject,       // the logical volume device object
 PIRP              Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonFlush(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                        Irp);
 
 extern ULONG UDFFlushAFile(
@@ -452,7 +452,7 @@ OUT PIO_STATUS_BLOCK   PtrIoStatus,
 ULONG                  FlushFlags = 0);
 
 extern ULONG UDFFlushLogicalVolume(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                   Irp,
 PVCB                   Vcb,
 ULONG                  FlushFlags = 0);
@@ -478,15 +478,15 @@ PDEVICE_OBJECT      DeviceObject,
 PIRP                Irp);
 
 extern NTSTATUS NTAPI UDFCommonFSControl(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                Irp);                // I/O Request Packet
 
 extern NTSTATUS NTAPI UDFUserFsCtrlRequest(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                Irp);
 
 extern NTSTATUS NTAPI UDFMountVolume(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP Irp);
 
 extern VOID UDFScanForDismountedVcb (IN PIRP_CONTEXT IrpContext);
@@ -538,7 +538,7 @@ extern NTSTATUS NTAPI UDFLockControl(
     IN PIRP           Irp);               // I/O Request Packet
 
 extern NTSTATUS NTAPI UDFCommonLockControl(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP             Irp);
 
 extern BOOLEAN NTAPI UDFFastLock(
@@ -587,11 +587,11 @@ extern BOOLEAN __fastcall UDFIsIrpTopLevel(
 PIRP                        Irp);                   // the IRP sent to our dispatch routine
 
 extern long UDFExceptionFilter(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PEXCEPTION_POINTERS         PtrExceptionPointers);
 
 extern NTSTATUS UDFExceptionHandler(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                        Irp);
 
 extern VOID UDFLogEvent(
@@ -629,15 +629,15 @@ UDFReleaseFCB(
 
 extern VOID __fastcall UDFCleanUpFCB(PFCB Fcb);
 
-extern PIRP_CONTEXT UDFAllocateIrpContext(
+extern PIRP_CONTEXT UDFCreateIrpContext(
 PIRP                        Irp,
 PDEVICE_OBJECT              PtrTargetDeviceObject);
 
 extern VOID UDFReleaseIrpContext(
-PIRP_CONTEXT PtrIrpContext);
+PIRP_CONTEXT IrpContext);
 
 extern NTSTATUS UDFPostRequest(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                        Irp);
 
 extern VOID NTAPI UDFCommonDispatch(
@@ -835,7 +835,7 @@ extern OSSTATUS NTAPI UDFRead(
     PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFPostStackOverflowRead(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP             Irp,
     IN PFCB             Fcb);
 
@@ -844,25 +844,25 @@ extern VOID NTAPI UDFStackOverflowRead(
     IN PKEVENT Event);
 
 extern NTSTATUS UDFCommonRead(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp);
 
 extern PVOID UDFMapUserBuffer(
     PIRP Irp);
 
 extern NTSTATUS UDFLockUserBuffer(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP    Irp,
     LOCK_OPERATION LockOperation,
     ULONG   Length);
 
 extern NTSTATUS UDFUnlockCallersBuffer(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP    Irp,
     PVOID   SystemBuffer);
 
 extern VOID UDFMdlComplete(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP                    Irp,
     PIO_STACK_LOCATION      IrpSp,
     BOOLEAN                 ReadCompletion);
@@ -893,7 +893,7 @@ PDEVICE_OBJECT              DeviceObject,       // the logical volume device obj
 PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonShutdown(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                        Irp);
 
 /*************************************************************************
@@ -1039,13 +1039,13 @@ extern NTSTATUS UDFCompareVcb(IN PVCB OldVcb,
 extern NTSTATUS NTAPI UDFQueryVolInfo(PDEVICE_OBJECT DeviceObject,
                                       PIRP Irp);
 
-extern NTSTATUS UDFCommonQueryVolInfo (PIRP_CONTEXT PtrIrpContext,
+extern NTSTATUS UDFCommonQueryVolInfo (PIRP_CONTEXT IrpContext,
                                        PIRP Irp);
 
 extern NTSTATUS NTAPI UDFSetVolInfo(PDEVICE_OBJECT DeviceObject,       // the logical volume device object
                               PIRP           Irp);               // I/O Request Packet
 
-extern NTSTATUS UDFCommonSetVolInfo(PIRP_CONTEXT PtrIrpContext,
+extern NTSTATUS UDFCommonSetVolInfo(PIRP_CONTEXT IrpContext,
                                     PIRP             Irp);
 
 /*************************************************************************
@@ -1056,11 +1056,11 @@ PDEVICE_OBJECT              DeviceObject,       // the logical volume device obj
 PIRP                        Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonWrite(
-PIRP_CONTEXT PtrIrpContext,
+PIRP_CONTEXT IrpContext,
 PIRP                        Irp);
 
 extern VOID NTAPI UDFDeferredWriteCallBack (
-VOID                        *Context1,          // Should be PtrIrpContext
+VOID                        *Context1,          // Should be IrpContext
 VOID                        *Context2);         // Should be Irp
 
 extern VOID UDFPurgeCacheEx_(
@@ -1113,5 +1113,31 @@ UDFToggleMediaEjectDisable (
     IN BOOLEAN PreventRemoval
     );
 
+//
+//  BOOLEAN
+//  UdfDeviceIsFsdo(
+//      IN PDEVICE_OBJECT D
+//      );
+//
+//  Evaluates to TRUE if the supplied device object is one of the file system devices
+//  we created at initialisation.
+//
+
+#define UdfDeviceIsFsdo(D)  (((D) == UDFGlobalData.UDFDeviceObject_CD) || ((D) == UDFGlobalData.UDFDeviceObject_HDD))
+
+//
+//  The following macro is used by the dispatch routines to determine if
+//  an operation is to be done with or without Write Through.
+//
+//      BOOLEAN
+//      IsFileWriteThrough (
+//          IN PFILE_OBJECT FileObject,
+//          IN PVCB Vcb
+//          );
+//
+
+#define IsFileWriteThrough(FO,VCB) (             \
+    BooleanFlagOn((FO)->Flags, FO_WRITE_THROUGH) \
+)
 
 #endif  // _UDF_PROTOS_H_

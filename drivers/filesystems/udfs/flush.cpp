@@ -23,7 +23,7 @@
 
 /*************************************************************************
 *
-* Function: UDFFlush()
+* Function: UDFFlushBuffers()
 *
 * Description:
 *   The I/O Manager will invoke this routine to handle a flush buffers
@@ -39,7 +39,7 @@
 *************************************************************************/
 NTSTATUS
 NTAPI
-UDFFlush(
+UDFFlushBuffers(
     PDEVICE_OBJECT      DeviceObject,       // the logical volume device object
     PIRP                Irp)                // I/O Request Packet
 {
@@ -60,7 +60,7 @@ UDFFlush(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        IrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
         if(IrpContext) {
             RC = UDFCommonFlush(IrpContext, Irp);
         } else {
@@ -85,7 +85,7 @@ UDFFlush(
     FsRtlExitFileSystem();
 
     return(RC);
-} // end UDFFlush()
+} // end UDFFlushBuffers()
 
 
 
@@ -108,7 +108,7 @@ UDFFlush(
 *************************************************************************/
 NTSTATUS
 UDFCommonFlush(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp
     )
 {
@@ -128,7 +128,7 @@ UDFCommonFlush(
     _SEH2_TRY {
 
         // Get some of the parameters supplied to us
-        CanWait = ((PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE);
+        CanWait = ((IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE);
         // If we cannot wait, post the request immediately since a flush is inherently blocking/synchronous.
         if (!CanWait) {
             PostRequest = TRUE;
@@ -172,7 +172,7 @@ UDFCommonFlush(
             // Manager. Basically, the sequence of operations listed below
             // for a single file should be executed on all open files.
 
-            UDFFlushLogicalVolume(PtrIrpContext, Irp, Vcb, 0);
+            UDFFlushLogicalVolume(IrpContext, Irp, Vcb, 0);
 
             UDFReleaseResource(&(Vcb->VCBResource));
             AcquiredVCB = FALSE;
@@ -225,7 +225,7 @@ try_exit:   NOTHING;
             if (PostRequest) {
                 // Nothing to lock now.
                 BrutePoint();
-                RC = UDFPostRequest(PtrIrpContext, Irp);
+                RC = UDFPostRequest(IrpContext, Irp);
             } else {
                 // Some applications like this request very much
                 // (ex. WinWord). But it's not a good idea for CD-R/RW media
@@ -251,12 +251,12 @@ try_exit:   NOTHING;
                     RC = ((RC1 == STATUS_INVALID_DEVICE_REQUEST) ? RC : RC1);
 
                     // Release the IRP context at this time.
-                    UDFReleaseIrpContext(PtrIrpContext);
+                    UDFReleaseIrpContext(IrpContext);
                 } else {
                     Irp->IoStatus.Status = RC;
                     Irp->IoStatus.Information = 0;
                     // Free up the Irp Context
-                    UDFReleaseIrpContext(PtrIrpContext);
+                    UDFReleaseIrpContext(IrpContext);
                     // complete the IRP
                     IoCompleteRequest(Irp, IO_DISK_INCREMENT);
                 }
@@ -486,7 +486,7 @@ SkipFlushDir:
 *************************************************************************/
 ULONG
 UDFFlushLogicalVolume(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP             Irp,
     IN PVCB             Vcb,
     IN ULONG            FlushFlags

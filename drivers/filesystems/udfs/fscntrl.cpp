@@ -42,7 +42,7 @@ UDFFSControl(
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     UDFPrint(("\nUDFFSControl: \n\n"));
@@ -57,9 +57,9 @@ UDFFSControl(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonFSControl(PtrIrpContext, Irp);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonFSControl(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -68,10 +68,10 @@ UDFFSControl(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
         UDFPrintErr(("UDFFSControl: exception ***"));
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -101,7 +101,7 @@ UDFFSControl(
 NTSTATUS
 NTAPI
 UDFCommonFSControl(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP                Irp                // I/O Request Packet
     )
 {
@@ -122,13 +122,13 @@ UDFCommonFSControl(
         case IRP_MN_USER_FS_REQUEST:
             UDFPrint(("  UDFFSControl: UserFsReq request ....\n"));
 
-            RC = UDFUserFsCtrlRequest(PtrIrpContext,Irp);
+            RC = UDFUserFsCtrlRequest(IrpContext,Irp);
             break;
         case IRP_MN_MOUNT_VOLUME:
 
             UDFPrint(("  UDFFSControl: MOUNT_VOLUME request ....\n"));
 
-            RC = UDFMountVolume(PtrIrpContext,Irp);
+            RC = UDFMountVolume(IrpContext,Irp);
             break;
         case IRP_MN_VERIFY_VOLUME:
 
@@ -152,7 +152,7 @@ UDFCommonFSControl(
         if (!_SEH2_AbnormalTermination()) {
             // Free up the Irp Context
             UDFPrint(("  UDFCommonFSControl: finally\n"));
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFReleaseIrpContext(IrpContext);
         } else {
             UDFPrint(("  UDFCommonFSControl: finally after exception ***\n"));
         }
@@ -313,7 +313,7 @@ Return Value:
 NTSTATUS
 NTAPI
 UDFMountVolume(
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp
     )
 {
@@ -340,7 +340,7 @@ UDFMountVolume(
     ASSERT(IrpSp);
     UDFPrint(("\n !!! UDFMountVolume\n"));
 
-    fsDeviceObject = PtrIrpContext->TargetDeviceObject;
+    fsDeviceObject = IrpContext->TargetDeviceObject;
     UDFPrint(("Mount on device object %x\n", fsDeviceObject));
 
     PFILTER_DEV_EXTENSION filterDevExt = (PFILTER_DEV_EXTENSION)fsDeviceObject->DeviceExtension;
@@ -382,7 +382,7 @@ UDFMountVolume(
 
     _SEH2_TRY {
 
-        UDFScanForDismountedVcb(PtrIrpContext);
+        UDFScanForDismountedVcb(IrpContext);
 
         if(WrongMedia) try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
 
@@ -1348,7 +1348,7 @@ UDFIsVolumeMounted(
        !(Fcb->Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) ) {
 
         // Disable PopUps, we want to return any error.
-        IrpContext->Flags |= UDF_IRP_CONTEXT_FLAG_DISABLE_POPUPS;
+        IrpContext->Flags |= IRP_CONTEXT_FLAG_DISABLE_POPUPS;
 
         // Verify the Vcb.  This will raise in the error condition.
         UDFVerifyVcb( IrpContext, Fcb->Vcb );

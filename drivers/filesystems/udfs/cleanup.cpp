@@ -82,7 +82,7 @@ UDFCleanup(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        IrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
         if(IrpContext) {
             RC = UDFCommonCleanup(IrpContext, Irp);
         } else {
@@ -128,7 +128,7 @@ UDFCleanup(
 *************************************************************************/
 NTSTATUS
 UDFCommonCleanup(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp)
 {
     IO_STATUS_BLOCK         IoStatus;
@@ -183,12 +183,12 @@ UDFCommonCleanup(
         Fcb = Ccb->Fcb;
         ASSERT(Fcb);
 
-        Vcb = (PVCB)(PtrIrpContext->TargetDeviceObject->DeviceExtension);
+        Vcb = (PVCB)(IrpContext->TargetDeviceObject->DeviceExtension);
         ASSERT(Vcb);
         ASSERT(Vcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB);
 //        Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
 #ifdef UDF_DBG
-        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE;
         AdPrint(("   %s\n", CanWait ? "Wt" : "nw"));
         ASSERT(CanWait);
 #endif // UDF_DBG
@@ -680,7 +680,7 @@ try_exit: NOTHING;
             Irp->IoStatus.Information = 0;
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             // Free up the Irp Context
-            UDFReleaseIrpContext(PtrIrpContext);
+            UDFReleaseIrpContext(IrpContext);
         }
 
     } _SEH2_END; // end of "__finally" processing

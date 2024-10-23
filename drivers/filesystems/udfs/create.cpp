@@ -53,7 +53,7 @@ UDFCreate(
     PIRP                    Irp)                // I/O Request Packet
 {
     NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN             AreWeTopLevel = FALSE;
 
     TmPrint(("UDFCreate:\n"));
@@ -88,7 +88,7 @@ UDFCreate(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        IrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
         if(IrpContext) {
             RC = UDFCommonCreate(IrpContext, Irp);
         } else {
@@ -187,7 +187,7 @@ UDFAcquireParent(
 *************************************************************************/
 NTSTATUS
 UDFCommonCreate(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP                            Irp
     )
 {
@@ -267,7 +267,7 @@ UDFCommonCreate(
 
     TmPrint(("UDFCommonCreate:\n"));
 
-    ASSERT(PtrIrpContext);
+    ASSERT(IrpContext);
     ASSERT(Irp);
 
     _SEH2_TRY {
@@ -276,7 +276,7 @@ UDFCommonCreate(
         LocalPath.Buffer = NULL;
         //  If we were called with our file system device object instead of a
         //  volume device object, just complete this request with STATUS_SUCCESS.
-        if (!(PtrIrpContext->TargetDeviceObject->DeviceExtension)) {
+        if (!(IrpContext->TargetDeviceObject->DeviceExtension)) {
 
             ReturnedInformation = FILE_OPENED;
             try_return(RC = STATUS_SUCCESS);
@@ -290,11 +290,11 @@ UDFCommonCreate(
 
         // If the caller cannot block, post the request to be handled
         //  asynchronously
-        if (!(PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK)) {
+        if (!(IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT)) {
             // We must defer processing of this request since we could
             //  block anytime while performing the create/open ...
             ASSERT(FALSE);
-            RC = UDFPostRequest(PtrIrpContext, Irp);
+            RC = UDFPostRequest(IrpContext, Irp);
             try_return(RC);
         }
 
@@ -465,7 +465,7 @@ UDFCommonCreate(
         IgnoreCase = (IrpSp->Flags & SL_CASE_SENSITIVE) ? FALSE : TRUE;
 
         // Ensure that the operation has been directed to a valid VCB ...
-        Vcb = (PVCB)(PtrIrpContext->TargetDeviceObject->DeviceExtension);
+        Vcb = (PVCB)(IrpContext->TargetDeviceObject->DeviceExtension);
         ASSERT(Vcb);
         ASSERT(Vcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_VCB);
 //        Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
@@ -503,7 +503,7 @@ UDFCommonCreate(
 
         // Disk based file systems might decide to verify the logical volume
         //  (if required and only if removable media are supported) at this time
-        RC = UDFVerifyVcb(PtrIrpContext,Vcb);
+        RC = UDFVerifyVcb(IrpContext,Vcb);
         if(!NT_SUCCESS(RC))
             try_return(RC);
 
@@ -611,7 +611,7 @@ UDFCommonCreate(
                     // we should complete all pending requests (Close)
 
                     UDFPrint(("  set UDF_IRP_CONTEXT_FLUSH2_REQUIRED\n"));
-                    PtrIrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
+                    IrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
 /*
                     UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
@@ -642,10 +642,10 @@ UDFCommonCreate(
                     UDFPrint(("  !FILE_SHARE_READ + open handles (%d)\n", Vcb->VCBHandleCount));
                     try_return(RC = STATUS_SHARING_VIOLATION);
                 }
-                if(PtrIrpContext->Flags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
+                if(IrpContext->Flags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
 
                     UDFPrint(("  perform flush\n"));
-                    PtrIrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
+                    IrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
                     UDFInterlockedIncrement((PLONG)&(Vcb->VCBOpenCount));
                     UDFReleaseResource(&(Vcb->VCBResource));
@@ -682,7 +682,7 @@ UDFCommonCreate(
                 } else
                 if(DesiredAccess & ((GENERIC_WRITE | FILE_GENERIC_WRITE) & ~(SYNCHRONIZE | READ_CONTROL))) {
                     UDFPrint(("  set UDF_IRP_CONTEXT_FLUSH_REQUIRED\n"));
-                    PtrIrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH_REQUIRED;
+                    IrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH_REQUIRED;
                 }
             }
 
@@ -2233,7 +2233,7 @@ try_exit:   NOTHING;
                 // complete the IRP
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
                 // Free up the Irp Context
-                UDFReleaseIrpContext(PtrIrpContext);
+                UDFReleaseIrpContext(IrpContext);
             }
         } else {
             UDFReleaseResFromCreate(&PagingIoRes, &Res1, &Res2);

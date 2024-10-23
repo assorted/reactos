@@ -49,7 +49,7 @@ UDFQueryInfo(
     )
 {
     NTSTATUS         RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN          AreWeTopLevel = FALSE;
 
     TmPrint(("UDFQueryInfo: \n"));
@@ -65,9 +65,9 @@ UDFQueryInfo(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonQueryInfo(PtrIrpContext, Irp);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonQueryInfo(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -76,9 +76,9 @@ UDFQueryInfo(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -116,7 +116,7 @@ UDFSetInfo(
     )
 {
     NTSTATUS         RC = STATUS_SUCCESS;
-    PIRP_CONTEXT PtrIrpContext = NULL;
+    PIRP_CONTEXT IrpContext = NULL;
     BOOLEAN          AreWeTopLevel = FALSE;
 
     TmPrint(("UDFSetInfo: \n"));
@@ -132,9 +132,9 @@ UDFSetInfo(
     _SEH2_TRY {
 
         // get an IRP context structure and issue the request
-        PtrIrpContext = UDFAllocateIrpContext(Irp, DeviceObject);
-        if(PtrIrpContext) {
-            RC = UDFCommonSetInfo(PtrIrpContext, Irp);
+        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
+        if(IrpContext) {
+            RC = UDFCommonSetInfo(IrpContext, Irp);
         } else {
             RC = STATUS_INSUFFICIENT_RESOURCES;
             Irp->IoStatus.Status = RC;
@@ -143,9 +143,9 @@ UDFSetInfo(
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(PtrIrpContext, _SEH2_GetExceptionInformation())) {
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(PtrIrpContext, Irp);
+        RC = UDFExceptionHandler(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -178,7 +178,7 @@ UDFSetInfo(
 *************************************************************************/
 NTSTATUS
 UDFCommonQueryInfo(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp
     )
 {
@@ -220,7 +220,7 @@ UDFCommonQueryInfo(
         Fcb = Ccb->Fcb;
         ASSERT(Fcb);
 
-        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE;
 
         // If the caller has opened a logical volume and is attempting to
         // query information for it as a file stream, return an error.
@@ -276,10 +276,10 @@ UDFCommonQueryInfo(
             RC = UDFGetNetworkInformation(Fcb, (PFILE_NETWORK_OPEN_INFORMATION)PtrSystemBuffer, &BufferLength);
             break;
         case FileInternalInformation:
-            RC = UDFGetInternalInformation(PtrIrpContext, Fcb, Ccb, (PFILE_INTERNAL_INFORMATION) PtrSystemBuffer, &BufferLength);
+            RC = UDFGetInternalInformation(IrpContext, Fcb, Ccb, (PFILE_INTERNAL_INFORMATION) PtrSystemBuffer, &BufferLength);
             break;
         case FileEaInformation:
-            RC = UDFGetEaInformation(PtrIrpContext, Fcb, (PFILE_EA_INFORMATION) PtrSystemBuffer, &BufferLength);
+            RC = UDFGetEaInformation(IrpContext, Fcb, (PFILE_EA_INFORMATION) PtrSystemBuffer, &BufferLength);
             break;
         case FileNameInformation:
             RC = UDFGetFullNameInformation(FileObject, (PFILE_NAME_INFORMATION) PtrSystemBuffer, &BufferLength);
@@ -313,8 +313,8 @@ UDFCommonQueryInfo(
                 // Get the remaining stuff.
                 if(!NT_SUCCESS(RC = UDFGetBasicInformation(FileObject, Fcb, &(PtrAllInfo->BasicInformation), &BufferLength)) ||
                     !NT_SUCCESS(RC = UDFGetStandardInformation(Fcb, &(PtrAllInfo->StandardInformation), &BufferLength)) ||
-                    !NT_SUCCESS(RC = UDFGetInternalInformation(PtrIrpContext, Fcb, Ccb, &(PtrAllInfo->InternalInformation), &BufferLength)) ||
-                    !NT_SUCCESS(RC = UDFGetEaInformation(PtrIrpContext, Fcb, &(PtrAllInfo->EaInformation), &BufferLength)) ||
+                    !NT_SUCCESS(RC = UDFGetInternalInformation(IrpContext, Fcb, Ccb, &(PtrAllInfo->InternalInformation), &BufferLength)) ||
+                    !NT_SUCCESS(RC = UDFGetEaInformation(IrpContext, Fcb, &(PtrAllInfo->EaInformation), &BufferLength)) ||
                     !NT_SUCCESS(RC = UDFGetPositionInformation(FileObject, &(PtrAllInfo->PositionInformation), &BufferLength)) ||
                     !NT_SUCCESS(RC = UDFGetFullNameInformation(FileObject, &(PtrAllInfo->NameInformation), &BufferLength))
                     )
@@ -359,7 +359,7 @@ try_exit:   NOTHING;
 
             // Perform the post operation which will mark the IRP pending
             // and will return STATUS_PENDING back to us
-            RC = UDFPostRequest(PtrIrpContext, Irp);
+            RC = UDFPostRequest(IrpContext, Irp);
 
         } else {
 
@@ -379,7 +379,7 @@ try_exit:   NOTHING;
                 // complete the IRP
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
                 // Free up the Irp Context
-                UDFReleaseIrpContext(PtrIrpContext);
+                UDFReleaseIrpContext(IrpContext);
             } // can we complete the IRP ?
 
         }
@@ -407,7 +407,7 @@ try_exit:   NOTHING;
 *************************************************************************/
 NTSTATUS
 UDFCommonSetInfo(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     PIRP             Irp
     )
 {
@@ -449,7 +449,7 @@ UDFCommonSetInfo(
         Fcb = Ccb->Fcb;
         ASSERT(Fcb);
 
-        CanWait = (PtrIrpContext->Flags & UDF_IRP_CONTEXT_CAN_BLOCK) ? TRUE : FALSE;
+        CanWait = (IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE;
 
         // If the caller has opened a logical volume and is attempting to
         // query information for it as a file stream, return an error.
@@ -619,7 +619,7 @@ UDFCommonSetInfo(
 #endif //UDF_ALLOW_HARD_LINKS
         case FileAllocationInformation:
             RC = UDFSetAllocationInformation(Fcb, Ccb, Vcb, FileObject,
-                                                PtrIrpContext, Irp,
+                                                IrpContext, Irp,
                                                 (PFILE_ALLOCATION_INFORMATION)PtrSystemBuffer);
             break;
         case FileEndOfFileInformation:
@@ -663,7 +663,7 @@ try_exit:   NOTHING;
 
             // Perform the post operation which will mark the IRP pending
             // and will return STATUS_PENDING back to us
-            RC = UDFPostRequest(PtrIrpContext, Irp);
+            RC = UDFPostRequest(IrpContext, Irp);
 
         } else {
 
@@ -683,7 +683,7 @@ try_exit:   NOTHING;
                 // complete the IRP
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
                 // Free up the Irp Context
-                UDFReleaseIrpContext(PtrIrpContext);
+                UDFReleaseIrpContext(IrpContext);
             } // can we complete the IRP ?
 
         }
@@ -912,7 +912,7 @@ try_exit: NOTHING;
  */
 NTSTATUS
 UDFGetInternalInformation(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     IN PFCB                       Fcb,
     IN PCCB                       Ccb,
     IN PFILE_INTERNAL_INFORMATION PtrBuffer,
@@ -966,7 +966,7 @@ try_exit: NOTHING;
  */
 NTSTATUS
 UDFGetEaInformation(
-    PIRP_CONTEXT PtrIrpContext,
+    PIRP_CONTEXT IrpContext,
     IN PFCB                 Fcb,
     IN PFILE_EA_INFORMATION PtrBuffer,
  IN OUT PLONG               PtrReturnedLength
@@ -1708,7 +1708,7 @@ UDFSetAllocationInformation(
     IN PCCB                            Ccb,
     IN PVCB                            Vcb,
     IN PFILE_OBJECT                    FileObject,
-    IN PIRP_CONTEXT PtrIrpContext,
+    IN PIRP_CONTEXT IrpContext,
     IN PIRP                            Irp,
     IN PFILE_ALLOCATION_INFORMATION    PtrBuffer
     )
