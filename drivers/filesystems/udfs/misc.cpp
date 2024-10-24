@@ -1459,8 +1459,6 @@ UDFInitializeVCB(
     //                            TRUE,       // We will use pinned access.
     //                            &(UDFGlobalData.CacheMgrCallBacks), Vcb);
 
-read_reg:
-
     UDFReleaseResource(&(UDFGlobalData.GlobalDataResource));
 
     // Mark the fact that this VCB structure is initialized.
