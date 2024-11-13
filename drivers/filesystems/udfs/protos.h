@@ -590,7 +590,7 @@ extern long UDFExceptionFilter(
 PIRP_CONTEXT IrpContext,
 PEXCEPTION_POINTERS         PtrExceptionPointers);
 
-extern NTSTATUS UDFExceptionHandler(
+extern NTSTATUS UDFProcessException(
 PIRP_CONTEXT IrpContext,
 PIRP                        Irp);
 
@@ -633,15 +633,20 @@ extern PIRP_CONTEXT UDFCreateIrpContext(
 PIRP                        Irp,
 PDEVICE_OBJECT              PtrTargetDeviceObject);
 
-extern VOID UDFReleaseIrpContext(
-PIRP_CONTEXT IrpContext);
+VOID
+UDFCleanupIrpContext(
+    _In_ PIRP_CONTEXT IrpContext
+    );
 
 extern NTSTATUS UDFPostRequest(
 PIRP_CONTEXT IrpContext,
 PIRP                        Irp);
 
-extern VOID NTAPI UDFCommonDispatch(
-VOID                            *Context);  // actually an IRPContext structure
+VOID
+NTAPI
+UDFFspDispatch(
+    PVOID Context
+    );
 
 extern NTSTATUS UDFInitializeVCB(
 PDEVICE_OBJECT              PtrVolumeDeviceObject,
@@ -707,6 +712,15 @@ extern NTSTATUS NTAPI UDFFilterCallbackAcquireForCreateSection(
     IN PFS_FILTER_CALLBACK_DATA CallbackData,
     IN PVOID *CompletionContext
     );
+
+_When_(RaiseOnError || return, _At_(Fcb->FileLock, _Post_notnull_))
+_When_(RaiseOnError, _At_(IrpContext, _Pre_notnull_))
+BOOLEAN
+UDFCreateFileLock(
+    _In_opt_ PIRP_CONTEXT IrpContext,
+    _Inout_ PFCB Fcb,
+    _In_ BOOLEAN RaiseOnError
+);
 
 /*************************************************************************
 * Prototypes for the file NameSup.cpp
@@ -850,11 +864,12 @@ extern NTSTATUS UDFCommonRead(
 extern PVOID UDFMapUserBuffer(
     PIRP Irp);
 
-extern NTSTATUS UDFLockUserBuffer(
+NTSTATUS
+UDFLockUserBuffer(
     PIRP_CONTEXT IrpContext,
-    PIRP    Irp,
-    LOCK_OPERATION LockOperation,
-    ULONG   Length);
+    ULONG BufferLength,
+    LOCK_OPERATION LockOperation
+    );
 
 extern NTSTATUS UDFUnlockCallersBuffer(
     PIRP_CONTEXT IrpContext,

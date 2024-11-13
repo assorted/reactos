@@ -117,7 +117,7 @@ UDFPnp (
 
     } _SEH2_EXCEPT(UDFExceptionFilter( IrpContext, _SEH2_GetExceptionInformation() )) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
 
@@ -209,7 +209,7 @@ UDFCommonPnp (
 try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
-        UDFReleaseIrpContext(IrpContext);
+        UDFCleanupIrpContext(IrpContext);
     } _SEH2_END;
 
     return RC;
@@ -344,7 +344,7 @@ UDFPnpQueryRemove(
         if (!_SEH2_AbnormalTermination()) {
             Irp->IoStatus.Status = RC;
             // Free up the Irp Context
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
             // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
@@ -408,7 +408,7 @@ UDFPnpRemove (
     if((Vcb->Vpb->Flags & VPB_LOCKED) ||
        (Vcb->VolumeLockPID != (ULONG)-1) ) {
         Vcb->Vpb->Flags &= ~VPB_LOCKED;
-        Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_LOCKED;
+        Vcb->VCBFlags &= ~VCB_STATE_VOLUME_LOCKED;
         Vcb->VolumeLockFileObject = NULL;
         Vcb->VolumeLockPID = -1;
         RC = STATUS_SUCCESS;
@@ -481,7 +481,7 @@ UDFPnpRemove (
         if (!_SEH2_AbnormalTermination()) {
             Irp->IoStatus.Status = RC;
             // Free up the Irp Context
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
             // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }
@@ -610,7 +610,7 @@ Return Value:
         if (!_SEH2_AbnormalTermination()) {
             Irp->IoStatus.Status = RC;
             // Free up the Irp Context
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
             // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         }

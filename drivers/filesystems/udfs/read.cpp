@@ -91,7 +91,7 @@ UDFRead(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -205,7 +205,7 @@ UDFStackOverflowRead(
     _SEH2_TRY {
         UDFCommonRead(IrpContext, IrpContext->Irp);
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-        RC = UDFExceptionHandler(IrpContext, IrpContext->Irp);
+        RC = UDFProcessException(IrpContext, IrpContext->Irp);
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
 
@@ -425,7 +425,7 @@ UDFCommonRead(
 
             // Forward the request to the lower level driver
             // Lock the callers buffer
-            if (!NT_SUCCESS(RC = UDFLockUserBuffer(IrpContext, Irp, IoWriteAccess, ReadLength))) {
+            if (!NT_SUCCESS(RC = UDFLockUserBuffer(IrpContext, ReadLength, IoWriteAccess))) {
                 try_return(RC);
             }
             SystemBuffer = UDFMapUserBuffer(Irp);
@@ -546,7 +546,9 @@ UDFCommonRead(
         // If this is the normal file we have to check for
         // write access according to the current state of the file locks.
         if (!PagingIo &&
-            !FsRtlCheckLockForReadAccess(&Fcb->FileLock, Irp)) {
+            Fcb->FileLock != NULL &&
+            !FsRtlCheckLockForReadAccess(Fcb->FileLock, Irp)) {
+
                 try_return( RC = STATUS_FILE_LOCK_CONFLICT );
         }
 
@@ -687,7 +689,7 @@ UDFCommonRead(
 
 //                ASSERT(NT_SUCCESS(RC));
 
-            RC = UDFLockUserBuffer(IrpContext, Irp, IoWriteAccess, TruncatedLength);
+            RC = UDFLockUserBuffer(IrpContext, TruncatedLength, IoWriteAccess);
             if(!NT_SUCCESS(RC)) {
                 try_return(RC);
             }
@@ -793,7 +795,7 @@ try_exit:   NOTHING;
             // Lock the callers buffer here. Then invoke a common routine to
             // perform the post operation.
             if (!(IrpSp->MinorFunction & IRP_MN_MDL)) {
-                RC = UDFLockUserBuffer(IrpContext, Irp, IoWriteAccess, ReadLength);
+                RC = UDFLockUserBuffer(IrpContext, ReadLength, IoWriteAccess);
                 ASSERT(NT_SUCCESS(RC));
             }
 
@@ -820,7 +822,7 @@ try_exit:   NOTHING;
                 Irp->IoStatus.Information = NumberBytesRead;
                 UDFPrint(("    NumberBytesRead = %x\n", NumberBytesRead));
                 // Free up the Irp Context
-                UDFReleaseIrpContext(IrpContext);
+                UDFCleanupIrpContext(IrpContext);
                 // complete the IRP
                 MmPrint(("    Complete Irp, MDL=%x\n", Irp->MdlAddress));
                 if(Irp->MdlAddress) {
@@ -889,23 +891,21 @@ UDFMapUserBuffer(
 NTSTATUS
 UDFLockUserBuffer(
     PIRP_CONTEXT IrpContext,
-    PIRP              Irp,
-    LOCK_OPERATION    LockOperation,
-    ULONG             Length
+    ULONG BufferLength,
+    LOCK_OPERATION LockOperation
     )
 {
     NTSTATUS            RC = STATUS_SUCCESS;
     PMDL                Mdl = NULL;
 
-    UDFPrint(("UDFLockUserBuffer: \n"));
-
-    ASSERT(Irp);
+    ASSERT_IRP_CONTEXT(IrpContext);
+    ASSERT_IRP(IrpContext->Irp);
 
     // Is a MDL already present in the IRP
-    if (!Irp->MdlAddress) {
+    if (!IrpContext->Irp->MdlAddress) {
 
         // This will place allocated Mdl to Irp
-        if (!(Mdl = IoAllocateMdl(Irp->UserBuffer, Length, FALSE, FALSE, Irp))) {
+        if (!(Mdl = IoAllocateMdl(IrpContext->Irp->UserBuffer, BufferLength, FALSE, FALSE, IrpContext->Irp))) {
 
             return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
@@ -918,12 +918,12 @@ UDFLockUserBuffer(
 
         _SEH2_TRY {
 
-            MmProbeAndLockPages(Mdl, Irp->RequestorMode, LockOperation);
+            MmProbeAndLockPages(Mdl, IrpContext->Irp->RequestorMode, LockOperation);
 
         } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
 
             IoFreeMdl(Mdl);
-            Irp->MdlAddress = NULL;
+            IrpContext->Irp->MdlAddress = NULL;
             RC = STATUS_INVALID_USER_BUFFER;
 
         } _SEH2_END;
@@ -1019,7 +1019,7 @@ BOOLEAN                     ReadCompletion)
     Irp->MdlAddress = NULL;
 
     // Free up the Irp Context.
-    UDFReleaseIrpContext(IrpContext);
+    UDFCleanupIrpContext(IrpContext);
 
     // Complete the IRP.
     Irp->IoStatus.Status = RC;

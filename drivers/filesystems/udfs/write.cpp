@@ -74,7 +74,7 @@ UDFWrite(
 
     } _SEH2_EXCEPT (UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -220,7 +220,7 @@ UDFCommonWrite(
         }
 
         // is this operation allowed ?
-        if(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY) {
+        if(Vcb->VCBFlags & VCB_STATE_MEDIA_WRITE_PROTECT) {
             try_return(RC = STATUS_ACCESS_DENIED);
         }
         Vcb->VCBFlags |= UDF_VCB_SKIP_EJECT_CHECK;
@@ -254,7 +254,9 @@ UDFCommonWrite(
         // If this is the normal file we have to check for
         // write access according to the current state of the file locks.
         if (!PagingIo &&
-            !FsRtlCheckLockForWriteAccess(&Fcb->FileLock, Irp) ) {
+            Fcb->FileLock != NULL &&
+            !FsRtlCheckLockForWriteAccess(Fcb->FileLock, Irp) ) {
+
                 try_return( RC = STATUS_FILE_LOCK_CONFLICT );
         }
 
@@ -268,7 +270,7 @@ UDFCommonWrite(
             if(!CanWait)
                 try_return(RC = STATUS_PENDING);
             // I dislike the idea of writing to not locked media
-            if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED)) {
+            if(!(Vcb->VCBFlags & VCB_STATE_VOLUME_LOCKED)) {
                 try_return(RC = STATUS_ACCESS_DENIED);
             }
 
@@ -304,7 +306,7 @@ UDFCommonWrite(
 #endif
             // Forward the request to the lower level driver
             // Lock the callers buffer
-            if (!NT_SUCCESS(RC = UDFLockUserBuffer(IrpContext, Irp, IoReadAccess, WriteLength))) {
+            if (!NT_SUCCESS(RC = UDFLockUserBuffer(IrpContext, WriteLength, IoReadAccess))) {
                 try_return(RC);
             }
             SystemBuffer = UDFMapUserBuffer(Irp);
@@ -325,7 +327,7 @@ UDFCommonWrite(
             try_return(RC);
         }
 
-        if(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) {
+        if(Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) {
             try_return(RC = STATUS_ACCESS_DENIED);
         }
 
@@ -394,7 +396,7 @@ UDFCommonWrite(
 
         // Check if this volume has already been shut down.  If it has, fail
         // this write request.
-        if (Vcb->VCBFlags & UDF_VCB_FLAGS_SHUTDOWN) {
+        if (Vcb->VCBFlags & VCB_STATE_SHUTDOWN) {
             try_return(RC = STATUS_TOO_LATE);
         }
 
@@ -790,7 +792,7 @@ UDFCommonWrite(
             PerfPrint(("UDFCommonWrite: Physical write %x bytes at %x\n", TruncatedLength, ByteOffset.LowPart));
 
             // Lock the callers buffer
-            if (!NT_SUCCESS(RC = UDFLockUserBuffer(IrpContext, Irp, IoReadAccess, TruncatedLength))) {
+            if (!NT_SUCCESS(RC = UDFLockUserBuffer(IrpContext, TruncatedLength, IoReadAccess))) {
                 try_return(RC);
             }
 
@@ -844,7 +846,7 @@ try_exit:   NOTHING;
             // Lock the callers buffer here. Then invoke a common routine to
             // perform the post operation.
             if (!(IrpSp->MinorFunction & IRP_MN_MDL)) {
-                RC = UDFLockUserBuffer(IrpContext, Irp, IoReadAccess, WriteLength);
+                RC = UDFLockUserBuffer(IrpContext, WriteLength, IoReadAccess);
                 ASSERT(NT_SUCCESS(RC));
             }
 
@@ -933,7 +935,7 @@ try_exit:   NOTHING;
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             }
             // Free up the Irp Context
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
 
         } // can we complete the IRP ?
     } _SEH2_END; // end of "__finally" processing

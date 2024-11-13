@@ -257,7 +257,7 @@ UDFExceptionFilter(
     }
 
     if (IrpContext) {
-        IrpContext->SavedExceptionCode = ExceptionCode;
+        IrpContext->ExceptionCode = ExceptionCode;
     }
 
     // check if we should propagate this exception or not
@@ -301,7 +301,7 @@ UDFExceptionFilter(
 *
 *************************************************************************/
 NTSTATUS
-UDFExceptionHandler(
+UDFProcessException(
     PIRP_CONTEXT IrpContext,
     PIRP             Irp
     )
@@ -325,7 +325,7 @@ UDFExceptionHandler(
     // completing it because of MUST_SUCCEED requirement.
 
     if (IrpContext) {
-        ExceptionCode = IrpContext->SavedExceptionCode;
+        ExceptionCode = IrpContext->ExceptionCode;
         // Free irp context here
 //        UDFReleaseIrpContext(IrpContext);
     } else {
@@ -401,7 +401,7 @@ UDFExceptionHandler(
                     // complete the IRP
                     IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
-                    UDFReleaseIrpContext(IrpContext);
+                    UDFCleanupIrpContext(IrpContext);
 
                     return ExceptionCode;
                 }
@@ -427,7 +427,7 @@ UDFExceptionHandler(
             // complete the IRP
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
             return ExceptionCode;
         } else {
 
@@ -458,7 +458,7 @@ UDFExceptionHandler(
                     // complete the IRP
                     IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
-                    UDFReleaseIrpContext(IrpContext);
+                    UDFCleanupIrpContext(IrpContext);
 
                     return ExceptionCode;
                 }
@@ -479,7 +479,7 @@ UDFExceptionHandler(
             //  The Irp will be completed by Io or resubmitted.  In either
             //  case we must clean up the IrpContext here.
 
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
             return STATUS_PENDING;
         }
     }
@@ -494,7 +494,7 @@ UDFExceptionHandler(
         // complete the IRP
         IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
-        UDFReleaseIrpContext(IrpContext);
+        UDFCleanupIrpContext(IrpContext);
     }
 
     UDFPrint(("  return from exception handler with code %x\n", ExceptionCode));
@@ -969,7 +969,7 @@ UDFCreateIrpContext(
 
 /*************************************************************************
 *
-* Function: UDFReleaseIrpContext()
+* Function: UDFCleanupIrpContext()
 *
 * Description:
 *   Deallocate a previously allocated structure.
@@ -982,7 +982,7 @@ UDFCreateIrpContext(
 *
 *************************************************************************/
 VOID
-UDFReleaseIrpContext(
+UDFCleanupIrpContext(
     PIRP_CONTEXT IrpContext)
 {
     ASSERT(IrpContext);
@@ -991,8 +991,80 @@ UDFReleaseIrpContext(
 
         ExFreeToNPagedLookasideList(&UDFGlobalData.IrpContextLookasideList, IrpContext);
     }
-} // end UDFReleaseIrpContext()
+} // end UDFCleanupIrpContext()
 
+_When_(RaiseOnError || return, _At_(Fcb->FileLock, _Post_notnull_))
+_When_(RaiseOnError, _At_(IrpContext, _Pre_notnull_))
+BOOLEAN
+UDFCreateFileLock (
+    _In_opt_ PIRP_CONTEXT IrpContext,
+    _Inout_ PFCB Fcb,
+    _In_ BOOLEAN RaiseOnError
+    )
+
+/*++
+
+Routine Description:
+
+    This routine is called when we want to attach a file lock structure to the
+    given Fcb.  It is possible the file lock is already attached.
+
+    This routine is sometimes called from the fast path and sometimes in the
+    Irp-based path.  We don't want to raise in the fast path, just return FALSE.
+
+Arguments:
+
+    Fcb - This is the Fcb to create the file lock for.
+
+    RaiseOnError - If TRUE, we will raise on an allocation failure.  Otherwise we
+        return FALSE on an allocation failure.
+
+Return Value:
+
+    BOOLEAN - TRUE if the Fcb has a filelock, FALSE otherwise.
+
+--*/
+
+{
+    BOOLEAN Result = TRUE;
+    PFILE_LOCK FileLock;
+
+    PAGED_CODE();
+
+    ASSERT(RaiseOnError == FALSE);
+
+    //  Lock the Fcb and check if there is really any work to do.
+
+    //TODO: impl
+    //UDFLockFcb( IrpContext, Fcb );
+
+    if (Fcb->FileLock != NULL) {
+
+        //TODO: impl
+        //UDFUnlockFcb( IrpContext, Fcb );
+        return TRUE;
+    }
+
+    Fcb->FileLock = FileLock = FsRtlAllocateFileLock(NULL, NULL);
+
+    //TODO: impl
+    //UDFUnlockFcb( IrpContext, Fcb );
+
+    //  Return or raise as appropriate.
+    if (FileLock == NULL) {
+         
+        if (RaiseOnError) {
+
+            NT_ASSERT(ARGUMENT_PRESENT(IrpContext));
+
+            UDFRaiseStatus(IrpContext, STATUS_INSUFFICIENT_RESOURCES);
+        }
+
+        Result = FALSE;
+    }
+
+    return Result;
+}
 
 /*************************************************************************
 *
@@ -1059,7 +1131,7 @@ UDFPostRequest(
         KeReleaseSpinLock( &(Vcb->OverflowQueueSpinLock), SavedIrql );
 
         // queue up the request
-        ExInitializeWorkItem(&(IrpContext->WorkQueueItem), UDFCommonDispatch, IrpContext);
+        ExInitializeWorkItem(&(IrpContext->WorkQueueItem), UDFFspDispatch, IrpContext);
 
         ExQueueWorkItem(&(IrpContext->WorkQueueItem), CriticalWorkQueue);
     //    ExQueueWorkItem(&(IrpContext->WorkQueueItem), DelayedWorkQueue);
@@ -1073,7 +1145,7 @@ UDFPostRequest(
 
 /*************************************************************************
 *
-* Function: UDFCommonDispatch()
+* Function: UDFFspDispatch()
 *
 * Description:
 *   The common dispatch routine invoked in the context of a system worker
@@ -1090,7 +1162,7 @@ UDFPostRequest(
 *************************************************************************/
 VOID
 NTAPI
-UDFCommonDispatch(
+UDFFspDispatch(
     IN PVOID Context   // actually is a pointer to IRPContext structure
     )
 {
@@ -1200,7 +1272,7 @@ UDFCommonDispatch(
 
                 IoCompleteRequest(Irp, IO_NO_INCREMENT);
                 // Free up the Irp Context
-                UDFReleaseIrpContext(IrpContext);
+                UDFCleanupIrpContext(IrpContext);
                 break;
             }
 
@@ -1209,7 +1281,7 @@ UDFCommonDispatch(
 
         } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(IrpContext, Irp);
+            RC = UDFProcessException(IrpContext, Irp);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
         }  _SEH2_END;
@@ -1250,7 +1322,7 @@ UDFCommonDispatch(
     UDFPrint(("  *** Thr: %x  ThCnt: %x  QCnt: %x  Terminated!\n", PsGetCurrentThread(), Vcb->PostedRequestCount, Vcb->OverflowQueueCount));
 
     return;
-} // end UDFCommonDispatch()
+} // end UDFFspDispatch()
 
 
 /*************************************************************************

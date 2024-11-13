@@ -101,7 +101,7 @@ UDFCreate(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -491,7 +491,7 @@ UDFCommonCreate(
         UDFFlushTryBreak(Vcb);
 
         // If the volume has been locked, fail the request
-        if ((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) &&
+        if ((Vcb->VCBFlags & VCB_STATE_VOLUME_LOCKED) &&
             (Vcb->VolumeLockPID != GetCurrentPID())) {
             AdPrint(("    Volume is locked\n"));
             RC = STATUS_ACCESS_DENIED;
@@ -518,7 +518,7 @@ UDFCommonCreate(
            (
            ((Vcb->origIntegrityType == INTEGRITY_TYPE_OPEN) &&
             (Vcb->CompatFlags & UDF_VCB_IC_DIRTY_RO)) ||
-             (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)
+             (Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY)
             ) &&
             (DeleteOnCloseSpecified ||
              OpenTargetDirectory ||
@@ -593,7 +593,7 @@ UDFCommonCreate(
             } else {
 
                 UDFPrint(("  R/W volume open\n"));
-                if(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY) {
+                if(Vcb->VCBFlags & VCB_STATE_MEDIA_WRITE_PROTECT) {
                     UDFPrint(("  media-ro\n"));
                     try_return(RC = STATUS_MEDIA_WRITE_PROTECTED);
                 }
@@ -676,7 +676,7 @@ UDFCommonCreate(
                 // Lock the volume
                 if(!(ShareAccess & FILE_SHARE_READ)) {
                     UDFPrint(("  set Lock\n"));
-                    Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_LOCKED;
+                    Vcb->VCBFlags |= VCB_STATE_VOLUME_LOCKED;
                     Vcb->VolumeLockFileObject = PtrNewFileObject;
                     UndoLock = TRUE;
                 } else
@@ -707,7 +707,7 @@ UDFCommonCreate(
                 AdPrint(("    Sharing violation (Volume)\n"));
 op_vol_accs_dnd:
                 if(UndoLock) {
-                    Vcb->VCBFlags &= ~UDF_VCB_FLAGS_VOLUME_LOCKED;
+                    Vcb->VCBFlags &= ~VCB_STATE_VOLUME_LOCKED;
                     Vcb->VolumeLockFileObject = NULL;
                 }
                 try_return(RC);
@@ -1512,7 +1512,7 @@ Skip_open_attempt:
                 try_return(RC);
             }
             // Check Volume ReadOnly attr
-            if((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)) {
+            if((Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY)) {
                 ReturnedInformation = 0;
                 AdPrint(("    Write protected\n"));
                 try_return(RC = STATUS_MEDIA_WRITE_PROTECTED);
@@ -2233,7 +2233,7 @@ try_exit:   NOTHING;
                 // complete the IRP
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
                 // Free up the Irp Context
-                UDFReleaseIrpContext(IrpContext);
+                UDFCleanupIrpContext(IrpContext);
             }
         } else {
             UDFReleaseResFromCreate(&PagingIoRes, &Res1, &Res2);
@@ -2525,8 +2525,7 @@ UDFInitializeFCB(
         PtrNewFcb->Header.Resource = &PtrNewFcb->MainResource;
         PtrNewFcb->Header.PagingIoResource = &PtrNewFcb->PagingIoResource;
         FsRtlSetupAdvancedHeader(&PtrNewFcb->Header, &PtrNewFcb->AdvancedFCBHeaderMutex);
-        // Itialize byte-range locks support structure
-        FsRtlInitializeFileLock(&(PtrNewFcb->FileLock), NULL, NULL);
+        PtrNewFcb->FileLock = NULL;
         // Init reference counter
         PtrNewFcb->CommonRefCount = 0;
         Linked = FALSE;
@@ -2541,7 +2540,11 @@ UDFInitializeFCB(
             UDFDeleteResource(&PtrNewFcb->MainResource);
             PtrNewFcb->Header.Resource =
             PtrNewFcb->Header.PagingIoResource = NULL;
-            FsRtlUninitializeFileLock(&PtrNewFcb->FileLock);
+
+            if (PtrNewFcb->FileLock != NULL) {
+
+                FsRtlFreeFileLock(PtrNewFcb->FileLock);
+            }
         }
         return status;
     }

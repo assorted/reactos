@@ -118,7 +118,7 @@ UDFQueryVolInfo(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -260,7 +260,7 @@ try_exit:   NOTHING;
 
             Irp->IoStatus.Status = RC;
             // Free up the Irp Context
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
             // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
         } // can we complete the IRP ?
@@ -503,7 +503,7 @@ UDFQueryFsAttributeInfo(
 #ifdef ALLOW_SPARSE
                                    FILE_SUPPORTS_SPARSE_FILES |
 #endif //ALLOW_SPARSE
-                                   ((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) ? FILE_READ_ONLY_VOLUME : 0) |
+                                   ((Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) ? FILE_READ_ONLY_VOLUME : 0) |
 
                                    FILE_UNICODE_ON_DISK;
 
@@ -571,7 +571,7 @@ UDFSetVolInfo(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -691,7 +691,7 @@ try_exit:   NOTHING;
                 Irp->IoStatus.Status = RC;
 
                 // Free up the Irp Context
-                UDFReleaseIrpContext(IrpContext);
+                UDFCleanupIrpContext(IrpContext);
                 // complete the IRP
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             }

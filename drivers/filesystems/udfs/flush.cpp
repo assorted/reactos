@@ -73,7 +73,7 @@ UDFFlushBuffers(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -251,12 +251,12 @@ try_exit:   NOTHING;
                     RC = ((RC1 == STATUS_INVALID_DEVICE_REQUEST) ? RC : RC1);
 
                     // Release the IRP context at this time.
-                    UDFReleaseIrpContext(IrpContext);
+                    UDFCleanupIrpContext(IrpContext);
                 } else {
                     Irp->IoStatus.Status = RC;
                     Irp->IoStatus.Information = 0;
                     // Free up the Irp Context
-                    UDFReleaseIrpContext(IrpContext);
+                    UDFCleanupIrpContext(IrpContext);
                     // complete the IRP
                     IoCompleteRequest(Irp, IO_DISK_INCREMENT);
                 }
@@ -501,7 +501,7 @@ UDFFlushLogicalVolume(
         if(Vcb->VCBFlags & (UDF_VCB_FLAGS_RAW_DISK/* |
                             UDF_VCB_FLAGS_MEDIA_READ_ONLY*/))
             return 0;
-        if(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)
+        if(Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY)
             return 0;
         if(Vcb->VcbCondition != VcbMounted)
             return 0;

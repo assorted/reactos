@@ -1403,7 +1403,7 @@ try_exit:   NOTHING;
 
 #endif //_BROWSE_UDF_
 
-        if(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) {
+        if(Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) {
             if(!Vcb->BlankCD && Vcb->MediaType != MediaType_UnknownSize_CDRW) {
                 UDFPrint(("UDFGetDiskInfo: R/O+!Blank+!RW -> !RAW\n"));
                 Vcb->VCBFlags &= ~UDF_VCB_FLAGS_RAW_DISK;

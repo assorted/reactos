@@ -927,7 +927,7 @@ UDFUmount__(
 {
     uint32 flags = 0;
 
-    if((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)
+    if ((Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY)
         || !Vcb->Modified)
         return STATUS_SUCCESS;
     // prevent discarding metadata
@@ -1087,7 +1087,7 @@ MRW_workaround:
                         Vcb->TrackMap[Vcb->LastReadTrack].Flags |= TrackMap_FixMRWAddressing;
                         WCachePurgeAll__(&(Vcb->FastCache), Vcb);
                         UDFPrint(("UDF: MRW on non-MRW drive => ReadOnly"));
-                        Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
+                        Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
 
                         UDFRegisterFsStructure(Vcb, Vcb->Anchor[i], Vcb->BlockSize);
 
@@ -1273,7 +1273,7 @@ exit_with_err:
             switch(Vcb->PartitialDamagedVolumeAction) {
             case UDF_PART_DAMAGED_RO:
                 UDFPrint(("UDF: Switch to r/o mode.\n"));
-                Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
+                Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
                 RC = STATUS_SUCCESS;
                 break;
             case UDF_PART_DAMAGED_NO:
@@ -1352,7 +1352,7 @@ exit_with_err:
         // Check if we know how to write here
         if(Vcb->minUDFWriteRev > UDF_MAX_WRITE_REVISION) {
             UDFPrint(("     Target FS requires: %x Revision => ReadOnly\n",Vcb->minUDFWriteRev));
-            Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
+            Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
         }
 
         LVID_hd = (LogicalVolHeaderDesc*)&(Vcb->LVid->logicalVolContentsUse);
@@ -2067,7 +2067,7 @@ UDFLoadPartDesc(
             } else if(p->accessType < PARTITION_ACCESS_WO) {
                 // Soft-read-only volume
                 UDFPrint(("Soft Read-only volume\n"));
-                Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
+                Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
             } else if(p->accessType > PARTITION_ACCESS_MAX_KNOWN) {
                 return STATUS_UNRECOGNIZED_MEDIA;
             }
@@ -2175,7 +2175,7 @@ UDFVerifyPartDesc(
             } else if(p->accessType < PARTITION_ACCESS_WO) {
                 // Soft-read-only volume
                 UDFPrint(("Soft Read-only volume\n"));
-                if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY))
+                if(!(Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY))
                     return STATUS_DISK_CORRUPT_ERROR;
             } else if(p->accessType > PARTITION_ACCESS_MAX_KNOWN) {
                 return STATUS_UNRECOGNIZED_MEDIA;
@@ -2708,7 +2708,7 @@ UDFLoadPartition(
                     switch(Vcb->PartitialDamagedVolumeAction) {
                     case UDF_PART_DAMAGED_RO:
                         UDFPrint(("UDF: Switch to r/o mode.\n"));
-                        Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
+                        Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
                         break;
                     case UDF_PART_DAMAGED_NO:
                         UDFPrint(("UDF: Switch to raw mount mode, return UNRECOGNIZED_VOLUME.\n"));
@@ -2729,7 +2729,7 @@ UDFLoadPartition(
     if(Vcb->SparingCount &&
        (Vcb->NoFreeRelocationSpaceVolumeAction != UDF_PART_DAMAGED_RW)) {
         UDFPrint(("UDF: No free Sparing Entries -> Switch to r/o mode.\n"));
-        Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
+        Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
     }
 
     if(i == sizeof(Vcb->Anchor)/sizeof(int)) {

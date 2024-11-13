@@ -89,7 +89,7 @@ UDFDirControl(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -177,7 +177,7 @@ UDFCommonDirControl(
             Irp->IoStatus.Information = 0;
 
             // Free up the Irp Context
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
 
             // complete the IRP
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
@@ -592,7 +592,7 @@ try_exit:   NOTHING;
                 UDFReleaseResource(&Fcb->MainResource);
             }
             // Map the users buffer and then post the request.
-            RC = UDFLockUserBuffer(IrpContext, Irp, IoWriteAccess, BufferLength);
+            RC = UDFLockUserBuffer(IrpContext, BufferLength, IoWriteAccess);
             ASSERT(NT_SUCCESS(RC));
 
             RC = UDFPostRequest(IrpContext, Irp);
@@ -616,7 +616,7 @@ try_exit:   NOTHING;
                 Irp->IoStatus.Information = Information;
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
                 // Free up the Irp Context
-                UDFReleaseIrpContext(IrpContext);
+                UDFCleanupIrpContext(IrpContext);
             }
         }
 
@@ -779,7 +779,7 @@ UDFNotifyChangeDirectory(
                 Irp->IoStatus.Status = RC;
                 Irp->IoStatus.Information = 0;
                 // Free up the Irp Context
-                UDFReleaseIrpContext(IrpContext);
+                UDFCleanupIrpContext(IrpContext);
                 // complete the IRP
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             }
@@ -787,7 +787,7 @@ UDFNotifyChangeDirectory(
         } else {
             // Simply free up the IrpContext since the IRP has been queued
             if (!_SEH2_AbnormalTermination())
-                UDFReleaseIrpContext(IrpContext);
+                UDFCleanupIrpContext(IrpContext);
         }
 
         // Release the FCB resources if acquired.

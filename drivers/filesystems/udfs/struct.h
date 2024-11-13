@@ -35,6 +35,7 @@
 
 struct IRP_CONTEXT_LITE;
 struct IO_CONTEXT;
+struct IRP_CONTEXT;
 
 /**************************************************************************
     each structure has a unique "node type" or signature associated with it
@@ -42,6 +43,8 @@ struct IO_CONTEXT;
 
 using NODE_TYPE_CODE = USHORT;
 using NODE_BYTE_SIZE = CSHORT;
+
+using PNODE_TYPE_CODE = NODE_TYPE_CODE*;
 
 #define UDF_NODE_TYPE_UNDEFINED             ((NODE_TYPE_CODE)0x0000)
 #define UDF_NODE_TYPE_OBJECT_NAME           ((NODE_TYPE_CODE)0xba01)
@@ -54,6 +57,10 @@ using NODE_BYTE_SIZE = CSHORT;
 #define UDF_NODE_TYPE_UDFFS_DEVOBJ          ((NODE_TYPE_CODE)0xba08)
 #define UDF_NODE_TYPE_IRP_CONTEXT_LITE      ((NODE_TYPE_CODE)0xba09)
 #define UDF_NODE_TYPE_UDFFS_DRVOBJ          ((NODE_TYPE_CODE)0xba0a)
+
+#ifndef SafeNodeType
+#define SafeNodeType(Ptr) (*((PNODE_TYPE_CODE)(Ptr)))
+#endif
 
 /**************************************************************************
     every structure has a node type, and a node size associated with it.
@@ -86,8 +93,6 @@ struct UDFObjectName {
     UNICODE_STRING                      ObjectName;
 };
 using PtrUDFObjectName = UDFObjectName*;
-
-#define     UDF_OBJ_NAME_NOT_FROM_ZONE               (0x80000000)
 
 /**************************************************************************
     Each file open instance is represented by a context control block.
@@ -199,7 +204,7 @@ struct UDFNTRequiredFCB {
     };
 
     SECTION_OBJECT_POINTERS             SectionObject;
-    FILE_LOCK                           FileLock;
+    PFILE_LOCK                          FileLock;
     ERESOURCE                           MainResource;
     ERESOURCE                           PagingIoResource;
     FAST_MUTEX                          AdvancedFCBHeaderMutex;
@@ -675,6 +680,45 @@ using PVCB = VCB*;
 
 #define         UDF_MAX_BG_WRITERS                  16
 
+// The Volume Device Object is an I/O system device object with a
+// workqueue and an VCB record appended to the end.  There are multiple
+// of these records, one for every mounted volume, and are created during
+// a volume mount operation.  The work queue is for handling an overload
+// of work requests to the volume.
+
+struct VOLUME_DEVICE_OBJECT {
+
+    DEVICE_OBJECT DeviceObject;
+
+    // The following field tells how many requests for this volume have
+    // either been enqueued to ExWorker threads or are currently being
+    // serviced by ExWorker threads.  If the number goes above
+    // a certain threshold, put the request on the overflow queue to be
+    // executed later.
+
+    __volatile ULONG PostedRequestCount;
+
+    // The following field indicates the number of IRP's waiting
+    // to be serviced in the overflow queue.
+
+    ULONG OverflowQueueCount;
+
+    // The following field contains the queue header of the overflow queue.
+    // The Overflow queue is a list of IRP's linked via the IRP's ListEntry
+    // field.
+
+    LIST_ENTRY OverflowQueue;
+
+    // The following spinlock protects access to all the above fields.
+
+    KSPIN_LOCK OverflowQueueSpinLock;
+
+    // This is the file system specific volume control block.
+
+    VCB Vcb;
+};
+typedef VOLUME_DEVICE_OBJECT* PVOLUME_DEVICE_OBJECT;
+
 typedef struct _FILTER_DEV_EXTENSION {
     UDFIdentifier   NodeIdentifier;
     PFILE_OBJECT    fileObject;
@@ -684,13 +728,36 @@ typedef struct _FILTER_DEV_EXTENSION {
 typedef struct _UDFFS_DEV_EXTENSION {
     UDFIdentifier   NodeIdentifier;
 } UDFFS_DEV_EXTENSION, *PUDFFS_DEV_EXTENSION;
+
+//  Following structure is used to track the top level request.  Each Udfs
+//  Fsd and Fsp entry point will examine the top level irp location in the
+//  thread local storage to determine if this request is top level and/or
+//  top level Udfs.  The top level Udfs request will remember the previous
+//  value and update that location with a stack location.  This location
+//  can be accessed by recursive Udfs entry points.
+
+struct THREAD_CONTEXT {
+
+    //  UDFS signature.  Used to confirm structure on stack is valid.
+    ULONG Udfs;
+
+    //  Previous value in top-level thread location.  We restore this
+    //  when done.
+    PIRP SavedTopLevelIrp;
+
+    //  Top level Udfs IrpContext.  Initial Udfs entry point on stack
+    //  will store the IrpContext for the request in this stack location.
+    IRP_CONTEXT* TopLevelIrpContext;
+};
+using PTHREAD_CONTEXT = THREAD_CONTEXT*;
+
 /**************************************************************************
     The IRP context encapsulates the current request. This structure is
     used in the "common" dispatch routines invoked either directly in
     the context of the original requestor, or indirectly in the context
     of a system worker thread.
 **************************************************************************/
-typedef struct _IRP_CONTEXT {
+struct IRP_CONTEXT {
     UDFIdentifier                   NodeIdentifier;
     ULONG                           Flags;
     // copied from the IRP
@@ -704,14 +771,27 @@ typedef struct _IRP_CONTEXT {
     // the target of the request (obtained from the IRP)
     PDEVICE_OBJECT                  TargetDeviceObject;
     // if an exception occurs, we will store the code here
-    NTSTATUS                        SavedExceptionCode;
+    NTSTATUS                        ExceptionCode;
     // For queued close operation we save Fcb
     FCB*                            Fcb;
     ULONG                           TreeLength;
-    IO_CONTEXT* IoContext;
+
+    // Io context for a read request.
+    // Address of Fcb for teardown oplock in create case.
+
+    union {
+
+        IO_CONTEXT* IoContext;
+        PFCB* TeardownFcb;
+    };
+
+    //  Pointer to the top-level context if this IrpContext is responsible
+    //  for cleaning it up.
+    THREAD_CONTEXT* ThreadContext;
+
     VCB*      Vcb;
-} IRP_CONTEXT;
-typedef IRP_CONTEXT *PIRP_CONTEXT;
+};
+using PIRP_CONTEXT = IRP_CONTEXT*;
 
 #define IRP_CONTEXT_FLAG_ON_STACK               (0x00000001)
 #define IRP_CONTEXT_FLAG_MORE_PROCESSING        (0x00000002)
@@ -729,6 +809,36 @@ typedef IRP_CONTEXT *PIRP_CONTEXT;
 #define UDF_IRP_CONTEXT_NOT_TOP_LEVEL           (0x10000000)
 #define UDF_IRP_CONTEXT_FLUSH_REQUIRED          (0x20000000)
 #define UDF_IRP_CONTEXT_FLUSH2_REQUIRED         (0x40000000)
+
+//  The following flags need to be cleared when a request is posted.
+
+#define IRP_CONTEXT_FLAGS_CLEAR_ON_POST (   \
+    IRP_CONTEXT_FLAG_MORE_PROCESSING    |   \
+    IRP_CONTEXT_FLAG_WAIT               |   \
+    IRP_CONTEXT_FLAG_FORCE_POST         |   \
+    IRP_CONTEXT_FLAG_TOP_LEVEL          |   \
+    IRP_CONTEXT_FLAG_TOP_LEVEL_UDFS     |   \
+    IRP_CONTEXT_FLAG_IN_FSP             |   \
+    IRP_CONTEXT_FLAG_IN_TEARDOWN        |   \
+    IRP_CONTEXT_FLAG_DISABLE_POPUPS         \
+)
+
+//  The following flags need to be cleared when a request is retried.
+
+#define IRP_CONTEXT_FLAGS_CLEAR_ON_RETRY (  \
+    IRP_CONTEXT_FLAG_MORE_PROCESSING    |   \
+    IRP_CONTEXT_FLAG_IN_TEARDOWN        |   \
+    IRP_CONTEXT_FLAG_DISABLE_POPUPS         \
+)
+
+//  The following flags are set each time through the Fsp loop.
+
+#define IRP_CONTEXT_FSP_FLAGS (             \
+    IRP_CONTEXT_FLAG_WAIT               |   \
+    IRP_CONTEXT_FLAG_TOP_LEVEL          |   \
+    IRP_CONTEXT_FLAG_TOP_LEVEL_UDFS     |   \
+    IRP_CONTEXT_FLAG_IN_FSP                 \
+)
 
 /**************************************************************************
     Following structure is used to queue a request to the delayed close queue.
@@ -832,12 +942,13 @@ typedef struct _UDFData {
 #define TAG_VPB                 'pvdU'
 
 // some valid flags for the VCB
-#define         UDF_VCB_FLAGS_VOLUME_LOCKED         (0x00000002)
-#define         UDF_VCB_FLAGS_SHUTDOWN              (0x00000008)
-#define         UDF_VCB_FLAGS_VOLUME_READ_ONLY      (0x00000010)
+#define         VCB_STATE_VOLUME_LOCKED             (0x00000001)
+#define         VCB_STATE_SHUTDOWN                  (0x00000008)
+#define         VCB_STATE_VOLUME_READ_ONLY          (0x00000010)
+#define         VCB_STATE_MEDIA_WRITE_PROTECT       (0x00000080)
 
 #define         UDF_VCB_FLAGS_VCB_INITIALIZED       (0x00000020)
-#define         UDF_VCB_FLAGS_NO_SYNC_CACHE         (0x00000080)
+#define         UDF_VCB_FLAGS_NO_SYNC_CACHE         (0x00000030)
 #define         UDF_VCB_FLAGS_REMOVABLE_MEDIA       (0x00000100)
 #define         UDF_VCB_FLAGS_MEDIA_LOCKED          (0x00000200)
 #define         UDF_VCB_SKIP_EJECT_CHECK            (0x00000400)
@@ -849,7 +960,6 @@ typedef struct _UDFData {
 #define         UDF_VCB_FLAGS_USE_STD               (0x00080000)
 
 #define         UDF_VCB_FLAGS_NO_DELAYED_CLOSE      (0x00200000)
-#define         UDF_VCB_FLAGS_MEDIA_READ_ONLY       (0x00400000)
 
 #define         UDF_VCB_FLAGS_FLUSH_BREAK_REQ       (0x01000000)
 #define         UDF_VCB_FLAGS_EJECT_REQ             (0x02000000)
@@ -921,6 +1031,8 @@ typedef struct _UDFFileIDCacheItem {
 } UDFFileIDCacheItem, *PUDFFileIDCacheItem;
 
 #define DIRTY_PAGE_LIMIT   32
+
+#define UDFBugCheck(A,B,C) { KeBugCheckEx(UDFS_FILE_SYSTEM, UDF_BUG_CHECK_ID | __LINE__, A, B, C ); }
 
 #define MAXIMUM_NUMBER_TRACKS_LARGE 0xAA
 

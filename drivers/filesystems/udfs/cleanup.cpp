@@ -95,7 +95,7 @@ UDFCleanup(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -227,7 +227,7 @@ UDFCommonCleanup(
             }
             // User may decide to close locked volume without call to unlock proc
             // So, handle this situation properly & unlock it now...
-            if (FlagOn(Vcb->VCBFlags, UDF_VCB_FLAGS_VOLUME_LOCKED) &&
+            if (FlagOn(Vcb->VCBFlags, VCB_STATE_VOLUME_LOCKED) &&
                 FileObject == Vcb->VolumeLockFileObject) {
 
                 UDFAutoUnlock(Vcb);
@@ -294,11 +294,15 @@ UDFCommonCleanup(
         }
 
         if (!(Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+
             //  Unlock all outstanding file locks.
-            FsRtlFastUnlockAll(&Fcb->FileLock,
-                               FileObject,
-                               IoGetRequestorProcess(Irp),
-                               NULL);
+            if (Fcb->FileLock != NULL) {
+
+                FsRtlFastUnlockAll(Fcb->FileLock,
+                                   FileObject,
+                                   IoGetRequestorProcess(Irp),
+                                   NULL);
+            }
         }
         // get Link count
         lc = UDFGetFileLinkCount(Fcb->FileInfo);
@@ -542,7 +546,7 @@ DiscardDelete:
         }
 
         // Update FileTimes & Attrs
-        if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) &&
+        if(!(Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) &&
            !(Fcb->FCBFlags & (UDF_FCB_DELETE_ON_CLOSE |
                               UDF_FCB_DELETED /*|
                               UDF_FCB_DIRECTORY |
@@ -680,7 +684,7 @@ try_exit: NOTHING;
             Irp->IoStatus.Information = 0;
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             // Free up the Irp Context
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
         }
 
     } _SEH2_END; // end of "__finally" processing
@@ -777,7 +781,7 @@ UDFAutoUnlock (
     IoAcquireVpbSpinLock( &SavedIrql );
 
     ClearFlag(Vcb->Vpb->Flags, VPB_LOCKED | VPB_DIRECT_WRITES_ALLOWED);
-    ClearFlag(Vcb->VCBFlags, UDF_VCB_FLAGS_VOLUME_LOCKED);
+    ClearFlag(Vcb->VCBFlags, VCB_STATE_VOLUME_LOCKED);
     Vcb->VolumeLockFileObject = NULL;
 
     IoReleaseVpbSpinLock( SavedIrql );

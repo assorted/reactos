@@ -71,7 +71,7 @@ UDFFSControl(
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
         UDFPrintErr(("UDFFSControl: exception ***"));
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -152,7 +152,7 @@ UDFCommonFSControl(
         if (!_SEH2_AbnormalTermination()) {
             // Free up the Irp Context
             UDFPrint(("  UDFCommonFSControl: finally\n"));
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
         } else {
             UDFPrint(("  UDFCommonFSControl: finally after exception ***\n"));
         }
@@ -584,7 +584,7 @@ try_raw_mount:
             Vcb->MountPhErrorCount = -1;
 
             // set cache mode according to media type
-            if(!(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY)) {
+            if(!(Vcb->VCBFlags & VCB_STATE_MEDIA_WRITE_PROTECT)) {
                 UDFPrint(("UDFMountVolume: writable volume\n"));
                 if(!Vcb->CDR_Mode) {
                     if(FsDeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) {
@@ -634,9 +634,9 @@ try_raw_mount:
             Vcb->VCBFlags &= ~UDF_VCB_FLAGS_RAW_DISK;
         }
 
-        if((Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY)) {
+        if((Vcb->VCBFlags & VCB_STATE_MEDIA_WRITE_PROTECT)) {
             UDFPrint(("UDFMountVolume: RO mount\n"));
-            Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
+            Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
         }
 
         Vcb->Vpb->SerialNumber = Vcb->PhSerialNumber;
@@ -653,8 +653,8 @@ try_raw_mount:
 
         // unlock media
         if(RemovableMedia) {
-            if(Vcb->VCBFlags & UDF_VCB_FLAGS_MEDIA_READ_ONLY || 
-               Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) {
+            if(Vcb->VCBFlags & VCB_STATE_MEDIA_WRITE_PROTECT || 
+               Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) {
 
                 UDFPrint(("UDFMountVolume: unlock media on RO volume\n"));
                 UDFToggleMediaEjectDisable(Vcb, FALSE);
@@ -1345,7 +1345,7 @@ UDFIsVolumeMounted(
 
     if(Fcb &&
        !(Fcb->Vcb->VCBFlags & UDF_VCB_FLAGS_RAW_DISK) &&
-       !(Fcb->Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) ) {
+       !(Fcb->Vcb->VCBFlags & VCB_STATE_VOLUME_LOCKED) ) {
 
         // Disable PopUps, we want to return any error.
         IrpContext->Flags |= IRP_CONTEXT_FLAG_DISABLE_POPUPS;
@@ -1513,7 +1513,7 @@ UDFUnlockVolumeInternal (
 
         // This one locked it, unlock the volume
         ClearFlag(Vcb->Vpb->Flags, VPB_LOCKED | VPB_DIRECT_WRITES_ALLOWED);
-        ClearFlag(Vcb->VCBFlags, UDF_VCB_FLAGS_VOLUME_LOCKED);
+        ClearFlag(Vcb->VCBFlags, VCB_STATE_VOLUME_LOCKED);
         Vcb->VolumeLockFileObject = NULL;
 
         Status = STATUS_SUCCESS;
@@ -1634,7 +1634,7 @@ UDFLockVolume(
         if(PID == (ULONG)-1) {
             Vcb->Vpb->Flags |= VPB_LOCKED;
         }
-        Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_LOCKED;
+        Vcb->VCBFlags |= VCB_STATE_VOLUME_LOCKED;
         Vcb->VolumeLockFileObject = IrpSp->FileObject;
         Vcb->VolumeLockPID        = PID;
 
@@ -1787,7 +1787,7 @@ UDFDismountVolume(
             RC = STATUS_VOLUME_DISMOUNTED;
         } else
         if(/*!(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_MOUNTED) ||*/
-           !(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_LOCKED) ||
+           !(Vcb->VCBFlags & VCB_STATE_VOLUME_LOCKED) ||
             (Vcb->VCBOpenCount > (UDF_RESIDUAL_REFERENCE+1))) {
 
             RC = STATUS_NOT_LOCKED;

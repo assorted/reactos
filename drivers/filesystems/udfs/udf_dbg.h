@@ -130,19 +130,11 @@ DbgWaitForSingleObject_(
 
 #ifdef UDF_DBG
 
-#ifdef _X86_
-// This is an illegal use of INT3
-#define UDFBreakPoint() { __asm int 3 }
-#else // _X86_
-
-#define UDFBreakPoint() DbgBreakPoint()
-#endif // _X86_
-
-#ifdef BRUTE
-#define BrutePoint() UDFBreakPoint()
+#ifdef UDF_DBG
+  #define BrutePoint() DbgBreakPoint()
 #else
-#define BrutePoint() {}
-#endif // BRUTE
+  #define BrutePoint() {}
+#endif // UDF_DBG
 
 #ifdef CHECK_REF_COUNTS
 #define ASSERT_REF(_a_) ASSERT(_a_)

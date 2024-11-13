@@ -93,16 +93,25 @@ UDFFastIoCheckIfPossible(
         // locks on the file stream. If we do not use the FSRTL package
         // for byte-range locking support, then we must substitute our
         // own checks over here.
-        ReturnedStatus = FsRtlFastCheckLockForRead(&Fcb->FileLock,
+        if (Fcb->FileLock == NULL ||
+            FsRtlFastCheckLockForRead(Fcb->FileLock,
                               FileOffset, &IoLength, LockKey, FileObject,
-                              PsGetCurrentProcess());
+                              PsGetCurrentProcess())) {
+
+            ReturnedStatus = TRUE;
+        }
     } else {
-//        if(Fcb->Vcb->VCBFlags );
         // This is a write request. Invoke the FSRTL byte-range lock package
         // to see whether the write should be allowed to proceed.
-        ReturnedStatus = FsRtlFastCheckLockForWrite(&Fcb->FileLock,
+        // Also check for a write-protected volume here.
+        if (Fcb->FileLock == NULL ||
+            (!FlagOn(Fcb->Vcb->VCBFlags, VCB_STATE_MEDIA_WRITE_PROTECT | VCB_STATE_VOLUME_READ_ONLY) &&
+            FsRtlFastCheckLockForWrite(Fcb->FileLock,
                               FileOffset, &IoLength, LockKey, FileObject,
-                              PsGetCurrentProcess());
+                                PsGetCurrentProcess()))) {
+
+            ReturnedStatus = TRUE;
+        }
     }
 
     MmPrint(("    UDFFastIoCheckIfPossible() %s\n", ReturnedStatus ? "TRUE" : "FALSE"));
@@ -131,7 +140,8 @@ UDFIsFastIoPossible(
         return FastIoIsNotPossible;
     }
 */
-    if (FsRtlAreThereCurrentFileLocks(&Fcb->FileLock)) {
+    if ((Fcb->FileLock != NULL) &&
+        FsRtlAreThereCurrentFileLocks(Fcb->FileLock)) {
         UDFPrint(("    FastIoIsQuestionable\n"));
         return FastIoIsQuestionable;
     }
@@ -206,7 +216,7 @@ UDFFastIoQueryBasicInfo(
 
         } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(IrpContext, NULL);
+            RC = UDFProcessException(IrpContext, NULL);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
 
@@ -301,7 +311,7 @@ UDFFastIoQueryStdInfo(
 
         } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(IrpContext, NULL);
+            RC = UDFProcessException(IrpContext, NULL);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
 
@@ -643,7 +653,7 @@ UDFFastIoQueryNetInfo(
 
         } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-            RC = UDFExceptionHandler(IrpContext, NULL);
+            RC = UDFProcessException(IrpContext, NULL);
 
             UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
 

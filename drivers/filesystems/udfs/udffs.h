@@ -180,7 +180,7 @@ UDFFreePool(
 // small check for illegal open mode (desired access) if volume is
 // read only (on standard CD-ROM device or another like this)
 #define UdfIllegalFcbAccess(Vcb,DesiredAccess) ((   \
-    (Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) && \
+    (Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) && \
      (FlagOn( (DesiredAccess),                       \
             FILE_WRITE_DATA         |   \
             FILE_ADD_FILE           |   \
@@ -284,13 +284,13 @@ UDFFreePool(
 #endif //UDF_DBG
 
 #define UDFRaiseStatus(IC,S) {                              \
-    (IC)->SavedExceptionCode = (S);                         \
+    (IC)->ExceptionCode = (S);                              \
     ExRaiseStatus( (S) );                                   \
 }
 
 #define UDFNormalizeAndRaiseStatus(IC,S) {                                          \
-    (IC)->SavedExceptionCode = FsRtlNormalizeNtstatus((S),STATUS_UNEXPECTED_IO_ERROR); \
-    ExRaiseStatus( (IC)->SavedExceptionCode );                                         \
+    (IC)->ExceptionCode = FsRtlNormalizeNtstatus((S),STATUS_UNEXPECTED_IO_ERROR);   \
+    ExRaiseStatus( (IC)->ExceptionCode );                                           \
 }
 
 #define UDFIsRawDevice(RC) (           \
@@ -360,6 +360,97 @@ UDFFreePool(
 
 #include "Include/udf_reg.h"
 #include <mountmgr.h>
+
+#if DBG
+
+#define ASSERT_STRUCT(S,T)                  NT_ASSERT( SafeNodeType( S ) == (T) )
+#define ASSERT_OPTIONAL_STRUCT(S,T)         NT_ASSERT( ((S) == NULL) ||  (SafeNodeType( S ) == (T)) )
+
+#define ASSERT_VCB(V)                       ASSERT_STRUCT( (V), CDFS_NTC_VCB )
+#define ASSERT_OPTIONAL_VCB(V)              ASSERT_OPTIONAL_STRUCT( (V), CDFS_NTC_VCB )
+
+#define ASSERT_FCB(F)                                           \
+    NT_ASSERT( (SafeNodeType( F ) == CDFS_NTC_FCB_DATA ) ||        \
+            (SafeNodeType( F ) == CDFS_NTC_FCB_INDEX ) ||       \
+            (SafeNodeType( F ) == CDFS_NTC_FCB_PATH_TABLE ) )
+
+#define ASSERT_OPTIONAL_FCB(F)                                  \
+    NT_ASSERT( ((F) == NULL) ||                                    \
+            (SafeNodeType( F ) == CDFS_NTC_FCB_DATA ) ||        \
+            (SafeNodeType( F ) == CDFS_NTC_FCB_INDEX ) ||       \
+            (SafeNodeType( F ) == CDFS_NTC_FCB_PATH_TABLE ) )
+
+#define ASSERT_FCB_NONPAGED(FN)             ASSERT_STRUCT( (FN), CDFS_NTC_FCB_NONPAGED )
+#define ASSERT_OPTIONAL_FCB_NONPAGED(FN)    ASSERT_OPTIONAL_STRUCT( (FN), CDFS_NTC_FCB_NONPAGED )
+
+#define ASSERT_CCB(C)                       ASSERT_STRUCT( (C), CDFS_NTC_CCB )
+#define ASSERT_OPTIONAL_CCB(C)              ASSERT_OPTIONAL_STRUCT( (C), CDFS_NTC_CCB )
+
+#define ASSERT_IRP_CONTEXT(IC)              ASSERT_STRUCT( (IC), UDF_NODE_TYPE_IRP_CONTEXT )
+#define ASSERT_OPTIONAL_IRP_CONTEXT(IC)     ASSERT_OPTIONAL_STRUCT( (IC), UDF_NODE_TYPE_IRP_CONTEXT )
+
+#define ASSERT_IRP(I)                       ASSERT_STRUCT( (I), IO_TYPE_IRP )
+#define ASSERT_OPTIONAL_IRP(I)              ASSERT_OPTIONAL_STRUCT( (I), IO_TYPE_IRP )
+
+#define ASSERT_FILE_OBJECT(FO)              ASSERT_STRUCT( (FO), IO_TYPE_FILE )
+#define ASSERT_OPTIONAL_FILE_OBJECT(FO)     ASSERT_OPTIONAL_STRUCT( (FO), IO_TYPE_FILE )
+
+#define ASSERT_EXCLUSIVE_RESOURCE(R)        NT_ASSERT( ExIsResourceAcquiredExclusiveLite( R ))
+
+#define ASSERT_SHARED_RESOURCE(R)           NT_ASSERT( ExIsResourceAcquiredSharedLite( R ))
+
+#define ASSERT_RESOURCE_NOT_MINE(R)         NT_ASSERT( !ExIsResourceAcquiredSharedLite( R ))
+
+#define ASSERT_EXCLUSIVE_CDDATA             NT_ASSERT( ExIsResourceAcquiredExclusiveLite( &CdData.DataResource ))
+#define ASSERT_EXCLUSIVE_VCB(V)             NT_ASSERT( ExIsResourceAcquiredExclusiveLite( &(V)->VcbResource ))
+#define ASSERT_SHARED_VCB(V)                NT_ASSERT( ExIsResourceAcquiredSharedLite( &(V)->VcbResource ))
+
+#define ASSERT_EXCLUSIVE_FCB(F)             NT_ASSERT( ExIsResourceAcquiredExclusiveLite( &(F)->FcbNonpaged->FcbResource ))
+#define ASSERT_SHARED_FCB(F)                NT_ASSERT( ExIsResourceAcquiredSharedLite( &(F)->FcbNonpaged->FcbResource ))
+
+#define ASSERT_EXCLUSIVE_FILE(F)            NT_ASSERT( ExIsResourceAcquiredExclusiveLite( (F)->Resource ))
+#define ASSERT_SHARED_FILE(F)               NT_ASSERT( ExIsResourceAcquiredSharedLite( (F)->Resource ))
+
+#define ASSERT_LOCKED_VCB(V)                NT_ASSERT( (V)->VcbLockThread == PsGetCurrentThread() )
+#define ASSERT_NOT_LOCKED_VCB(V)            NT_ASSERT( (V)->VcbLockThread != PsGetCurrentThread() )
+
+#define ASSERT_LOCKED_FCB(F)                NT_ASSERT( !FlagOn( (F)->FcbState, FCB_STATE_IN_FCB_TABLE) || ((F)->FcbLockThread == PsGetCurrentThread()))
+#define ASSERT_NOT_LOCKED_FCB(F)            NT_ASSERT( (F)->FcbLockThread != PsGetCurrentThread() )
+
+#else
+
+#define ASSERT_STRUCT(S,T)              { NOTHING; }
+#define ASSERT_OPTIONAL_STRUCT(S,T)     { NOTHING; }
+#define ASSERT_VCB(V)                   { NOTHING; }
+#define ASSERT_OPTIONAL_VCB(V)          { NOTHING; }
+#define ASSERT_FCB(F)                   { NOTHING; }
+#define ASSERT_OPTIONAL_FCB(F)          { NOTHING; }
+#define ASSERT_FCB_NONPAGED(FN)         { NOTHING; }
+#define ASSERT_OPTIONAL_FCB(FN)         { NOTHING; }
+#define ASSERT_CCB(C)                   { NOTHING; }
+#define ASSERT_OPTIONAL_CCB(C)          { NOTHING; }
+#define ASSERT_IRP_CONTEXT(IC)          { NOTHING; }
+#define ASSERT_OPTIONAL_IRP_CONTEXT(IC) { NOTHING; }
+#define ASSERT_IRP(I)                   { NOTHING; }
+#define ASSERT_OPTIONAL_IRP(I)          { NOTHING; }
+#define ASSERT_FILE_OBJECT(FO)          { NOTHING; }
+#define ASSERT_OPTIONAL_FILE_OBJECT(FO) { NOTHING; }
+#define ASSERT_EXCLUSIVE_RESOURCE(R)    { NOTHING; }
+#define ASSERT_SHARED_RESOURCE(R)       { NOTHING; }
+#define ASSERT_RESOURCE_NOT_MINE(R)     { NOTHING; }
+#define ASSERT_EXCLUSIVE_CDDATA         { NOTHING; }
+#define ASSERT_EXCLUSIVE_VCB(V)         { NOTHING; }
+#define ASSERT_SHARED_VCB(V)            { NOTHING; }
+#define ASSERT_EXCLUSIVE_FCB(F)         { NOTHING; }
+#define ASSERT_SHARED_FCB(F)            { NOTHING; }
+#define ASSERT_EXCLUSIVE_FILE(F)        { NOTHING; }
+#define ASSERT_SHARED_FILE(F)           { NOTHING; }
+#define ASSERT_LOCKED_VCB(V)            { NOTHING; }
+#define ASSERT_NOT_LOCKED_VCB(V)        { NOTHING; }
+#define ASSERT_LOCKED_FCB(F)            { NOTHING; }
+#define ASSERT_NOT_LOCKED_FCB(F)        { NOTHING; }
+
+#endif
 
 #endif  // _UDF_UDF_H_
 

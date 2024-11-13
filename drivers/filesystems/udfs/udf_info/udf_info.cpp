@@ -1552,12 +1552,12 @@ UDFReadEntityID_Domain(
     UDFPrint(("Flags: %x\n", flags));
     if((flags & ENTITYID_FLAGS_SOFT_RO) &&
         (Vcb->CompatFlags & UDF_VCB_IC_SOFT_RO)) {
-        Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
+        Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
         UDFPrint(("       Soft-RO\n"));
     }
     if((flags & ENTITYID_FLAGS_HARD_RO) &&
        (Vcb->CompatFlags & UDF_VCB_IC_HW_RO)) {
-        Vcb->VCBFlags |= UDF_VCB_FLAGS_MEDIA_READ_ONLY;
+        Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
         UDFPrint(("       Hard-RO\n"));
     }
 
@@ -2131,7 +2131,7 @@ init_tree_entry:
             return status;
 
         if((FileInfo->Dloc->DirIndex->DelCount > Vcb->PackDirThreshold) &&
-           !(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)) {
+           !(Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY)) {
             status = UDFPackDirectory__(Vcb, FileInfo);
             if(!OS_SUCCESS(status))
                 return status;
@@ -2221,7 +2221,7 @@ init_tree_entry:
             return status;
 
         if((FileInfo->Dloc->DirIndex->DelCount > Vcb->PackDirThreshold) &&
-           !(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY)) {
+           !(Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY)) {
             status = UDFPackDirectory__(Vcb, FileInfo);
             if(!OS_SUCCESS(status))
                 return status;
@@ -2321,7 +2321,7 @@ UDFCleanUpFile__(
             for(i=2; (DirNdx = UDFDirIndex(Dloc->DirIndex,i)); i++) {
                 if(DirNdx->FileInfo) {
                     if(!KeepDloc) {
-                        BrutePoint();
+                        ASSERT(FALSE);
                         UDFPrint(("UDF: Found not cleaned up reference.\n"));
                         UDFPrint(("     Skipping cleanup (1)\n"));
 //                        BrutePoint();
@@ -3597,7 +3597,7 @@ UDFLoadVAT(
     if((Vcb->LastTrackNum > 1) &&
        (Vcb->LastLBA == Vcb->TrackMap[Vcb->LastTrackNum-1].LastLba)) {
         UDFPrint(("Hardware Read-only volume\n"));
-        Vcb->VCBFlags |= UDF_VCB_FLAGS_VOLUME_READ_ONLY;
+        Vcb->VCBFlags |= VCB_STATE_VOLUME_READ_ONLY;
     }
 
     VatFileInfo = Vcb->VatFileInfo = (PUDF_FILE_INFO)MyAllocatePoolTag__(UDF_FILE_INFO_MT, sizeof(UDF_FILE_INFO), MEM_VATFINF_TAG);

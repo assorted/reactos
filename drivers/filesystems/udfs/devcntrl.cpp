@@ -102,7 +102,7 @@ UDFDeviceControl(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -557,7 +557,7 @@ ioctl_do_default:
             RC = IoCallDriver(Vcb->TargetDeviceObject, Irp);
             if(!CompleteIrp) {
                 // since now we do not use IoSetCompletionRoutine()
-                UDFReleaseIrpContext(IrpContext);
+                UDFCleanupIrpContext(IrpContext);
             }
             break;
         }
@@ -584,7 +584,7 @@ try_exit: NOTHING;
             // complete the IRP
             IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             // Release the IRP context
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
         }
     } _SEH2_END;
 
@@ -623,7 +623,7 @@ UDFDevIoctlCompletion(
         IoMarkIrpPending(Irp);
     }
 
-    UDFReleaseIrpContext(IrpContext);
+    UDFCleanupIrpContext(IrpContext);
 /*    if(Irp->IoStatus.Status == STATUS_SUCCESS) {
         IrpSp = IoGetCurrentIrpStackLocation(Irp);
         IoControlCode = IrpSp->Parameters.DeviceIoControl.IoControlCode;

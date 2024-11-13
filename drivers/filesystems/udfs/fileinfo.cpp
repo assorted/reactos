@@ -78,7 +78,7 @@ UDFQueryInfo(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -145,7 +145,7 @@ UDFSetInfo(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -379,7 +379,7 @@ try_exit:   NOTHING;
                 // complete the IRP
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
                 // Free up the Irp Context
-                UDFReleaseIrpContext(IrpContext);
+                UDFCleanupIrpContext(IrpContext);
             } // can we complete the IRP ?
 
         }
@@ -476,7 +476,7 @@ UDFCommonSetInfo(
 
         // Now, obtain some parameters.
         FunctionalityRequested = IrpSp->Parameters.SetFile.FileInformationClass;
-        if((Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) &&
+        if((Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) &&
             (FunctionalityRequested != FilePositionInformation)) {
             try_return(RC = STATUS_ACCESS_DENIED);
         }
@@ -683,7 +683,7 @@ try_exit:   NOTHING;
                 // complete the IRP
                 IoCompleteRequest(Irp, IO_DISK_INCREMENT);
                 // Free up the Irp Context
-                UDFReleaseIrpContext(IrpContext);
+                UDFCleanupIrpContext(IrpContext);
             } // can we complete the IRP ?
 
         }
@@ -1629,7 +1629,7 @@ UDFSetDispositionInformation(
             try_return(RC);
         }
 
-        if(Vcb->VCBFlags & UDF_VCB_FLAGS_VOLUME_READ_ONLY) {
+        if(Vcb->VCBFlags & VCB_STATE_VOLUME_READ_ONLY) {
             try_return(RC = STATUS_CANNOT_DELETE);
         }
 

@@ -70,7 +70,7 @@ UDFLockControl(
 
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-        RC = UDFExceptionHandler(IrpContext, Irp);
+        RC = UDFProcessException(IrpContext, Irp);
 
         UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
     } _SEH2_END;
@@ -150,7 +150,16 @@ UDFCommonLockControl(
         }
         AcquiredFCB = TRUE;
 
-        RC = FsRtlProcessFileLock(&Fcb->FileLock, Irp, NULL);
+        // If we don't have a file lock, then get one now.
+        if ((Fcb->FileLock == NULL) && !UDFCreateFileLock(NULL, Fcb, FALSE)) {
+
+            if (!UDFCreateFileLock(NULL, Fcb, FALSE)) {
+
+                try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+            }
+        }
+
+        RC = FsRtlProcessFileLock(Fcb->FileLock, Irp, NULL);
 //        CompleteRequest = TRUE;
 
 try_exit: NOTHING;
@@ -170,7 +179,7 @@ try_exit: NOTHING;
         if(!_SEH2_AbnormalTermination()) {
             // Simply free up the IrpContext since the IRP has been queued or
             // Completed by FsRtlProcessFileLock
-            UDFReleaseIrpContext(IrpContext);
+            UDFCleanupIrpContext(IrpContext);
         }
     } _SEH2_END; // end of "__finally" processing
 
@@ -246,12 +255,18 @@ UDFFastLock (
 
     _SEH2_TRY {
 
+        //  If we don't have a file lock, then get one now.
+        if ((Fcb->FileLock == NULL) && !UDFCreateFileLock(NULL, Fcb, FALSE)) {
+
+            try_return(NOTHING);
+        }
+
         //  We check whether we can proceed
         //  based on the state of the file oplocks.
 
         //  Now call the FsRtl routine to do the actual processing of the
         //  Lock request
-        if ((Results = FsRtlFastLock(&Fcb->FileLock,
+        if ((Results = FsRtlFastLock(Fcb->FileLock,
                                      FileObject,
                                      FileOffset,
                                      Length,
@@ -267,7 +282,7 @@ UDFFastLock (
             Fcb->Header.IsFastIoPossible = UDFIsFastIoPossible(Fcb);
         }
 
-//try_exit:  NOTHING;
+try_exit:  NOTHING;
     } _SEH2_FINALLY {
 
         //  Release the Fcb, and return to our caller
@@ -340,6 +355,13 @@ UDFFastUnlockSingle(
         return TRUE;
     }
 
+    // If there is no lock then return immediately.
+    if (Fcb->FileLock == NULL) {
+
+        IoStatus->Status = STATUS_RANGE_NOT_LOCKED;
+        return TRUE;
+    }
+
     //  Acquire exclusive access to the Fcb this operation can always wait
 
     FsRtlEnterFileSystem();
@@ -355,7 +377,7 @@ UDFFastUnlockSingle(
         //  Now call the FsRtl routine to do the actual processing of the
         //  Lock request
         Results = TRUE;
-        IoStatus->Status = FsRtlFastUnlockSingle(&Fcb->FileLock,
+        IoStatus->Status = FsRtlFastUnlockSingle(Fcb->FileLock,
                                                  FileObject,
                                                  FileOffset,
                                                  Length,
@@ -444,10 +466,16 @@ UDFFastUnlockAll(
         //  We check whether we can proceed
         //  based on the state of the file oplocks.
 
+        //  If we don't have a file lock, then get one now.
+        if ((Fcb->FileLock == NULL) && !UDFCreateFileLock(NULL, Fcb, FALSE)) {
+
+            _SEH2_LEAVE;
+        }
+
         //  Now call the FsRtl routine to do the actual processing of the
         //  Lock request
         Results = TRUE;
-        IoStatus->Status = FsRtlFastUnlockAll(&Fcb->FileLock,
+        IoStatus->Status = FsRtlFastUnlockAll(Fcb->FileLock,
                                               FileObject,
                                               ProcessId,
                                               NULL);
@@ -535,10 +563,16 @@ UDFFastUnlockAllByKey(
         //  We check whether we can proceed
         //  based on the state of the file oplocks.
 
+        //  If we don't have a file lock, then get one now.
+        if ((Fcb->FileLock == NULL) && !UDFCreateFileLock( NULL, Fcb, FALSE )) {
+
+            _SEH2_LEAVE;
+        }
+
         //  Now call the FsRtl routine to do the actual processing of the
         //  Lock request
         Results = TRUE;
-        IoStatus->Status = FsRtlFastUnlockAllByKey(&Fcb->FileLock,
+        IoStatus->Status = FsRtlFastUnlockAllByKey(Fcb->FileLock,
                                                    FileObject,
                                                    ProcessId,
                                                    Key,
