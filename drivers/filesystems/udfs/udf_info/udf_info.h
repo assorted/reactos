@@ -501,17 +501,12 @@ UDFBuildFileEntry(
 // find reference partition number containing given physical sector
 uint32 __fastcall UDFGetRefPartNumByPhysLba(IN PVCB Vcb, IN uint32 Lba);
 
-// add given bitmap to existing one
-#define UDF_FSPACE_BM    0x00
-#define UDF_ZSPACE_BM    0x01
-
 NTSTATUS
 UDFAddXSpaceBitmap(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 PartNum,
-    IN PSHORT_AD bm,
-    IN ULONG bm_type
+    IN PSHORT_AD bm
     );
 
 // subtract given Bitmap to existing one
@@ -1000,7 +995,7 @@ PDIR_INDEX_HDR UDFGetDirIndexByFileInfo(IN PUDF_FILE_INFO FileInfo);
 /*int64 UDFGetFileAllocationSize(IN PVCB Vcb,
                                   IN PUDF_FILE_INFO FileInfo);*/
 #define UDFGetFileAllocationSize(Vcb, FileInfo)  \
-    (((FileInfo)->Dloc->DataLoc.Mapping) ? UDFGetExtentLength((FileInfo)->Dloc->DataLoc.Mapping) : Vcb->LBlockSize)
+    (((FileInfo)->Dloc->DataLoc.Mapping) ? UDFGetExtentLength((FileInfo)->Dloc->DataLoc.Mapping) : Vcb->SectorSize)
 // check if the directory is empty
 BOOLEAN  UDFIsDirEmpty(IN PDIR_INDEX_HDR hCurDirNdx);
 
@@ -1105,7 +1100,7 @@ __fastcall UDFPartLbaToPhys(IN PVCB Vcb,
 
 // look for Anchor(s) at all possible locations
 lba_t
-UDFFindAnchor(
+UDFFindAnchorVolumeDescriptor(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb
     );
@@ -1343,36 +1338,30 @@ __fastcall UDFPartLen(PVCB Vcb,
 NTSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,
                                  IN PUDF_FILE_INFO FileInfo);
 
-#define UDFStreamsSupported(Vcb) \
-    (Vcb->maxUDFWriteRev >= 0x0200)
-
-#define UDFNtAclSupported(Vcb) \
-    (Vcb->maxUDFWriteRev >= 0x0200)
-
 #define UDFReferenceFile__(fi)                       \
 {                                                    \
-    UDFInterlockedIncrement((PLONG)&((fi)->RefCount));  \
-    UDFInterlockedIncrement((PLONG)&((fi)->Dloc->LinkRefCount));  \
+    InterlockedIncrement((PLONG)&((fi)->RefCount));  \
+    InterlockedIncrement((PLONG)&((fi)->Dloc->LinkRefCount));  \
     if ((fi)->ParentFile) {                           \
-        UDFInterlockedIncrement((PLONG)&((fi)->ParentFile->OpenCount));  \
+        InterlockedIncrement((PLONG)&((fi)->ParentFile->OpenCount));  \
     }                                                \
 }
 
 #define UDFReferenceFileEx__(fi,i)                   \
 {                                                    \
-    UDFInterlockedExchangeAdd((PLONG)&((fi)->RefCount),i);  \
-    UDFInterlockedExchangeAdd((PLONG)&((fi)->Dloc->LinkRefCount),i);  \
+    InterlockedExchangeAdd((PLONG)&((fi)->RefCount),i);  \
+    InterlockedExchangeAdd((PLONG)&((fi)->Dloc->LinkRefCount),i);  \
     if ((fi)->ParentFile) {                           \
-        UDFInterlockedExchangeAdd((PLONG)&((fi)->ParentFile->OpenCount),i);  \
+        InterlockedExchangeAdd((PLONG)&((fi)->ParentFile->OpenCount),i);  \
     }                                                \
 }
 
 #define UDFDereferenceFile__(fi)                     \
 {                                                    \
-    UDFInterlockedDecrement((PLONG)&((fi)->RefCount));  \
-    UDFInterlockedDecrement((PLONG)&((fi)->Dloc->LinkRefCount));  \
+    InterlockedDecrement((PLONG)&((fi)->RefCount));  \
+    InterlockedDecrement((PLONG)&((fi)->Dloc->LinkRefCount));  \
     if ((fi)->ParentFile) {                           \
-        UDFInterlockedDecrement((PLONG)&((fi)->ParentFile->OpenCount));  \
+        InterlockedDecrement((PLONG)&((fi)->ParentFile->OpenCount));  \
     }                                                \
 }
 

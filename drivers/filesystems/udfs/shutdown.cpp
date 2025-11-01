@@ -19,80 +19,6 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID                UDF_FILE_SHUTDOWN
 
-
-
-/*************************************************************************
-*
-* Function: UDFShutdown()
-*
-* Description:
-*   All disk-based FSDs can expect to receive this shutdown notification
-*   request whenever the system is about to be halted gracefully. If you
-*   design and implement a network redirector, you must register explicitly
-*   for shutdown notification by invoking the IoRegisterShutdownNotification()
-*   routine from your driver entry.
-*
-*   Note that drivers that register to receive shutdown notification get
-*   invoked BEFORE disk-based FSDs are told about the shutdown notification.
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL
-*
-* Return Value: Irrelevant.
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFShutdown(
-    PDEVICE_OBJECT   DeviceObject,       // the logical volume device object
-    PIRP             Irp                 // I/O Request Packet
-    )
-{
-    NTSTATUS         RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN          AreWeTopLevel = FALSE;
-
-    UDFPrint(("UDFShutDown\n"));
-//    BrutePoint();
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-    //ASSERT(!UDFIsFSDevObj(DeviceObject));
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-            RC = UDFCommonShutdown(IrpContext, Irp);
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFShutdown()
-
-
 /*************************************************************************
 *
 * Function: UDFCommonShutdown()
@@ -116,7 +42,6 @@ UDFCommonShutdown(
     )
 {
     KEVENT Event;
-    NTSTATUS Status;
     PVCB Vcb;
     PLIST_ENTRY Link;
     BOOLEAN VcbPresent = TRUE;
@@ -125,7 +50,7 @@ UDFCommonShutdown(
 
     // Make sure we don't get any pop-ups.
 
-    SetFlag( IrpContext->Flags, IRP_CONTEXT_FLAG_DISABLE_POPUPS );
+    SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_DISABLE_POPUPS);
 
     // Initialize an event for doing calls down to
     // our target device objects.
@@ -238,9 +163,11 @@ UDFCommonShutdown(
             }
         }
 
-        // Once we have processed all the mounted logical volumes, we can release
-        // all acquired global resources and leave (in peace :-)
+    } _SEH2_FINALLY {
+
         UDFReleaseUdfData(IrpContext);
+
+        ExDeleteResourceLite(&UdfData.GlobalDataResource);
 
         // Now, delete any device objects, etc. we may have created
         IoUnregisterFileSystem(UdfData.UDFDeviceObject_CD);
@@ -260,18 +187,7 @@ UDFCommonShutdown(
             UDFDestroyZones();
         }
 
-        // delete the resource we may have initialized
-        if (UdfData.Flags & UDF_DATA_FLAGS_RESOURCE_INITIALIZED) {
-            // un-initialize this resource
-            UDFDeleteResource(&UdfData.GlobalDataResource);
-            ClearFlag(UdfData.Flags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
-        }
-
-        Status = STATUS_SUCCESS;
-
-    } _SEH2_FINALLY {
-
-        UDFReleaseUdfData(IrpContext);
+        UDFCompleteRequest(IrpContext, Irp, STATUS_SUCCESS);
 
     } _SEH2_END; // end of "__finally" processing
 

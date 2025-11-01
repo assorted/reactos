@@ -19,73 +19,6 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID                UDF_FILE_FLUSH
 
-
-
-/*************************************************************************
-*
-* Function: UDFFlushBuffers()
-*
-* Description:
-*   The I/O Manager will invoke this routine to handle a flush buffers
-*   request
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL (invocation at higher IRQL will cause execution
-*   to be deferred to a worker thread context)
-*
-* Return Value: STATUS_SUCCESS/Error
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFFlushBuffers(
-    PDEVICE_OBJECT      DeviceObject,       // the logical volume device object
-    PIRP                Irp)                // I/O Request Packet
-{
-    NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN             AreWeTopLevel = FALSE;
-
-    UDFPrint(("UDFFlush: \n"));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-            RC = UDFCommonFlush(IrpContext, Irp);
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFFlushBuffers()
-
-
-
 /*************************************************************************
 *
 * Function: UDFCommonFlush()
@@ -166,7 +99,7 @@ UDFCommonFlush(
 
     if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT)) {
 
-        Status = UDFPostRequest(IrpContext, Irp);
+        Status = UDFFsdPostRequest(IrpContext, Irp);
 
         return Status;
     }

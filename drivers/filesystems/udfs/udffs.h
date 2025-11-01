@@ -34,7 +34,6 @@
 #endif //UDF_LIMIT_NAME_LEN
 
 #define IFS_40
-//#define PRETEND_NTFS
 
 //#define UDF_ASYNC_IO
 
@@ -122,8 +121,6 @@ typedef FILE_ID                     *PFILE_ID;
 #define NonPagedPoolNx NonPagedPool
 #endif
 
-#define PEXTENDED_IO_STACK_LOCATION  PIO_STACK_LOCATION
-
 // #define NDEBUG
 #ifndef NDEBUG
 #define UDF_DBG
@@ -138,6 +135,7 @@ typedef FILE_ID                     *PFILE_ID;
 #include "wcache.h"
 
 #include "Include/regtools.h"
+#include "Include/udf_reg.h"
 #include "struct.h"
 
 // global variables - minimize these
@@ -203,7 +201,7 @@ UDFIllegalFcbAccess(
            BooleanFlagOn(DesiredAccess, WriteMask);
 }
 
-#if !defined(UDF_DBG) && !defined(PRINT_ALWAYS)
+#if !defined(UDF_DBG)
 #define UDFPrint(Args)
 #else
 #define UDFPrint(Args) KdPrint(Args)
@@ -216,66 +214,37 @@ UDFIllegalFcbAccess(
 #define UDFReleaseDevice(IrpContext, Vcb, ResourceThreadId) \
     ((void)0) /* No operation - CD/DVD write modes not currently supported */
 
-//
-#if !defined(UDF_DBG) && !defined(PRINT_ALWAYS)
 
 #define UDFAcquireResourceExclusive(Resource,CanWait)  \
     (ExAcquireResourceExclusiveLite((Resource),(CanWait)))
+
 #define UDFAcquireResourceShared(Resource,CanWait) \
     (ExAcquireResourceSharedLite((Resource),(CanWait)))
+
 // a convenient macro (must be invoked in the context of the thread that acquired the resource)
 #define UDFReleaseResource(Resource)    \
     (ExReleaseResourceForThreadLite((Resource), ExGetCurrentResourceThread()))
+
 #define UDFDeleteResource(Resource)    \
     (ExDeleteResourceLite((Resource)))
+
 #define UDFConvertExclusiveToSharedLite(Resource) \
     (ExConvertExclusiveToSharedLite((Resource)))
-#define UDFInitializeResourceLite(Resource) \
-    (ExInitializeResourceLite((Resource)))
+
 #define UDFAcquireSharedStarveExclusive(Resource,CanWait) \
     (ExAcquireSharedStarveExclusive((Resource),(CanWait)))
+
 #define UDFAcquireSharedWaitForExclusive(Resource,CanWait) \
     (ExAcquireSharedWaitForExclusive((Resource),(CanWait)))
 
-#define UDFInterlockedIncrement(addr) \
-    (InterlockedIncrement((addr)))
-#define UDFInterlockedDecrement(addr) \
-    (InterlockedDecrement((addr)))
-#define UDFInterlockedExchangeAdd(addr,i) \
-    (InterlockedExchangeAdd((addr),(i)))
+//
+#if !defined(UDF_DBG)
 
 #define UDF_CHECK_PAGING_IO_RESOURCE(NTReqFCB)
 #define UDF_CHECK_EXVCB_RESOURCE(Vcb)
 #define UDF_CHECK_BITMAP_RESOURCE(Vcb)
 
 #else //UDF_DBG
-
-#define UDFAcquireResourceExclusive(Resource,CanWait)  \
-    (UDFDebugAcquireResourceExclusiveLite((Resource),(CanWait),UDF_BUG_CHECK_ID,__LINE__))
-
-#define UDFAcquireResourceShared(Resource,CanWait) \
-    (UDFDebugAcquireResourceSharedLite((Resource),(CanWait),UDF_BUG_CHECK_ID,__LINE__))
-// a convenient macro (must be invoked in the context of the thread that acquired the resource)
-#define UDFReleaseResource(Resource)    \
-    (UDFDebugReleaseResourceForThreadLite((Resource), ExGetCurrentResourceThread(),UDF_BUG_CHECK_ID,__LINE__))
-
-#define UDFDeleteResource(Resource)    \
-    (UDFDebugDeleteResource((Resource), ExGetCurrentResourceThread(),UDF_BUG_CHECK_ID,__LINE__))
-#define UDFConvertExclusiveToSharedLite(Resource) \
-    (UDFDebugConvertExclusiveToSharedLite((Resource), ExGetCurrentResourceThread(),UDF_BUG_CHECK_ID,__LINE__))
-#define UDFInitializeResourceLite(Resource) \
-    (UDFDebugInitializeResourceLite((Resource), ExGetCurrentResourceThread(),UDF_BUG_CHECK_ID,__LINE__))
-#define UDFAcquireSharedStarveExclusive(Resource,CanWait) \
-    (UDFDebugAcquireSharedStarveExclusive((Resource), (CanWait), UDF_BUG_CHECK_ID,__LINE__))
-#define UDFAcquireSharedWaitForExclusive(Resource,CanWait) \
-    (UDFDebugAcquireSharedWaitForExclusive((Resource), (CanWait), UDF_BUG_CHECK_ID,__LINE__))
-
-#define UDFInterlockedIncrement(addr) \
-    (UDFDebugInterlockedIncrement((addr), UDF_BUG_CHECK_ID,__LINE__))
-#define UDFInterlockedDecrement(addr) \
-    (UDFDebugInterlockedDecrement((addr), UDF_BUG_CHECK_ID,__LINE__))
-#define UDFInterlockedExchangeAdd(addr,i) \
-    (UDFDebugInterlockedExchangeAdd((addr),(i), UDF_BUG_CHECK_ID,__LINE__))
 
 #define UDF_CHECK_PAGING_IO_RESOURCE(Fcb) \
     ASSERT(!ExIsResourceAcquiredExclusiveLite(&Fcb->FcbNonpaged->FcbPagingIoResource)); \
@@ -348,10 +317,6 @@ UDFIllegalFcbAccess(
 #define UDF_FILE_UDF_INFO_MOUNT                         (0x00000103)
 #define UDF_FILE_UDF_INFO_EXTENT                        (0x00000104)
 #define UDF_FILE_UDF_INFO_REMAP                         (0x00000105)
-//#define UDF_FILE_UDF_INFO_                           (0x0000010x)
-
-#define UDF_FILE_PROTECT                                (0x00000300)
-//#define UDF_FILE_PROTECT_                                (0x0000030x)
 
 #define         UDF_PART_DAMAGED_RW                 (0x00)
 #define         UDF_PART_DAMAGED_RO                 (0x01)
@@ -362,13 +327,10 @@ UDFIllegalFcbAccess(
 
 #define         UDF_ROOTDIR_NAME            L"\\"
 
-#define SystemAllocatePool(hernya,size) ExAllocatePoolWithTag(hernya, size, 'Snwd')
-#define SystemFreePool(addr) ExFreePool((PVOID)(addr))
-
-//Device names
-
-#include "Include/udf_reg.h"
-#include <mountmgr.h>
+#if DBG
+#undef UDF_SANITY
+#define UDF_SANITY
+#endif
 
 #if DBG
 

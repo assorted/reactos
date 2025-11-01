@@ -21,80 +21,6 @@
 
 /*************************************************************************
 *
-* Function: UDFWrite()
-*
-* Description:
-*   The I/O Manager will invoke this routine to handle a write
-*   request
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL (invocation at higher IRQL will cause execution
-*   to be deferred to a worker thread context)
-*
-* Return Value: STATUS_SUCCESS/Error
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFWrite(
-    PDEVICE_OBJECT DeviceObject,       // the logical volume device object
-    PIRP           Irp                 // I/O Request Packet
-    )
-{
-    NTSTATUS                RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN                 AreWeTopLevel = FALSE;
-
-    TmPrint(("UDFWrite: , thrd:%8.8x\n",PsGetCurrentThread()));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-
-            if (FlagOn(IrpContext->MinorFunction, IRP_MN_COMPLETE)) {
-
-                RC = UDFCompleteMdl(IrpContext, Irp);
-
-            } else {
-
-                RC = UDFCommonWrite(IrpContext, Irp);
-            }
-
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT (UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFWrite()
-
-
-/*************************************************************************
-*
 * Function: UDFCommonWrite()
 *
 * Description:
@@ -189,9 +115,6 @@ UDFCommonWrite(
         IrpSp = IoGetCurrentIrpStackLocation(Irp);
         ASSERT(IrpSp);
         MmPrint(("    Enter Irp, MDL=%x\n", Irp->MdlAddress));
-        if (Irp->MdlAddress) {
-            UDFTouch(Irp->MdlAddress);
-        }
 
         FileObject = IrpSp->FileObject;
         ASSERT(FileObject);
@@ -302,16 +225,13 @@ UDFCommonWrite(
             SystemBuffer = UDFMapUserBuffer(Irp);
             if (!SystemBuffer)
                 try_return(RC = STATUS_INVALID_USER_BUFFER);
-            // Indicate, that volume contents can change after this operation
-            // This flag will force VerifyVolume in future
-            UDFPrint(("  set UnsafeIoctl\n"));
-            Vcb->VcbState |= UDF_VCB_FLAGS_UNSAFE_IOCTL;
+
             // Make sure, that volume will never be quick-remounted
             // It is very important for ChkUdf utility.
             Vcb->SerialNumber--;
             // Perform actual Write
             RC = UDFTWrite(IrpContext, Vcb, SystemBuffer, WriteLength,
-                           (ULONG)(ByteOffset.QuadPart >> Vcb->BlockSizeBits),
+                           (ULONG)(ByteOffset.QuadPart >> Vcb->SectorShift),
                            &NumberBytesWritten);
             UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
             try_return(RC);
@@ -505,7 +425,8 @@ UDFCommonWrite(
 
             //  This clause determines if the top level request was
             //  in the FastIo path.
-            if ((ULONG_PTR)TopIrp > FSRTL_MAX_TOP_LEVEL_IRP_FLAG) {
+            if ((ULONG_PTR)TopIrp > FSRTL_MAX_TOP_LEVEL_IRP_FLAG &&
+                NodeType(TopIrp) == IO_TYPE_IRP) {
 
                 PIO_STACK_LOCATION IrpStack;
                 ASSERT( TopIrp->Type == IO_TYPE_IRP );
@@ -693,7 +614,7 @@ UDFCommonWrite(
                 try_return(RC = STATUS_INVALID_USER_BUFFER);
             ASSERT(SystemBuffer);
             Fcb->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
-            PerfPrint(("UDFCommonWrite: CcCopyWrite %x bytes at %x\n", TruncatedLength, ByteOffset.LowPart));
+
             MmPrint(("    CcCopyWrite()\n"));
             if (!CcCopyWrite(FileObject, &(ByteOffset), TruncatedLength, CanWait, SystemBuffer)) {
                 // The caller was not prepared to block and data is not immediately
@@ -745,9 +666,8 @@ UDFCommonWrite(
                 try_return(RC = STATUS_PENDING);
             }
 
-            PerfPrint(("UDFCommonWrite: Physical write %x bytes at %x\n", TruncatedLength, ByteOffset.LowPart));
-
             // Lock the callers buffer
+
             if (!NT_SUCCESS(RC = UDFLockUserBuffer(IrpContext, TruncatedLength, IoReadAccess))) {
                 try_return(RC);
             }
@@ -775,7 +695,6 @@ try_exit:   NOTHING;
             WCacheEODirect__(&(Vcb->FastCache), Vcb);
         }
 
-        // Post IRP if required
         if (RC == STATUS_PENDING) {
 
             // Release any resources acquired here ...
@@ -791,16 +710,6 @@ try_exit:   NOTHING;
             if (VcbAcquired) {
                 UDFReleaseResource(&Vcb->VcbResource);
             }
-            // Lock the callers buffer here. Then invoke a common routine to
-            // perform the post operation.
-            if (!(IrpSp->MinorFunction & IRP_MN_MDL)) {
-                RC = UDFLockUserBuffer(IrpContext, WriteLength, IoReadAccess);
-                ASSERT(NT_SUCCESS(RC));
-            }
-
-            // Perform the post operation which will mark the IRP pending
-            // and will return STATUS_PENDING back to us
-            RC = UDFPostRequest(IrpContext, Irp);
 
         } else {
             // For synchronous I/O, the FSD must maintain the current byte offset
@@ -879,18 +788,20 @@ try_exit:   NOTHING;
                Irp) {
                 Irp->IoStatus.Status = RC;
                 Irp->IoStatus.Information = NumberBytesWritten;
-                // complete the IRP
-                MmPrint(("    Complete Irp, MDL=%x\n", Irp->MdlAddress));
-                if (Irp->MdlAddress) {
-                    UDFTouch(Irp->MdlAddress);
-                }
-                IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             }
-            // Free up the Irp Context
-            UDFCleanupIrpContext(IrpContext);
-
-        } // can we complete the IRP ?
+        }
     } _SEH2_END; // end of "__finally" processing
+
+    // Post IRP if required
+
+    if (RC == STATUS_PENDING) {
+
+        RC = UDFFsdPostRequest(IrpContext, Irp);
+    }
+    else {
+
+        UDFCompleteRequest(IrpContext, Irp, RC);
+    }
 
     UDFPrint(("\n"));
     return(RC);
@@ -926,7 +837,7 @@ UDFDeferredWriteCallBack(
     // could not be completed because the caller could not block).
     // Once we post the request, return from this routine. The write
     // will then be retried in the context of a system worker thread
-    UDFPostRequest((PIRP_CONTEXT)Context1, (PIRP)Context2);
+    UDFAddToWorkque((PIRP_CONTEXT)Context1, (PIRP)Context2);
 
 } // end UDFDeferredWriteCallBack()
 
@@ -1117,7 +1028,7 @@ UDFZeroData (
 
     PAGED_CODE();
 
-    ULONG LBS = Vcb->LBlockSize;
+    ULONG LBS = Vcb->SectorSize;
 
     ZeroStart.LowPart = (StartingZero + (LBS - 1)) & ~(LBS - 1);
 

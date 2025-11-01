@@ -82,10 +82,12 @@ extern NTSTATUS UDFPrepareForWriteOperation(
     IN ULONG BCount);
 
 NTSTATUS
-UDFUseStandard(
+UDFDetermineVolumeLayout(
     PIRP_CONTEXT IrpContext,
-    PDEVICE_OBJECT DeviceObject, // the target device object
-    PVCB Vcb                     // Volume control block fro this DevObj
+    PDEVICE_OBJECT DeviceObject,
+    PVCB Vcb,
+    PULONG SessionStart,
+    PULONG SessionEnd
     );
 
 extern NTSTATUS UDFGetBlockSize(PDEVICE_OBJECT DeviceObject, // the target device object

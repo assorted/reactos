@@ -19,15 +19,6 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID        UDF_FILE_ENV_SPEC
 
-#define MEASURE_IO_PERFORMANCE
-
-#ifdef MEASURE_IO_PERFORMANCE
-LONGLONG IoReadTime=0;
-LONGLONG IoWriteTime=0;
-LONGLONG WrittenData=0;
-LONGLONG IoRelWriteTime=0;
-#endif //MEASURE_IO_PERFORMANCE
-
 #ifdef DBG
 ULONG UDF_SIMULATE_WRITES=0;
 #endif //DBG
@@ -143,23 +134,11 @@ UDFPhReadSynchronous(
     PIO_STACK_LOCATION IrpSp;
     KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
-//    ULONG i;
-#ifdef MEASURE_IO_PERFORMANCE
-    LONGLONG IoEnterTime;
-    LONGLONG IoExitTime;
-    ULONG dt;
-    ULONG dtm;
-#endif //MEASURE_IO_PERFORMANCE
-#ifdef _BROWSE_UDF_
     PVCB Vcb = NULL;
+
     if (Flags & PH_VCB_IN_RETLEN) {
         Vcb = (PVCB)(*ReadBytes);
     }
-#endif //_BROWSE_UDF_
-
-#ifdef MEASURE_IO_PERFORMANCE
-    KeQuerySystemTime((PLARGE_INTEGER)&IoEnterTime);
-#endif //MEASURE_IO_PERFORMANCE
 
     ROffset.QuadPart = Offset;
     (*ReadBytes) = 0;
@@ -243,27 +222,15 @@ UDFPhReadSynchronous(
             UDFPrint(("IOCRC %8.8x R %x\n", crc32((PUCHAR)Buffer+i, 2048), (ULONG)((Offset+i)/2048) ));
         }
 */
-#ifdef _BROWSE_UDF_
         if (Vcb) {
-            RC = UDFVRead(Vcb, IoBuf, ByteCount >> Vcb->BlockSizeBits, (ULONG)(Offset >> Vcb->BlockSizeBits), Flags);
+            RC = UDFVRead(Vcb, IoBuf, ByteCount >> Vcb->SectorShift, (ULONG)(Offset >> Vcb->SectorShift), Flags);
         }
-#endif //_BROWSE_UDF_
     }
 
 try_exit: NOTHING;
 
     if (Context) MyFreePool__(Context);
     if (IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
-
-#ifdef MEASURE_IO_PERFORMANCE
-    KeQuerySystemTime((PLARGE_INTEGER)&IoExitTime);
-    IoReadTime += (IoExitTime-IoEnterTime);
-    dt = (ULONG)((IoExitTime-IoEnterTime)/10/1000);
-    dtm = (ULONG)(((IoExitTime-IoEnterTime)/10)%1000);
-    PerfPrint(("\nUDFPhReadSynchronous() exit: %08X, after %d.%4.4d msec.\n", RC, dt, dtm));
-#else
-    UDFPrint(("UDFPhReadSynchronous() exit: %08X\n", RC));
-#endif //MEASURE_IO_PERFORMANCE
 
     return(RC);
 } // end UDFPhReadSynchronous()
@@ -297,33 +264,14 @@ UDFPhWriteSynchronous(
     LARGE_INTEGER       ROffset;
     PUDF_PH_CALL_CONTEXT Context = NULL;
     PIRP                irp;
-//    LARGE_INTEGER       timeout;
     KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
-//    ULONG i;
-#ifdef MEASURE_IO_PERFORMANCE
-    LONGLONG IoEnterTime;
-    LONGLONG IoExitTime;
-    ULONG dt;
-    ULONG dtm;
-#endif //MEASURE_IO_PERFORMANCE
-#ifdef _BROWSE_UDF_
+
     PVCB Vcb = NULL;
     if (Flags & PH_VCB_IN_RETLEN) {
         Vcb = (PVCB)(*WrittenBytes);
     }
-#endif //_BROWSE_UDF_
 
-#ifdef MEASURE_IO_PERFORMANCE
-    KeQuerySystemTime((PLARGE_INTEGER)&IoEnterTime);
-#endif //MEASURE_IO_PERFORMANCE
-
-#ifdef USE_PERF_PRINT
-    ULONG Lba = (ULONG)(Offset>>0xb);
-//    ASSERT(!(Lba & (32-1)));
-    PerfPrint(("UDFPhWrite: Length: %x Lba: %lx\n",Length>>0xb,Lba));
-//    UDFPrint(("UDFPhWrite: Length: %x Lba: %lx\n",Length>>0x9,Offset>>0x9));
-#endif //DBG
 
 #ifdef DBG
     if (UDF_SIMULATE_WRITES) {
@@ -379,11 +327,9 @@ UDFPhWriteSynchronous(
         UDFPrint(("IOCRC %8.8x W %x\n", crc32((PUCHAR)Buffer+i, 2048), (ULONG)((Offset+i)/2048) ));
     }
 */
-#ifdef _BROWSE_UDF_
     if (Vcb) {
-        UDFVWrite(Vcb, IoBuf, ByteCount >> Vcb->BlockSizeBits, (ULONG)(Offset >> Vcb->BlockSizeBits), Flags);
+        UDFVWrite(Vcb, IoBuf, ByteCount >> Vcb->SectorShift, (ULONG)(Offset >> Vcb->SectorShift), Flags);
     }
-#endif //_BROWSE_UDF_
 
     if (RC == STATUS_PENDING) {
         DbgWaitForSingleObject(&(Context->event), NULL);
@@ -405,22 +351,6 @@ try_exit: NOTHING;
     if (!NT_SUCCESS(RC)) {
         UDFPrint(("WriteError\n"));
     }
-
-#ifdef MEASURE_IO_PERFORMANCE
-    KeQuerySystemTime((PLARGE_INTEGER)&IoExitTime);
-    IoWriteTime += (IoExitTime-IoEnterTime);
-    if (WrittenData > 1024*1024*8) {
-        PerfPrint(("\nUDFPhWriteSynchronous() Relative size=%I64d, time=%I64d.\n", WrittenData, IoRelWriteTime));
-        WrittenData = IoRelWriteTime = 0;
-    }
-    WrittenData += ByteCount;
-    IoRelWriteTime += (IoExitTime-IoEnterTime);
-    dt = (ULONG)((IoExitTime-IoEnterTime)/10/1000);
-    dtm = (ULONG)(((IoExitTime-IoEnterTime)/10)%1000);
-    PerfPrint(("\nUDFPhWriteSynchronous() exit: %08X, after %d.%4.4d msec.\n", RC, dt, dtm));
-#else
-    UDFPrint(("nUDFPhWriteSynchronous() exit: %08X\n", RC));
-#endif //MEASURE_IO_PERFORMANCE
 
     return(RC);
 } // end UDFPhWriteSynchronous()
@@ -585,7 +515,7 @@ UDFNotifyFullReportChange(
         }
     }
 
-    FsRtlNotifyFullReportChange(Vcb->NotifyIRPMutex,
+    FsRtlNotifyFullReportChange(Vcb->NotifySync,
                                 &Vcb->NextNotifyIRP,
                                 (PSTRING)&Fcb->FCBName->ObjectName,
                                 TargetNameOffset,

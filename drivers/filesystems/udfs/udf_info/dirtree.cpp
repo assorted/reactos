@@ -517,7 +517,7 @@ UDFIndexDirectory(
                 FileId = (PFILE_IDENT_DESC)((buff)+Offset);
             }
         }
-        if (((ULONG)Offset & (Vcb->LBlockSize-1)) > (Vcb->LBlockSize-sizeof(FILE_IDENT_DESC))) {
+        if (((ULONG)Offset & (Vcb->SectorSize-1)) > (Vcb->SectorSize-sizeof(FILE_IDENT_DESC))) {
             DirPrint(("  badly aligned\n", Offset));
             if (Vcb->Modified) {
                 DirPrint(("  queue repack request\n"));
@@ -727,7 +727,7 @@ UDFPackDirectory__(
     if (!Vcb->Modified)
         return STATUS_SUCCESS;
     // start packing
-    LBS = Vcb->LBlockSize;
+    LBS = Vcb->SectorSize;
     Buf = (int8*)DbgAllocatePool(PagedPool, LBS*2);
     if (!Buf) return STATUS_INSUFFICIENT_RESOURCES;
     // we shall never touch 1st entry 'cause it can't be deleted
@@ -883,7 +883,7 @@ UDFReTagDirectory(
     }
 
     // start packing
-    Buf = (int8*)DbgAllocatePool(PagedPool, Vcb->LBlockSize*2);
+    Buf = (int8*)DbgAllocatePool(PagedPool, Vcb->SectorSize*2);
     if (!Buf) return STATUS_INSUFFICIENT_RESOURCES;
 
     Offset = UDFDirIndex(hDirNdx,1)->Offset;

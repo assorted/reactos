@@ -41,79 +41,6 @@
 
 /*************************************************************************
 *
-* Function: UDFRead()
-*
-* Description:
-*   The I/O Manager will invoke this routine to handle a read
-*   request
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL (invocation at higher IRQL will cause execution
-*   to be deferred to a worker thread context)
-*
-* Return Value: STATUS_SUCCESS/Error
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFRead(
-    PDEVICE_OBJECT DeviceObject,       // the logical volume device object
-    PIRP           Irp)                // I/O Request Packet
-{
-    NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN             AreWeTopLevel = FALSE;
-
-    TmPrint(("UDFRead: \n"));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-
-            if (FlagOn(IrpContext->MinorFunction, IRP_MN_COMPLETE)) {
-
-                RC = UDFCompleteMdl(IrpContext, Irp);
-
-            } else {
-
-                RC = UDFCommonRead(IrpContext, Irp);
-            }
-
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFRead()
-
-
-/*************************************************************************
-*
 * Function: UDFPostStackOverflowRead()
 *
 * Description:
@@ -211,8 +138,8 @@ UDFStackOverflowRead(
     _SEH2_TRY {
         UDFCommonRead(IrpContext, IrpContext->Irp);
     } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-        RC = UDFProcessException(IrpContext, IrpContext->Irp);
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
+
+        RC = UDFProcessException(IrpContext, IrpContext->Irp, _SEH2_GetExceptionCode());
     } _SEH2_END;
 
     //  Set the stack overflow item's event to tell the original
@@ -258,7 +185,6 @@ UDFCommonRead(
     BOOLEAN                 MainResourceAcquired = FALSE;
     BOOLEAN                 PagingIoResourceAcquired = FALSE;
     PVOID                   SystemBuffer = NULL;
-    PIRP                    TopIrp;
 
     BOOLEAN                 CacheLocked = FALSE;
 
@@ -267,64 +193,38 @@ UDFCommonRead(
     BOOLEAN                 NonCachedIo = FALSE;
     BOOLEAN                 SynchronousIo = FALSE;
 
-    TmPrint(("UDFCommonRead: irp %x\n", Irp));
+    PAGED_CODE();
+
+    // Decode the file object and verify we support read on this.  It
+    // must be a user file, stream file or volume file (for a data disk).
+
+    TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
+
+    if ((TypeOfOpen == UnopenedFileObject) ||
+        (TypeOfOpen == UserDirectoryOpen)) {
+
+        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_DEVICE_REQUEST);
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+
+    Vcb = Fcb->Vcb;
+
+    ASSERT_CCB(Ccb);
+    ASSERT_FCB(Fcb);
+    ASSERT_VCB(Vcb);
+
+    // If this is a zero length read then return SUCCESS immediately.
+
+    if (IrpSp->Parameters.Read.Length == 0) {
+
+        UDFCompleteRequest(IrpContext, Irp, STATUS_SUCCESS);
+        return STATUS_SUCCESS;
+    }
 
     _SEH2_TRY {
 
-        TopIrp = IoGetTopLevelIrp();
-        switch((ULONG_PTR)TopIrp) {
-        case FSRTL_FSP_TOP_LEVEL_IRP:
-            UDFPrint(("  FSRTL_FSP_TOP_LEVEL_IRP\n"));
-            break;
-        case FSRTL_CACHE_TOP_LEVEL_IRP:
-            UDFPrint(("  FSRTL_CACHE_TOP_LEVEL_IRP\n"));
-            break;
-        case FSRTL_MOD_WRITE_TOP_LEVEL_IRP:
-            UDFPrint(("  FSRTL_MOD_WRITE_TOP_LEVEL_IRP\n"));
-//            BrutePoint()
-            break;
-        case FSRTL_FAST_IO_TOP_LEVEL_IRP:
-            UDFPrint(("  FSRTL_FAST_IO_TOP_LEVEL_IRP\n"));
-//            BrutePoint()
-            break;
-        case NULL:
-            UDFPrint(("  NULL TOP_LEVEL_IRP\n"));
-            break;
-        default:
-            if (TopIrp == Irp) {
-                UDFPrint(("  TOP_LEVEL_IRP\n"));
-            } else {
-                UDFPrint(("  RECURSIVE_IRP, TOP = %x\n", TopIrp));
-            }
-            break;
-        }
-
-        MmPrint(("    Enter Irp, MDL=%x\n", Irp->MdlAddress));
-        if (Irp->MdlAddress) {
-            UDFTouch(Irp->MdlAddress);
-        }
-
-        // If this is a request at IRQL DISPATCH_LEVEL, then post
-        // the request (your FSD may choose to process it synchronously
-        // if you implement the support correctly; obviously you will be
-        // quite constrained in what you can do at such IRQL).
-        if (IrpSp->MinorFunction & IRP_MN_DPC) {
-            try_return(RC = STATUS_PENDING);
-        }
-
         FileObject = IrpSp->FileObject;
         ASSERT(FileObject);
-
-        // Decode the file object and verify we support read on this.  It
-        // must be a user file, stream file or volume file (for a data disk).
-
-        TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
-
-        Vcb = Fcb->Vcb;
-
-        ASSERT_CCB(Ccb);
-        ASSERT_FCB(Fcb);
-        ASSERT_VCB(Vcb);
 
         if (Fcb->FcbState & UDF_FCB_DELETED) {
             ASSERT(FALSE);
@@ -431,7 +331,7 @@ UDFCommonRead(
                                 &NumberBytesRead);
             } else {
                  RC = UDFTRead(IrpContext, Vcb, SystemBuffer, ReadLength,
-                                (ULONG)(ByteOffset.QuadPart >> Vcb->BlockSizeBits),
+                                (ULONG)(ByteOffset.QuadPart >> Vcb->SectorShift),
                                 &NumberBytesRead);
             }
             UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
@@ -667,7 +567,7 @@ UDFCommonRead(
 
                 if (ByteOffset.QuadPart < ValidDataLength.QuadPart) {
 
-                    ULONG LBS = Vcb->LBlockSize;
+                    ULONG LBS = Vcb->SectorSize;
                     ULONG ZeroingOffset = ((ValidDataLength.QuadPart - ByteOffset.QuadPart) + (LBS - 1)) & ~(LBS - 1);
 
                     // If the offset is at or above the byte count, no harm: just means
@@ -740,49 +640,35 @@ try_exit:   NOTHING;
         if (VcbAcquired) {
             UDFReleaseResource(&Vcb->VcbResource);
         }
-
-        // Post IRP if required
-        if (RC == STATUS_PENDING) {
-
-            // Lock the callers buffer here. Then invoke a common routine to
-            // perform the post operation.
-            if (!(IrpSp->MinorFunction & IRP_MN_MDL)) {
-                RC = UDFLockUserBuffer(IrpContext, ReadLength, IoWriteAccess);
-                ASSERT(NT_SUCCESS(RC));
-            }
-
-            // Perform the post operation which will mark the IRP pending
-            // and will return STATUS_PENDING back to us
-            RC = UDFPostRequest(IrpContext, Irp);
-
-        } else {
-            // For synchronous I/O, the FSD must maintain the current byte offset
-            // Do not do this however, if I/O is marked as paging-io
-            if (SynchronousIo && !PagingIo && NT_SUCCESS(RC)) {
-                FileObject->CurrentByteOffset.QuadPart = ByteOffset.QuadPart + NumberBytesRead;
-            }
-            // If the read completed successfully and this was not a paging-io
-            // operation, set a flag in the CCB that indicates that a read was
-            // performed and that the file time should be updated at cleanup
-            if (NT_SUCCESS(RC) && !PagingIo) {
-                FileObject->Flags |= FO_FILE_FAST_IO_READ;
-            }
-
-            if (!_SEH2_AbnormalTermination()) {
-                Irp->IoStatus.Status = RC;
-                Irp->IoStatus.Information = NumberBytesRead;
-                UDFPrint(("    NumberBytesRead = %x\n", NumberBytesRead));
-                // Free up the Irp Context
-                UDFCleanupIrpContext(IrpContext);
-                // complete the IRP
-                MmPrint(("    Complete Irp, MDL=%x\n", Irp->MdlAddress));
-                if (Irp->MdlAddress) {
-                    UDFTouch(Irp->MdlAddress);
-                }
-                IoCompleteRequest(Irp, IO_DISK_INCREMENT);
-            }
-        } // can we complete the IRP ?
     } _SEH2_END; // end of "__finally" processing
+
+    // Post the request if we got CANT_WAIT.
+
+    if (RC == STATUS_PENDING) {
+
+        RC = UDFFsdPostRequest(IrpContext, Irp);
+
+    } else {
+
+        // For synchronous I/O, the FSD must maintain the current byte offset
+        // Do not do this however, if I/O is marked as paging-io
+
+        if (SynchronousIo && !PagingIo && NT_SUCCESS(RC)) {
+
+            FileObject->CurrentByteOffset.QuadPart = ByteOffset.QuadPart + NumberBytesRead;
+        }
+
+        // If the read completed successfully and this was not a paging-io
+        // operation, set a flag in the CCB that indicates that a read was
+        // performed and that the file time should be updated at cleanup
+        if (NT_SUCCESS(RC) && !PagingIo) {
+            FileObject->Flags |= FO_FILE_FAST_IO_READ;
+        }
+
+        Irp->IoStatus.Information = NumberBytesRead;
+
+        UDFCompleteRequest(IrpContext, Irp, RC);
+    }
 
     return(RC);
 } // end UDFCommonRead()
@@ -957,7 +843,6 @@ UDFCompleteMdl(
     FileObject = IrpSp->FileObject;
     ASSERT(FileObject);
 
-    UDFTouch(Irp->MdlAddress);
     // Not much to do here.
     if (IrpContext->MajorFunction == IRP_MJ_READ) {
 

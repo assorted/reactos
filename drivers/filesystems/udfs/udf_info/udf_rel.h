@@ -40,12 +40,6 @@ typedef struct _UDFTrackMap {
     uint8  NWA_V;
 
     uint8  Flags;
-#define     TrackMap_AllowCopyBit_variated     0x01
-#define     TrackMap_CopyBit_variated          0x02
-#define     TrackMap_Try_variation             0x04
-#define     TrackMap_Use_variation             0x08
-#define     TrackMap_FixFPAddressing           0x10
-#define     TrackMap_FixMRWAddressing          0x20
 
     // are used only if FixFPAddressing is enabled
     uint32 TrackFPOffset;

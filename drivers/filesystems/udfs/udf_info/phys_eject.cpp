@@ -68,9 +68,6 @@ UDFDoDismountSequence(
     // ... and make it Read-Only...  :-\~
     Vcb->VcbState &= ~UDF_VCB_FLAGS_MEDIA_LOCKED;
 
-    UDFPrint(("  set UnsafeIoctl\n"));
-    Vcb->VcbState |= UDF_VCB_FLAGS_UNSAFE_IOCTL;
-
     return STATUS_SUCCESS;
 } // end UDFDoDismountSequence()
 

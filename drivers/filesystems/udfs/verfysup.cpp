@@ -50,6 +50,7 @@ Return Value:
 
     IoAcquireVpbSpinLock(&SavedIrql);
 
+#pragma prefast(suppress: 28175, "this is a filesystem driver, touching the size member is allowed")
     if (Vcb->Vpb == Vcb->Vpb->RealDevice->Vpb) {
 
         SetFlag(Vcb->Vpb->RealDevice->Flags, DO_VERIFY_VOLUME);
@@ -259,34 +260,50 @@ UDFVerifyVolume(
     IO_STATUS_BLOCK Iosb;
     ULONG MediaChangeCount = 0;
     NTSTATUS RC;
+    BOOLEAN ReleaseVcb = FALSE;
     ULONG Mode;
-    BOOLEAN UnsafeIoctl = (Vcb->VcbState & UDF_VCB_FLAGS_UNSAFE_IOCTL) ? TRUE : FALSE;
+    //BOOLEAN UnsafeIoctl = (Vcb->VcbState & UDF_VCB_FLAGS_UNSAFE_IOCTL) ? TRUE : FALSE;
 
-    //  Update the real device in the IrpContext from the Vpb.  There was no available
-    //  file object when the IrpContext was created.
-    //    IrpContext->RealDevice = Vpb->RealDevice;
-    UDFPrint(("UDFVerifyVolume:\n"));
+    PAGED_CODE();
+
+    // We check that we are talking to a Cdrom or HDD device.
+
+    ASSERT(Vpb->RealDevice->DeviceType == FILE_DEVICE_CD_ROM ||
+              Vpb->RealDevice->DeviceType == FILE_DEVICE_DISK);
+    ASSERT(FlagOn( IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT));
+
+    // Update the real device in the IrpContext from the Vpb.  There was no available
+    // file object when the IrpContext was created.
+
+    IrpContext->RealDevice = Vpb->RealDevice;
 
     // Acquire the global resource to synchronise against mounts and teardown,
     // finally clause releases.
 
     UDFAcquireUdfData(IrpContext);
 
-    UDFAcquireResourceExclusive(&(Vcb->VcbResource),TRUE);
-
     _SEH2_TRY {
 
-        UDFPrint(("UDFVerifyVolume: Modified=%d\n", Vcb->Modified));
+        UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
+        ReleaseVcb = TRUE;
+
+        if (Vcb->VcbCondition == VcbDismountInProgress ||
+            Vcb->VcbCondition == VcbInvalid) {
+
+            try_return(RC = STATUS_WRONG_VOLUME);
+        }
+
         // Check if the real device still needs to be verified.  If it doesn't
         // then obviously someone beat us here and already did the work
         // so complete the verify irp with success.  Otherwise reenable
         // the real device and get to work.
-        if ( !(Vpb->RealDevice->Flags & DO_VERIFY_VOLUME) &&
-            ((Vcb->VcbState & UDF_VCB_FLAGS_MEDIA_LOCKED) && !UnsafeIoctl) ) {
-            UDFPrint(("UDFVerifyVolume: STATUS_SUCCESS (1)\n"));
+
+        if (!FlagOn(Vpb->RealDevice->Flags, DO_VERIFY_VOLUME)) {
+
+            UDFPrint(("UDFVerifyVolume: RealDevice has already been verified\n"));
             try_return(RC = STATUS_SUCCESS);
         }
-        Vcb->VcbState &= ~UDF_VCB_FLAGS_UNSAFE_IOCTL;
+ 
         // Verify that there is a disk here.
         RC = UDFPhSendIOCTL( IOCTL_STORAGE_CHECK_VERIFY,
                                  Vcb->TargetDeviceObject,
@@ -294,34 +311,30 @@ UDFVerifyVolume(
                                  &MediaChangeCount,sizeof(ULONG),
                                  TRUE,&Iosb );
 
-        if (!NT_SUCCESS( RC )) {
+        if (!NT_SUCCESS(RC)) {
+
             // If we will allow a raw mount then return WRONG_VOLUME to
             // allow the volume to be mounted by raw.
-            if (FlagOn( IrpSp->Flags, SL_ALLOW_RAW_MOUNT )) {
+
+            if (FlagOn(IrpSp->Flags, SL_ALLOW_RAW_MOUNT)) {
+
                 UDFPrint(("UDFVerifyVolume: STATUS_WRONG_VOLUME (1)\n"));
                 RC = STATUS_WRONG_VOLUME;
             }
 
-            if (UDFIsRawDevice(RC)) {
-                UDFPrint(("UDFVerifyVolume: STATUS_WRONG_VOLUME (2)\n"));
-                RC = STATUS_WRONG_VOLUME;
-            }
-            try_return( RC );
+            try_return(RC);
         }
 
         if (Iosb.Information != sizeof(ULONG)) {
+
             // Be safe about the count in case the driver didn't fill it in
             MediaChangeCount = 0;
         }
 
-        UDFPrint(("UDFVerifyVolume: Modified=%d\n", Vcb->Modified));
-        UDFPrint(("UDFVerifyVolume: MediaChangeCount=%x, Vcb->MediaChangeCount=%x, UnsafeIoctl=%x\n",
-            MediaChangeCount, Vcb->MediaChangeCount, UnsafeIoctl));
         // Verify that the device actually saw a change. If the driver does not
         // support the MCC, then we must verify the volume in any case.
         if (MediaChangeCount == 0 ||
-            (Vcb->MediaChangeCount != MediaChangeCount) ||
-           UnsafeIoctl ) {
+            (Vcb->MediaChangeCount != MediaChangeCount)) {
 
             UDFPrint(("UDFVerifyVolume: compare\n"));
 
@@ -358,11 +371,11 @@ UDFVerifyVolume(
                               UdfData.WCacheMaxFrames,
                               UdfData.WCacheMaxBlocks,
                               NewVcb->WriteBlockSize,
-                              5, NewVcb->BlockSizeBits,
+                              5, NewVcb->SectorShift,
                               UdfData.WCacheBlocksPerFrameSh,
                               0/*NewVcb->FirstLBA*/, NewVcb->LastPossibleLBA, Mode,
                                   /*WCACHE_CACHE_WHOLE_PACKET*/ 0 |
-                                  (Vcb->DoNotCompareBeforeWrite ? WCACHE_DO_NOT_COMPARE : 0) |
+                                  WCACHE_DO_NOT_COMPARE |
                                   WCACHE_MARK_BAD_BLOCKS | WCACHE_RO_BAD_BLOCKS, // speed up mount on bad disks
                               UdfData.WCacheFramesToKeepFree,
                               UDFTWrite, UDFTRead,
@@ -443,12 +456,12 @@ try_exit: NOTHING;
                                   Vcb->WCacheMaxFrames,
                                   Vcb->WCacheMaxBlocks,
                                   Vcb->WriteBlockSize,
-                                  5, Vcb->BlockSizeBits,
+                                  5, Vcb->SectorShift,
                               Vcb->WCacheBlocksPerFrameSh,
                               0/*Vcb->FirstLBA*/, Vcb->LastPossibleLBA, Mode,
                                   /*WCACHE_CACHE_WHOLE_PACKET*/ 0 |
-                                  (Vcb->DoNotCompareBeforeWrite ? WCACHE_DO_NOT_COMPARE : 0) |
-                                  (Vcb->CacheChainedIo ? WCACHE_CHAINED_IO : 0),
+                                  WCACHE_DO_NOT_COMPARE |
+                                  WCACHE_CHAINED_IO,
                               Vcb->WCacheFramesToKeepFree,
 //                              UDFTWrite, UDFTRead,
                               UDFTWriteVerify, UDFTReadVerify,
@@ -487,10 +500,6 @@ try_exit: NOTHING;
                                     WCACHE_CACHE_WHOLE_PACKET, // enable cache whole packet
                                     WCACHE_MARK_BAD_BLOCKS | WCACHE_RO_BAD_BLOCKS);  // let user retry request on Bad Blocks
                 }
-                // we can't record ACL on old format disks
-                if (!UDFNtAclSupported(Vcb)) {
-                    Vcb->UseExtendedFE = FALSE;
-                }
             }
         }
 
@@ -502,7 +511,15 @@ try_exit: NOTHING;
             UDFCleanupVCB(NewVcb);
             MyFreePool__(NewVcb);
         }
-        UDFReleaseResource(&(Vcb->VcbResource));
+
+        if (ReleaseVcb) {
+
+            UDFReleaseVcb(IrpContext, Vcb);
+        }
+        else {
+            _Analysis_assume_lock_not_held_(Vcb->VcbResource);
+        }
+
         UDFReleaseUdfData(IrpContext);
     } _SEH2_END;
 
@@ -555,7 +572,7 @@ UDFPerformVerify(
        ((IrpContext->MinorFunction == IRP_MN_MOUNT_VOLUME) ||
         (IrpContext->MinorFunction == IRP_MN_VERIFY_VOLUME))) {
 
-        return UDFPostRequest(IrpContext, Irp);
+        return UDFFsdPostRequest(IrpContext, Irp);
     }
 
     //  Extract a pointer to the Vcb from the VolumeDeviceObject.
@@ -626,10 +643,7 @@ UDFPerformVerify(
 
                 Irp->IoStatus.Information = IO_REMOUNT;
 
-                Irp->IoStatus.Status = STATUS_REPARSE;
-                IoCompleteRequest(Irp,IO_DISK_INCREMENT);
-
-                UDFCleanupIrpContext(IrpContext);
+                UDFCompleteRequest(IrpContext, Irp, STATUS_REPARSE);
 
                 RC = STATUS_REPARSE;
                 Irp = NULL;
@@ -652,14 +666,14 @@ UDFPerformVerify(
         //  If there is still an Irp, send it off to an Ex Worker thread.
         if (IrpContext != NULL) {
 
-            RC = UDFPostRequest( IrpContext, Irp );
+            RC = UDFFsdPostRequest(IrpContext, Irp);
         }
 
     } _SEH2_EXCEPT(UDFExceptionFilter( IrpContext, _SEH2_GetExceptionInformation())) {
         //  We had some trouble trying to perform the verify or raised
         //  an error ourselves.  So we'll abort the I/O request with
         //  the error status that we get back from the execption code.
-        RC = UDFProcessException( IrpContext, Irp);
+        RC = UDFProcessException( IrpContext, Irp, _SEH2_GetExceptionCode());
     } _SEH2_END;
 
     UDFPrint(("UDFPerformVerify: RC = %x\n", RC));
@@ -839,6 +853,8 @@ UDFDismountVcb(
     //  we have last crack at it.  If this is a failed mount then we
     //  want to return the Vpb to the IO system to use for the next
     //  mount request.
+
+#pragma prefast(suppress: 28175, "this is a filesystem driver, touching the vpb is allowed")
     if (OldVpb->RealDevice->Vpb == OldVpb) {
 
         //  If not the final reference then swap out the Vpb.
@@ -852,6 +868,7 @@ UDFDismountVcb(
             Vcb->SwapVpb->Size = sizeof( VPB );
             Vcb->SwapVpb->RealDevice = OldVpb->RealDevice;
 
+#pragma prefast(suppress: 28175, "this is a filesystem driver, touching the size member is allowed")
             Vcb->SwapVpb->RealDevice->Vpb = Vcb->SwapVpb;
 
             Vcb->SwapVpb->Flags = FlagOn(OldVpb->Flags, VPB_REMOVE_PENDING);
@@ -918,12 +935,6 @@ UDFCompareVcb(
     UDF_FILE_INFO    RootFileInfo;
     BOOLEAN SimpleLogicalCheck = FALSE;
 
-    UDFPrint(("UDFCompareVcb:\n"));
-    if (UdfData.Flags & UDF_DATA_FLAGS_SHUTDOWN) {
-        UDFPrint(("  WRONG_VOLUME\n"));
-        return STATUS_WRONG_VOLUME;
-    }
-
 #define VCB_NE(x)   (OldVcb->x != NewVcb->x)
 
     // compare physical parameters
@@ -936,8 +947,6 @@ UDFCompareVcb(
            VCB_NE(NWA) ||
            VCB_NE(LastPossibleLBA) ||
            VCB_NE(PhSerialNumber) ||
-           VCB_NE(PhErasable) ||
-           VCB_NE(PhDiskType) ||
            VCB_NE(MediaClassEx) ||
 
           /* We cannot compare these flags, because NewVcb is in unconditional ReadOnly */

@@ -51,69 +51,6 @@ UDFQueueClose(
 
 /*************************************************************************
 *
-* Function: UDFClose()
-*
-* Description:
-*   The I/O Manager will invoke this routine to handle a close
-*   request
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL (invocation at higher IRQL will cause execution
-*   to be deferred to a worker thread context)
-*
-* Return Value: STATUS_SUCCESS
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFClose(
-    PDEVICE_OBJECT  DeviceObject,  // the logical volume device object
-    PIRP            Irp            // I/O Request Packet
-    )
-{
-    NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN             AreWeTopLevel = FALSE;
-
-    AdPrint(("UDFClose: \n"));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        ASSERT(IrpContext);
-
-        RC = UDFCommonClose(IrpContext, Irp);
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-}
-
-
-
-
-/*************************************************************************
-*
 * Function: UDFCommonClose()
 *
 * Description:
@@ -218,9 +155,9 @@ UDFCommonClose(
             // Close request is near completion, Vcb is acquired.
             // Now we can safely decrease CcbCount, because no Rename
             // operation can run until Vcb release.
-            InterlockedDecrement((PLONG)&(Fcb->CcbCount));
+            InterlockedDecrement((PLONG)&Fcb->CcbCount);
 
-            UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
+            InterlockedDecrement((PLONG)&Vcb->VcbReference);
 
             if (!i || (Fcb == Fcb->Vcb->VolumeDasdFcb)) {
 
@@ -229,14 +166,14 @@ UDFCommonClose(
 
                 if (Vcb->VcbCleanup > 0) {
                     ASSERT(Fcb == Fcb->Vcb->VolumeDasdFcb);
-                    UDFInterlockedDecrement((PLONG)&Fcb->FcbReference);
+                    InterlockedDecrement((PLONG)&Fcb->FcbReference);
                     ASSERT(Fcb);
 
                     try_return(RC = STATUS_SUCCESS);
                 }
 
                 ASSERT(Fcb == Fcb->Vcb->VolumeDasdFcb);
-                UDFInterlockedDecrement((PLONG)&Fcb->FcbReference);
+                InterlockedDecrement((PLONG)&Fcb->FcbReference);
                 ASSERT(Fcb);
 
                 if ((Vcb->VcbCleanup == 0) &&
@@ -374,7 +311,7 @@ UDFTeardownStructures(
             if (CurrentFcb) {
                 if (TreeLength) {
                     ASSERT(CurrentFcb->FcbReference);
-                    RefCount = UDFInterlockedDecrement((PLONG)&CurrentFcb->FcbReference);
+                    RefCount = InterlockedDecrement((PLONG)&CurrentFcb->FcbReference);
                 }
             } else {
                 BrutePoint();
@@ -384,7 +321,7 @@ UDFTeardownStructures(
             ASSERT(CurrentFcb->FcbCleanup <= CurrentFcb->FcbReference);
     #else
             if (TreeLength) {
-                RefCount = UDFInterlockedDecrement((PLONG)&CurrentFcb->FcbReference);
+                RefCount = InterlockedDecrement((PLONG)&CurrentFcb->FcbReference);
                 TreeLength--;
             }
     #endif

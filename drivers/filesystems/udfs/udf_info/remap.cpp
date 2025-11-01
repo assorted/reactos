@@ -73,9 +73,9 @@ UDFVInit(
             UDFPrint(("Verify is not intended for CD/DVD-R\n"));
             return STATUS_SUCCESS;
         }
-        if (!NT_SUCCESS(status = ExInitializeResourceLite(&(VerifyCtx->VerifyLock)))) {
-            try_return(status);
-        }
+
+        ExInitializeResourceLite(&VerifyCtx->VerifyLock);
+
         res_inited = TRUE;
         VerifyCtx->ItemCount = 0;
         VerifyCtx->StoredBitMap = (uint8*)DbgAllocatePoolWithTag(PagedPool, (i = (Vcb->LastPossibleLBA+1+7)>>3), 'mNWD' );
@@ -177,12 +177,12 @@ UDFVStoreBlock(
 
     UDFPrint(("v-add %x\n", LBA));
 
-    vItem = (PUDF_VERIFY_ITEM)DbgAllocatePoolWithTag(PagedPool, sizeof(UDF_VERIFY_ITEM)+Vcb->BlockSize, 'bvWD');
+    vItem = (PUDF_VERIFY_ITEM)DbgAllocatePoolWithTag(PagedPool, sizeof(UDF_VERIFY_ITEM)+Vcb->SectorSize, 'bvWD');
     if (!vItem)
         return NULL;
-    RtlCopyMemory(vItem+1, Buffer, Vcb->BlockSize);
+    RtlCopyMemory(vItem+1, Buffer, Vcb->SectorSize);
     vItem->lba = LBA;
-    vItem->crc = crc32((PUCHAR)Buffer, Vcb->BlockSize);
+    vItem->crc = crc32((PUCHAR)Buffer, Vcb->SectorSize);
     vItem->Buffer = (PUCHAR)(vItem+1);
     vItem->queued = FALSE;
     InitializeListHead(&(vItem->vrfList));
@@ -200,8 +200,8 @@ UDFVUpdateBlock(
     )
 {
     UDFPrint(("v-upd %x\n", vItem->lba));
-    RtlCopyMemory(vItem+1, Buffer, Vcb->BlockSize);
-    vItem->crc = crc32((PUCHAR)Buffer, Vcb->BlockSize);
+    RtlCopyMemory(vItem+1, Buffer, Vcb->SectorSize);
+    vItem->crc = crc32((PUCHAR)Buffer, Vcb->SectorSize);
     return;
 } // end UDFVUpdateBlock()
 
@@ -259,7 +259,7 @@ UDFVWrite(
             Link = Link->Blink;
             if (vItem->lba >= LBA && vItem->lba < LBA+BCount) {
                 ASSERT(UDFGetBit(VerifyCtx->StoredBitMap, vItem->lba));
-                UDFVUpdateBlock(Vcb, ((PUCHAR)Buffer)+(vItem->lba-LBA)*Vcb->BlockSize, vItem);
+                UDFVUpdateBlock(Vcb, ((PUCHAR)Buffer)+(vItem->lba-LBA)*Vcb->SectorSize, vItem);
                 n++;
                 if (n == BCount) {
                     // all updated
@@ -350,7 +350,7 @@ remember_all:
         // remember all blocks
         for(i=0; i<BCount; i++) {
             ASSERT(!UDFGetBit(VerifyCtx->StoredBitMap, LBA+i));
-            UDFVStoreBlock(Vcb, LBA+i, ((PUCHAR)Buffer)+i*Vcb->BlockSize, &(VerifyCtx->vrfList));
+            UDFVStoreBlock(Vcb, LBA+i, ((PUCHAR)Buffer)+i*Vcb->SectorSize, &(VerifyCtx->vrfList));
         }
     }
 
@@ -417,10 +417,10 @@ UDFVRead(
             ASSERT(UDFGetBit(VerifyCtx->StoredBitMap, vItem->lba));
             i++;
             if (!(Flags & PH_READ_VERIFY_CACHE)) {
-                crc = crc32((PUCHAR)Buffer+(vItem->lba - LBA)*Vcb->BlockSize, Vcb->BlockSize);
+                crc = crc32((PUCHAR)Buffer+(vItem->lba - LBA)*Vcb->SectorSize, Vcb->SectorSize);
                 if (vItem->crc != crc) {
                     UDFPrint(("UDFVRead: stored %x != %x\n", vItem->crc, crc));
-                    RtlCopyMemory((PUCHAR)Buffer+(vItem->lba - LBA)*Vcb->BlockSize, vItem->Buffer, Vcb->BlockSize);
+                    RtlCopyMemory((PUCHAR)Buffer+(vItem->lba - LBA)*Vcb->SectorSize, vItem->Buffer, Vcb->SectorSize);
                     status = STATUS_FT_WRITE_RECOVERY;
 
                     if (!(bm = (uint32*)(Vcb->BSBM_Bitmap))) {
@@ -436,19 +436,18 @@ UDFVRead(
                         UDFSetBit(bm, vItem->lba);
                         UDFPrint(("Set BB @ %#x\n", vItem->lba));
                     }
-#ifdef _BROWSE_UDF_
+
                     bm = (uint32*)(Vcb->FSBM_Bitmap);
                     if (bm) {
                         UDFSetUsedBit(bm, vItem->lba);
                         UDFPrint(("Set BB @ %#x as used\n", vItem->lba));
                     }
-#endif //_BROWSE_UDF_
                 } else {
                     // ok
                 }
             } else {
                 UDFPrint(("UDFVRead: get cached @ %x\n", vItem->lba));
-                RtlCopyMemory((PUCHAR)Buffer+(vItem->lba - LBA)*Vcb->BlockSize, vItem->Buffer, Vcb->BlockSize);
+                RtlCopyMemory((PUCHAR)Buffer+(vItem->lba - LBA)*Vcb->SectorSize, vItem->Buffer, Vcb->SectorSize);
             }
             if (i >= n) {
                 // no more blocks expected
@@ -567,7 +566,7 @@ UDFVWorkItem(
             UDFTIOVerify(&IrpContext,
                          Vcb,
                          VerifyReq->Buffer,     // Target buffer
-                         VerifyReq->vr[i].BCount << Vcb->BlockSizeBits,
+                         VerifyReq->vr[i].BCount << Vcb->SectorShift,
                          VerifyReq->vr[i].lba,
                          &ReadBytes,
                          PH_TMP_BUFFER | PH_VCB_IN_RETLEN /*| PH_LOCK_CACHE*/);
@@ -712,7 +711,7 @@ UDFVVerify(
 
                 if ((VerifyReq->nReq >= MAX_VREQ_RANGES) || (i == 1)) {
 
-                    VerifyReq->Buffer = (PUCHAR)DbgAllocatePoolWithTag(NonPagedPool, max_len * Vcb->BlockSize, 'bNWD');
+                    VerifyReq->Buffer = (PUCHAR)DbgAllocatePoolWithTag(NonPagedPool, max_len * Vcb->SectorSize, 'bNWD');
                     if (VerifyReq->Buffer) {
                         InterlockedIncrement((PLONG)&(VerifyCtx->QueuedCount));
 
@@ -782,7 +781,7 @@ UDFCheckArea(
     uint32 i, d;
     BOOLEAN ext_ok = TRUE;
     EXTENT_MAP Map[2];
-    uint32 PS = Vcb->WriteBlockSize >> Vcb->BlockSizeBits;
+    uint32 PS = Vcb->WriteBlockSize >> Vcb->SectorShift;
 
     buff = (uint8*)DbgAllocatePoolWithTag(NonPagedPool, Vcb->WriteBlockSize, 'bNWD' );
     if (buff) {
@@ -796,14 +795,14 @@ UDFCheckArea(
             RC = UDFTRead(IrpContext,
                            Vcb,
                            buff,
-                           d << Vcb->BlockSizeBits,
+                           d << Vcb->SectorShift,
                            LBA+i,
                            &ReadBytes,
                            PH_TMP_BUFFER);
 
             if (RC != STATUS_SUCCESS) {
                 Map[0].extLocation = LBA+i;
-                Map[0].extLength = d << Vcb->BlockSizeBits;
+                Map[0].extLength = d << Vcb->SectorShift;
                 UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &(Map[0]), AS_DISCARDED | AS_BAD); // free
                 ext_ok = FALSE;
             }
@@ -1054,7 +1053,7 @@ UDFRelocateSectors(
         // create new entry if the extent in not contigous
         if ( ((NewLba = UDFRelocateSector(Vcb, Lba+i+1)) != (LastLba+1)) ||
             (i==(BlockCount-1)) ) {
-            locExt.extLength = j << Vcb->BlockSizeBits;
+            locExt.extLength = j << Vcb->SectorShift;
             locExt.extLocation = LastLba-j+1;
             Extent2 = UDFExtentToMapping(&locExt);
             if (!Extent) {

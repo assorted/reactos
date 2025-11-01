@@ -41,72 +41,6 @@ UDFNormalizeFileNames(
     _Inout_ PUNICODE_STRING RemainingName
 );
 
-/*************************************************************************
-*
-* Function: UDFCreate()
-*
-* Description:
-*   The I/O Manager will invoke this routine to handle a create/open
-*   request
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL (invocation at higher IRQL will cause execution
-*   to be deferred to a worker thread context)
-*
-* Return Value: STATUS_SUCCESS/Error
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFCreate(
-    PDEVICE_OBJECT          DeviceObject,       // the logical volume device object
-    PIRP                    Irp)                // I/O Request Packet
-{
-    NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN             AreWeTopLevel = FALSE;
-
-    TmPrint(("UDFCreate:\n"));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-            RC = UDFCommonCreate(IrpContext, Irp);
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    AdPrint(("UDFCreate: %x\n", RC));
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-
-} // end UDFCreate()
-
 /*
  */
 VOID
@@ -151,7 +85,7 @@ UDFAcquireParent(
     UDF_CHECK_PAGING_IO_RESOURCE(RelatedFileInfo->Fcb);
     UDFAcquireResourceExclusive((*Res1) = &RelatedFileInfo->Fcb->FcbNonpaged->FcbResource, TRUE);
 
-    UDFInterlockedIncrement((PLONG)&RelatedFileInfo->Fcb->FcbReference);
+    InterlockedIncrement((PLONG)&RelatedFileInfo->Fcb->FcbReference);
     UDFReferenceFile__(RelatedFileInfo);
     ASSERT(RelatedFileInfo->Fcb->FcbReference >= RelatedFileInfo->RefCount);
 } // end UDFAcquireParent()
@@ -435,7 +369,7 @@ UDFCommonCreate(
             // We must defer processing of this request since we could
             //  block anytime while performing the create/open ...
             ASSERT(FALSE);
-            RC = UDFPostRequest(IrpContext, Irp);
+            RC = UDFFsdPostRequest(IrpContext, Irp);
             try_return(RC);
         }
 
@@ -472,27 +406,6 @@ UDFCommonCreate(
         }
 
         ASSERT(Vcb->VcbCondition == VcbMounted);
-
-        // We fail in the following cases for Read-Only volumes
-        //      - Open a target directory.
-        //      - Create a file.
-        if (
-           (
-           ((Vcb->origIntegrityType == INTEGRITY_TYPE_OPEN) &&
-            (Vcb->CompatFlags & UDF_VCB_IC_DIRTY_RO)) ||
-             (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)
-            ) &&
-            (DeleteOnClose ||
-             OpenTargetDirectory ||
-             (CreateDisposition == FILE_CREATE) ||
-             (CreateDisposition == FILE_OVERWRITE) ||
-             (CreateDisposition == FILE_OVERWRITE_IF) ||
-             (CreateDisposition == FILE_SUPERSEDE) ||
-             AllocationSize) ) {
-            ReturnedInformation = 0;
-            AdPrint(("    Write protected or dirty\n"));
-            try_return(RC = STATUS_MEDIA_WRITE_PROTECTED);
-        }
 
         // If we are opening this volume Dasd then process this immediately
         // and exit.
@@ -573,7 +486,7 @@ UDFCommonCreate(
                     IrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
 /*
-                    UDFInterlockedIncrement((PLONG)&(Vcb->VcbReference));
+                    InterlockedIncrement((PLONG)&Vcb->VcbReference);
                     UDFReleaseResource(&(Vcb->VcbResource));
                     AcquiredVcb = FALSE;
 
@@ -585,7 +498,7 @@ UDFCommonCreate(
 
                     UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE);
                     AcquiredVcb = TRUE;
-                    UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
+                    InterlockedDecrement((PLONG)&Vcb->VcbReference);
 */
                 }
             }
@@ -605,11 +518,11 @@ UDFCommonCreate(
                     UDFPrint(("  perform flush\n"));
                     IrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
-                    UDFInterlockedIncrement((PLONG)&(Vcb->VcbReference));
+                    InterlockedIncrement((PLONG)&Vcb->VcbReference);
 
                     UDFFspClose(Vcb);
 
-                    UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
+                    InterlockedDecrement((PLONG)&Vcb->VcbReference);
 
                     UDFFlushVolume(IrpContext, Vcb);
                 }
@@ -731,7 +644,7 @@ op_vol_accs_dnd:
             //  during I/O operations), this field is meaningless from
             //  the FSD's perspective.
             if (!(NextFcb->FcbState & UDF_FCB_DIRECTORY)) {
-                if (UDFStreamsSupported(Vcb) && FileName->Length && (FileName->Buffer[0] == L':')) {
+                if (UDFIsStreamsSupported(Vcb) && FileName->Length && (FileName->Buffer[0] == L':')) {
                     StreamTargetOpen = TRUE;
                 }
                 else {
@@ -964,7 +877,7 @@ op_vol_accs_dnd:
             AdPrint(("    Absolute path is not valid\n"));
             try_return(RC = STATUS_OBJECT_NAME_INVALID);
         }
-        if (StreamOpen && !UDFStreamsSupported(Vcb)) {
+        if (StreamOpen && !UDFIsStreamsSupported(Vcb)) {
             ReturnedInformation = FILE_DOES_NOT_EXIST;
             try_return(RC = STATUS_OBJECT_NAME_INVALID);
         }
@@ -1206,7 +1119,7 @@ Skip_open_attempt:
                     UDF_CHECK_PAGING_IO_RESOURCE(NewFileInfo->Fcb);
                     UDFAcquireResourceExclusive(Res1 = &NewFileInfo->Fcb->FcbNonpaged->FcbResource, TRUE);
                     // ...and reference it
-                    UDFInterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
+                    InterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
 
                     ASSERT(PtrNewFcb->FcbReference >= NewFileInfo->RefCount);
                     // update unwind information
@@ -1315,7 +1228,7 @@ Skip_open_attempt:
                     try_return(RC);
                 }
                 // discard changes for last successfully opened file
-                UDFInterlockedDecrement((PLONG)&PtrNewFcb->FcbReference);
+                InterlockedDecrement((PLONG)&PtrNewFcb->FcbReference);
                 RC = STATUS_SUCCESS;
                 ASSERT(!OpenTargetDirectory);
                 // break open loop and continue with Open
@@ -1379,7 +1292,7 @@ Skip_open_attempt:
             //  to reflect the fact that the parent directory of the
             //  target has been opened
             PtrNewFcb = NewFileInfo->Fcb;
-            UDFInterlockedDecrement((PLONG)&PtrNewFcb->FcbReference);
+            InterlockedDecrement((PLONG)&PtrNewFcb->FcbReference);
 
             RC = UDFCompleteFcbOpen(IrpContext, IrpSp, Vcb, &PtrNewFcb, UserDirectoryOpen, 0, CreateDisposition);
 
@@ -1468,8 +1381,8 @@ Skip_open_attempt:
             RelatedFileInfo = OldRelatedFileInfo;
 
             RC = UDFCreateFile__(IrpContext, Vcb, IgnoreCase, &LastGoodTail, 0, 0,
-                     Vcb->UseExtendedFE || (StreamOpen && !StreamExists),
-                     (CreateDisposition == FILE_CREATE), RelatedFileInfo, &NewFileInfo);
+                                 UdfIsExtendedFESupported(Vcb),
+                                 (CreateDisposition == FILE_CREATE), RelatedFileInfo, &NewFileInfo);
             if (!NT_SUCCESS(RC)) {
                 AdPrint(("    Creation error\n"));
 Creation_Err_1:
@@ -1566,7 +1479,7 @@ Undo_Create_1:
                 RC = MyAppendUnicodeStringToStringTag(&LocalPath, &LastGoodTail, MEM_USLOC_TAG);
                 if (!NT_SUCCESS(RC))
                     goto Creation_Err_1;
-                UDFInterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
+                InterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
                 ASSERT(PtrNewFcb->FcbReference >= NewFileInfo->RefCount);
                 PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                 PtrNewFcb->FcbState |= UDF_FCB_VALID;
@@ -1619,7 +1532,7 @@ Undo_Create_1:
                     BrutePoint();
                     goto Creation_Err_1;
                 }
-                UDFInterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
+                InterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
                 ASSERT(PtrNewFcb->FcbReference >= NewFileInfo->RefCount);
                 PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                 PtrNewFcb->FcbState |= UDF_FCB_VALID;
@@ -1629,7 +1542,7 @@ Undo_Create_1:
                 // create stream
                 RelatedFileInfo = NewFileInfo;
                 RC = UDFCreateFile__(IrpContext, Vcb, IgnoreCase, &StreamName, 0, 0,
-                         Vcb->UseExtendedFE, (CreateDisposition == FILE_CREATE),
+                         UdfIsExtendedFESupported(Vcb), (CreateDisposition == FILE_CREATE),
                          RelatedFileInfo, &NewFileInfo);
                 if (!NT_SUCCESS(RC)) {
                     AdPrint(("    Can't create Stream\n"));
@@ -2049,13 +1962,13 @@ try_exit:   NOTHING;
                 UDFIncrementReferenceCounts(IrpContext, PtrNewFcb, 1, 1);
 
                 if (FileObject->Flags & FO_CACHE_SUPPORTED)
-                    UDFInterlockedIncrement((PLONG) & (PtrNewFcb->CachedOpenHandleCount));
+                    InterlockedIncrement((PLONG)&PtrNewFcb->CachedOpenHandleCount);
 
                 UDFUnlockVcb(IrpContext, Vcb);
 
 
                 if (FileObject->Flags & FO_CACHE_SUPPORTED)
-                    UDFInterlockedIncrement((PLONG)&(PtrNewFcb->CachedOpenHandleCount));
+                    InterlockedIncrement((PLONG)&PtrNewFcb->CachedOpenHandleCount);
                 // Store some flags in CCB
                 if (PtrNewCcb) {
                     PtrNewCcb->TreeLength = TreeLength;
@@ -2080,7 +1993,7 @@ try_exit:   NOTHING;
 //                PtrNewCcb->CCBFlags |= UDF_CCB_VALID;
                 // increment the number of outstanding open operations on this
                 // logical volume (i.e. volume cannot be dismounted)
-                UDFInterlockedIncrement((PLONG)&(Vcb->VcbReference));
+                InterlockedIncrement((PLONG)&Vcb->VcbReference);
                 PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                 PtrNewFcb->FcbState |= UDF_FCB_VALID;
 #ifdef UDF_DBG
@@ -2497,7 +2410,7 @@ UDFCompleteFcbOpen(
             AdPrint(("Can't allocate CCB\n"));
             IrpSp->FileObject->FsContext2 = NULL;
             //
-            UDFInterlockedIncrement((PLONG)&Fcb->FcbReference);
+            InterlockedIncrement((PLONG)&Fcb->FcbReference);
             Status = STATUS_INSUFFICIENT_RESOURCES;
             try_return(Status);
         }
@@ -2550,12 +2463,12 @@ UDFCompleteFcbOpen(
         Fcb->FcbState &= ~UDF_FCB_DELAY_CLOSE;
 #endif //UDF_DELAYED_CLOSE
 
-        UDFAcquireResourceExclusive(&Fcb->CcbListResource, TRUE);
+        UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->CcbListResource, TRUE);
         // insert CCB into linked list of open file object to Fcb or
         // to Vcb and do other intialization
         InsertTailList(&Fcb->NextCCB, &Ccb->NextCCB);
-        UDFInterlockedIncrement((PLONG)&Fcb->FcbReference);
-        UDFReleaseResource(&Fcb->CcbListResource);
+        InterlockedIncrement((PLONG)&Fcb->FcbReference);
+        UDFReleaseResource(&Fcb->FcbNonpaged->CcbListResource);
 
         Ccb = NULL;
 
