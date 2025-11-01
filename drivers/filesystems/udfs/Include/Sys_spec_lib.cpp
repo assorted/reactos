@@ -298,10 +298,10 @@ UDFFileDirInfoToNT(
         LONG_AD feloc;
 
         UDFPrint(("  !SYS_ATTR\n"));
-        FileEntry = (PFILE_ENTRY)MyAllocatePool__(NonPagedPool, Vcb->LBlockSize);
+        FileEntry = (PFILE_ENTRY)MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
         if (!FileEntry) return STATUS_INSUFFICIENT_RESOURCES;
 
-        feloc.extLength = Vcb->LBlockSize;
+        feloc.extLength = Vcb->SectorSize;
         feloc.extLocation = FileDirNdx->FileEntryLoc;
 
         if (!NT_SUCCESS(status = UDFReadFileEntry(IrpContext, Vcb, &feloc, FileEntry, &Ident))) {
@@ -346,7 +346,7 @@ UDFFileDirInfoToNT(
             // AllocSize
             FileDirNdx->AllocationSize =
             NTFileInfo->AllocationSize.QuadPart =
-                (FileEntry->informationLength + Vcb->LBlockSize - 1) & ~((LONGLONG)(Vcb->LBlockSize) - 1);
+                (FileEntry->informationLength + Vcb->SectorSize - 1) & ~((LONGLONG)(Vcb->SectorSize) - 1);
         }
 //        NTFileInfo->EaSize = 0;//FileEntry->lengthExtendedAttr;
     } else if (FileEntry->descTag.tagIdent == TID_EXTENDED_FILE_ENTRY) {
@@ -370,7 +370,7 @@ UDFFileDirInfoToNT(
             // AllocSize
             FileDirNdx->AllocationSize =
             NTFileInfo->AllocationSize.QuadPart =
-                (ExFileEntry->informationLength + Vcb->LBlockSize - 1) & ~((LONGLONG)(Vcb->LBlockSize) - 1);
+                (ExFileEntry->informationLength + Vcb->SectorSize - 1) & ~((LONGLONG)(Vcb->SectorSize) - 1);
         }
 //        NTFileInfo->EaSize = 0;//ExFileEntry->lengthExtendedAttr;
     } else {

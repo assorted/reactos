@@ -27,134 +27,6 @@
 
 /*************************************************************************
 *
-* Function: UDFQueryInfo()
-*
-* Description:
-*   The I/O Manager will invoke this routine to handle a query file
-*   information request
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL (invocation at higher IRQL will cause execution
-*   to be deferred to a worker thread context)
-*
-* Return Value: STATUS_SUCCESS/Error
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFQueryInfo(
-    PDEVICE_OBJECT DeviceObject,       // the logical volume device object
-    PIRP           Irp                 // I/O Request Packet
-    )
-{
-    NTSTATUS         RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN          AreWeTopLevel = FALSE;
-
-    TmPrint(("UDFQueryInfo: \n"));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-            RC = UDFCommonQueryInfo(IrpContext, Irp);
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFQueryInfo()
-
-/*************************************************************************
-*
-* Function: UDFSetInfo()
-*
-* Description:
-*   The I/O Manager will invoke this routine to handle a set file
-*   information request
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL (invocation at higher IRQL will cause execution
-*   to be deferred to a worker thread context)
-*
-* Return Value: STATUS_SUCCESS/Error
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFSetInfo(
-    PDEVICE_OBJECT DeviceObject,       // the logical volume device object
-    PIRP           Irp                 // I/O Request Packet
-    )
-{
-    NTSTATUS         RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN          AreWeTopLevel = FALSE;
-
-    TmPrint(("UDFSetInfo: \n"));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-            RC = UDFCommonSetInfo(IrpContext, Irp);
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFSetInfo()
-
-/*************************************************************************
-*
 * Function: UDFCommonQueryInfo()
 *
 * Description:
@@ -176,190 +48,154 @@ UDFCommonQueryInfo(
     PIRP             Irp
     )
 {
-    NTSTATUS                RC = STATUS_SUCCESS;
-    PIO_STACK_LOCATION      IrpSp = NULL;
-    PFILE_OBJECT            FileObject = NULL;
-    TYPE_OF_OPEN TypeOfOpen;
-    PFCB                    Fcb = NULL;
-    PCCB                    Ccb = NULL;
-    PVCB                    Vcb = NULL;
-    BOOLEAN                 MainResourceAcquired = FALSE;
-    BOOLEAN                 ParentResourceAcquired = FALSE;
-    BOOLEAN                 PagingIoResourceAcquired = FALSE;
-    PVOID                   PtrSystemBuffer = NULL;
-    LONG                    BufferLength = 0;
-    FILE_INFORMATION_CLASS  FunctionalityRequested;
-    BOOLEAN                 CanWait = FALSE;
-    BOOLEAN                 PostRequest = FALSE;
-    BOOLEAN                 AcquiredVcb = FALSE;
+    NTSTATUS Status = STATUS_SUCCESS;
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
-    TmPrint(("UDFCommonQueryInfo: irp %x\n", Irp));
+    LONG Length;
+    FILE_INFORMATION_CLASS FileInformationClass;
+    PVOID Buffer;
+    TYPE_OF_OPEN TypeOfOpen;
+    PFCB Fcb;
+    PCCB Ccb;
+    BOOLEAN ReleaseFcb = FALSE;
+
+    PAGED_CODE();
+
+    // Reference our input parameters to make things easier
+
+    Length = IrpSp->Parameters.QueryFile.Length;
+    FileInformationClass = IrpSp->Parameters.QueryFile.FileInformationClass;
+    Buffer = Irp->AssociatedIrp.SystemBuffer;
 
     // Decode the file object
 
-    IrpSp = IoGetCurrentIrpStackLocation(Irp);
-
-    FileObject = IrpSp->FileObject;
-
-    TypeOfOpen = UDFDecodeFileObject(FileObject, &Fcb, &Ccb);
+    TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
 
     ASSERT_CCB(Ccb);
     ASSERT_FCB(Fcb);
 
     _SEH2_TRY {
 
-        CanWait = (IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE;
+        // We only support query on file and directory handles.
 
-        // If the caller has opened a logical volume and is attempting to
-        // query information for it as a file stream, return an error.
-        if (Fcb == Fcb->Vcb->VolumeDasdFcb) {
-            // This is not allowed. Caller must use get/set volume information instead.
-            RC = STATUS_INVALID_PARAMETER;
-            try_return(RC);
-        }
+        switch (TypeOfOpen) {
 
-        Vcb = Fcb->Vcb;
-        ASSERT_VCB(Vcb);
-        //Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
+        case UserDirectoryOpen:
+        case UserFileOpen:
 
-        // The NT I/O Manager always allocates and supplies a system
-        // buffer for query and set file information calls.
-        // Copying information to/from the user buffer and the system
-        // buffer is performed by the I/O Manager and the FSD need not worry about it.
-        PtrSystemBuffer = Irp->AssociatedIrp.SystemBuffer;
+            UDFAcquireFcbShared(IrpContext, Fcb, FALSE);
+            ReleaseFcb = TRUE;
 
-        UDFFlushTryBreak(Vcb);
+            // Make sure the Fcb is in a usable condition.  This will raise
+            // an error condition if the volume is unusable
 
-        // Now, obtain some parameters.
-        BufferLength = IrpSp->Parameters.QueryFile.Length;
-        FunctionalityRequested = IrpSp->Parameters.QueryFile.FileInformationClass;
+            UDFVerifyFcbOperation(IrpContext, Fcb, Ccb);
 
-        if (!UDFAcquireResourceShared(&Vcb->VcbResource, CanWait)) {
-            PostRequest = TRUE;
-            try_return(RC = STATUS_PENDING);
-        }
-        AcquiredVcb = TRUE;
+            // Do whatever the caller asked us to do
+            switch (FileInformationClass) {
+            case FileBasicInformation:
+                Status = UDFGetBasicInformation(IrpSp->FileObject, Fcb, (PFILE_BASIC_INFORMATION)Buffer, &Length);
+                break;
+            case FileStandardInformation:
+                Status = UDFGetStandardInformation(Fcb, (PFILE_STANDARD_INFORMATION)Buffer, &Length);
+                break;
+            case FileNetworkOpenInformation:
+                Status = UDFGetNetworkInformation(Fcb, (PFILE_NETWORK_OPEN_INFORMATION)Buffer, &Length);
+                break;
+            case FileInternalInformation:
+                Status = UDFGetInternalInformation(IrpContext, Fcb, (PFILE_INTERNAL_INFORMATION)Buffer, &Length);
+                break;
+            case FileEaInformation:
+                Status = UDFGetEaInformation(IrpContext, Fcb, (PFILE_EA_INFORMATION)Buffer, &Length);
+                break;
+            case FileNameInformation:
 
-        // Acquire the MainResource shared (NOTE: for paging-IO on a
-        // page file, we should avoid acquiring any resources and simply
-        // trust the VMM to do the right thing, else we could possibly
-        // run into deadlocks).
+                // We don't allow this operation on a file opened by file Id.
 
-        // Acquire the MainResource shared.
-        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-        UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, TRUE);
-        MainResourceAcquired = TRUE;
+                if (FlagOn(Ccb->Flags, CCB_FLAG_OPEN_BY_ID)) {
 
-        // Do whatever the caller asked us to do
-        switch (FunctionalityRequested) {
-        case FileBasicInformation:
-            RC = UDFGetBasicInformation(FileObject, Fcb, (PFILE_BASIC_INFORMATION)PtrSystemBuffer, &BufferLength);
-            break;
-        case FileStandardInformation:
-            RC = UDFGetStandardInformation(Fcb, (PFILE_STANDARD_INFORMATION) PtrSystemBuffer, &BufferLength);
-            break;
-        case FileNetworkOpenInformation:
-            RC = UDFGetNetworkInformation(Fcb, (PFILE_NETWORK_OPEN_INFORMATION)PtrSystemBuffer, &BufferLength);
-            break;
-        case FileInternalInformation:
-            RC = UDFGetInternalInformation(IrpContext, Fcb, (PFILE_INTERNAL_INFORMATION)PtrSystemBuffer, &BufferLength);
-            break;
-        case FileEaInformation:
-            RC = UDFGetEaInformation(IrpContext, Fcb, (PFILE_EA_INFORMATION) PtrSystemBuffer, &BufferLength);
-            break;
-        case FileNameInformation:
-            RC = UDFGetFullNameInformation(FileObject, (PFILE_NAME_INFORMATION) PtrSystemBuffer, &BufferLength);
-            break;
-        case FileAlternateNameInformation:
-            RC = UDFGetAltNameInformation(Fcb, (PFILE_NAME_INFORMATION) PtrSystemBuffer, &BufferLength);
-            break;
-        //TODO: impl
-//            case FileCompressionInformation:
-//                // RC = UDFGetCompressionInformation(...);
-//                break;
-        case FilePositionInformation:
-            RC = UDFGetPositionInformation(FileObject, (PFILE_POSITION_INFORMATION)PtrSystemBuffer, &BufferLength);
-            break;
-        case FileStreamInformation:
-            RC = UDFGetFileStreamInformation(IrpContext, Fcb, (PFILE_STREAM_INFORMATION)PtrSystemBuffer, (PULONG)&BufferLength);
-            break;
-        case FileAllInformation:
-            // The I/O Manager supplies the Mode, Access, and Alignment
-            // information. The rest is up to us to provide.
-            // Therefore, decrement the BufferLength appropriately (assuming
-            // that the above 3 types on information are already in the
-            // buffer)
-            {
-                PFILE_ALL_INFORMATION PtrAllInfo = (PFILE_ALL_INFORMATION)PtrSystemBuffer;
+                    Status = STATUS_INVALID_PARAMETER;
+                    break;
+                }
 
-                BufferLength -= (sizeof(FILE_MODE_INFORMATION) +
-                                    sizeof(FILE_ACCESS_INFORMATION) +
-                                    sizeof(FILE_ALIGNMENT_INFORMATION));
+                Status = UDFGetFullNameInformation(IrpSp->FileObject, (PFILE_NAME_INFORMATION)Buffer, &Length);
+                break;
+            case FileAlternateNameInformation:
+                Status = UDFGetAltNameInformation(Fcb, (PFILE_NAME_INFORMATION)Buffer, &Length);
+                break;
+            //TODO: impl
+    //            case FileCompressionInformation:
+    //                // Status = UDFGetCompressionInformation(...);
+    //                break;
+            case FilePositionInformation:
+                Status = UDFGetPositionInformation(IrpSp->FileObject, (PFILE_POSITION_INFORMATION)Buffer, &Length);
+                break;
+            case FileStreamInformation:
+                Status = UDFGetFileStreamInformation(IrpContext, Fcb, (PFILE_STREAM_INFORMATION)Buffer, (PULONG)&Length);
+                break;
+            case FileAllInformation:
+                {
+                    // We don't allow this operation on a file opened by file Id.
 
-                // Get the remaining stuff.
-                if (!NT_SUCCESS(RC = UDFGetBasicInformation(FileObject, Fcb, &(PtrAllInfo->BasicInformation), &BufferLength)) ||
-                    !NT_SUCCESS(RC = UDFGetStandardInformation(Fcb, &(PtrAllInfo->StandardInformation), &BufferLength)) ||
-                    !NT_SUCCESS(RC = UDFGetInternalInformation(IrpContext, Fcb, &(PtrAllInfo->InternalInformation), &BufferLength)) ||
-                    !NT_SUCCESS(RC = UDFGetEaInformation(IrpContext, Fcb, &(PtrAllInfo->EaInformation), &BufferLength)) ||
-                    !NT_SUCCESS(RC = UDFGetPositionInformation(FileObject, &(PtrAllInfo->PositionInformation), &BufferLength)) ||
-                    !NT_SUCCESS(RC = UDFGetFullNameInformation(FileObject, &(PtrAllInfo->NameInformation), &BufferLength))
-                    )
-                    try_return(RC);
+                    if (FlagOn(Ccb->Flags, CCB_FLAG_OPEN_BY_ID)) {
+
+                        Status = STATUS_INVALID_PARAMETER;
+                        break;
+                    }
+
+                    PFILE_ALL_INFORMATION PtrAllInfo = (PFILE_ALL_INFORMATION)Buffer;
+
+                    Length -= (sizeof(FILE_MODE_INFORMATION) +
+                               sizeof(FILE_ACCESS_INFORMATION) +
+                               sizeof(FILE_ALIGNMENT_INFORMATION));
+
+                    // Get the remaining stuff.
+                    if (!NT_SUCCESS(Status = UDFGetBasicInformation(IrpSp->FileObject, Fcb, &(PtrAllInfo->BasicInformation), &Length)) ||
+                        !NT_SUCCESS(Status = UDFGetStandardInformation(Fcb, &(PtrAllInfo->StandardInformation), &Length)) ||
+                        !NT_SUCCESS(Status = UDFGetInternalInformation(IrpContext, Fcb, &(PtrAllInfo->InternalInformation), &Length)) ||
+                        !NT_SUCCESS(Status = UDFGetEaInformation(IrpContext, Fcb, &(PtrAllInfo->EaInformation), &Length)) ||
+                        !NT_SUCCESS(Status = UDFGetPositionInformation(IrpSp->FileObject, &(PtrAllInfo->PositionInformation), &Length)) ||
+                        !NT_SUCCESS(Status = UDFGetFullNameInformation(IrpSp->FileObject, &(PtrAllInfo->NameInformation), &Length))
+                        )
+                        break;
+                }
+
+                break;
+
+            default:
+
+                Status = STATUS_INVALID_PARAMETER;
+                try_return(Status);
             }
+
             break;
+
         default:
-            RC = STATUS_INVALID_PARAMETER;
-            try_return(RC);
+
+            Status = STATUS_INVALID_PARAMETER;
         }
+
+        // Set the information field to the number of bytes actually filled in
+        // and then complete the request
+
+        Irp->IoStatus.Information = IrpSp->Parameters.QueryFile.Length - Length;
 
 try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
-        if (PagingIoResourceAcquired) {
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
-            PagingIoResourceAcquired = FALSE;
+        if (ReleaseFcb) {
+
+            UDFReleaseFcb(IrpContext, Fcb);
         }
 
-        if (MainResourceAcquired) {
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
-            MainResourceAcquired = FALSE;
-        }
-
-        if (ParentResourceAcquired) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
-            UDFReleaseResource(&Fcb->ParentFcb->FcbNonpaged->FcbResource);
-            ParentResourceAcquired = FALSE;
-        }
-
-        if (AcquiredVcb) {
-            AcquiredVcb = FALSE;
-            UDFReleaseResource(&(Vcb->VcbResource));
-        }
-
-        // Post IRP if required
-        if (PostRequest) {
-
-            // Since, the I/O Manager gave us a system buffer, we do not
-            // need to "lock" anything.
-
-            // Perform the post operation which will mark the IRP pending
-            // and will return STATUS_PENDING back to us
-            RC = UDFPostRequest(IrpContext, Irp);
-
-        } else {
-
-            if (!_SEH2_AbnormalTermination()) {
-
-                Irp->IoStatus.Information = IrpSp->Parameters.QueryFile.Length - BufferLength;
-
-                UDFCompleteRequest(IrpContext, Irp, RC);
-            }
-
-        }
     } _SEH2_END;// end of "__finally" processing
 
-    return(RC);
+    // Complete the request if we didn't raise.
+
+    UDFCompleteRequest(IrpContext, Irp, Status);
+
+    return Status;
 } // end UDFCommonQueryInfo()
 
 /*************************************************************************
@@ -620,7 +456,7 @@ try_exit:   NOTHING;
 
             // Perform the post operation which will mark the IRP pending
             // and will return STATUS_PENDING back to us
-            Status = UDFPostRequest(IrpContext, Irp);
+            Status = UDFFsdPostRequest(IrpContext, Irp);
 
         } else {
 
@@ -1630,7 +1466,7 @@ UDFSetDispositionInfo(
             FileObject->DeletePending = TRUE;
 
         if ((Fcb->FcbState & UDF_FCB_DIRECTORY) && Ccb) {
-            FsRtlNotifyFullChangeDirectory( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
+            FsRtlNotifyFullChangeDirectory( Vcb->NotifySync, &(Vcb->NextNotifyIRP),
                                             (PVOID)Ccb, NULL, FALSE, FALSE,
                                             0, NULL, NULL, NULL );
         }
@@ -1705,7 +1541,7 @@ UDFSetAllocationInfo(
 
             // Yes. Do the FSD specific stuff i.e. increase reserved
             // space on disk.
-            if (((LONGLONG)UDFGetFreeSpace(Vcb) << Vcb->LBlockSizeBits) < Buffer->AllocationSize.QuadPart) {
+            if (((LONGLONG)UDFGetFreeSpace(Vcb) << Vcb->SectorShift) < Buffer->AllocationSize.QuadPart) {
                 try_return(RC = STATUS_DISK_FULL);
             }
 //          RC = STATUS_SUCCESS;
@@ -1918,12 +1754,12 @@ UDFSetEndOfFileInfo(
 
             // reference file to pretend that it is opened
             UDFReferenceFile__(Fcb->FileInfo);
-            UDFInterlockedIncrement((PLONG)&Fcb->FcbReference);
+            InterlockedIncrement((PLONG)&Fcb->FcbReference);
             // perform resize operation
             RC = UDFResizeFile__(IrpContext, Vcb, Fcb->FileInfo, PtrBuffer->EndOfFile.QuadPart);
             // dereference file
             UDFCloseFile__(IrpContext, Vcb, Fcb->FileInfo);
-            UDFInterlockedDecrement((PLONG)&Fcb->FcbReference);
+            InterlockedDecrement((PLONG)&Fcb->FcbReference);
             // update values in NtReqFcb
             Fcb->Header.FileSize.QuadPart =
 //            NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart =
@@ -1948,12 +1784,12 @@ UDFSetEndOfFileInfo(
             // Perform directory entry modifications. Release any on-disk
             // space we may need to in the process.
             UDFReferenceFile__(Fcb->FileInfo);
-            UDFInterlockedIncrement((PLONG)&Fcb->FcbReference);
+            InterlockedIncrement((PLONG)&Fcb->FcbReference);
             // perform resize operation
             RC = UDFResizeFile__(IrpContext, Vcb, Fcb->FileInfo, PtrBuffer->EndOfFile.QuadPart);
             // dereference file
             UDFCloseFile__(IrpContext, Vcb, Fcb->FileInfo);
-            UDFInterlockedDecrement((PLONG)&Fcb->FcbReference);
+            InterlockedDecrement((PLONG)&Fcb->FcbReference);
 
             ModifiedAllocSize = TRUE;
             TruncatedFile = TRUE;
@@ -2073,16 +1909,16 @@ UDFPrepareForRenameMoveLink(
     // one of them is a parent of another. Sequential resource
     // acquisition may lead to deadlock due to concurrent
     // CleanUpFcbChain() or UDFCloseFileInfoChain()
-    UDFInterlockedIncrement((PLONG)&(Vcb->VcbReference));
+    InterlockedIncrement((PLONG)&Vcb->VcbReference);
 
 
     (*SingleDir) = ((Dir1 == Dir2) && (Dir1->Fcb));
 
     if (!(*SingleDir) ||
        (UDFGetFileLinkCount(File1) != 1)) {
-        UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
+        InterlockedDecrement((PLONG)&Vcb->VcbReference);
     } else {
-        UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
+        InterlockedDecrement((PLONG)&Vcb->VcbReference);
 
         UDF_CHECK_PAGING_IO_RESOURCE(Dir1->Fcb);
         UDFAcquireResourceExclusive(&Dir1->Fcb->FcbNonpaged->FcbResource, TRUE);
@@ -2317,7 +2153,7 @@ post_rename:
 /*          UDFNotifyFullReportChange( Vcb, File2,
                                        UDFIsADirectory(File2) ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME,
                                        FILE_ACTION_RENAMED_NEW_NAME );*/
-            FsRtlNotifyFullReportChange( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
+            FsRtlNotifyFullReportChange( Vcb->NotifySync, &(Vcb->NextNotifyIRP),
                                          (PSTRING)&LocalPath,
                                          ((TargetDirInfo->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ? 0 : TargetDirInfo->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
                                          NULL,NULL,
@@ -2337,7 +2173,7 @@ post_rename:
                                        FILE_NOTIFY_CHANGE_CREATION |
                                        FILE_NOTIFY_CHANGE_EA,
                                        FILE_ACTION_MODIFIED );*/
-                FsRtlNotifyFullReportChange( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
+                FsRtlNotifyFullReportChange( Vcb->NotifySync, &(Vcb->NextNotifyIRP),
                                              (PSTRING)&LocalPath,
                                              ((TargetDirInfo->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ?
                                                  0 : TargetDirInfo->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
@@ -2354,7 +2190,7 @@ post_rename:
 /*              UDFNotifyFullReportChange( Vcb, File2,
                                        UDFIsADirectory(File2) ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME,
                                        FILE_ACTION_ADDED );*/
-                FsRtlNotifyFullReportChange( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
+                FsRtlNotifyFullReportChange( Vcb->NotifySync, &(Vcb->NextNotifyIRP),
                                              (PSTRING)&LocalPath,
                                              ((TargetDirInfo->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ?
                                                  0 : TargetDirInfo->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
@@ -2369,13 +2205,13 @@ post_rename:
 
         // this will prevent structutre release before call to
         // UDFCleanUpFcbChain()
-        UDFInterlockedIncrement((PLONG)&DirInfo->Fcb->FcbReference);
+        InterlockedIncrement((PLONG)&DirInfo->Fcb->FcbReference);
         ASSERT(DirInfo->Fcb->FcbReference >= DirInfo->RefCount);
 
         // Look through Ccb list & decrement OpenHandleCounter(s)
         // acquire CcbList
         if (!SingleDir) {
-            UDFAcquireResourceExclusive(&Fcb->CcbListResource, TRUE);
+            UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->CcbListResource, TRUE);
             Link = Fcb->NextCCB.Flink;
             DirRefCount = 0;
             FileInfoRefCount = 0;
@@ -2401,7 +2237,7 @@ post_rename:
                     }
                     ASSERT(NextFileInfo->Fcb->FcbReference > NextFileInfo->RefCount);
                     ASSERT(NextFileInfo->Fcb->FcbReference);
-                    UDFInterlockedDecrement((PLONG)&NextFileInfo->Fcb->FcbReference);
+                    InterlockedDecrement((PLONG)&NextFileInfo->Fcb->FcbReference);
                     ASSERT(NextFileInfo->Fcb->FcbReference >= NextFileInfo->RefCount);
                     NextFileInfo = fi;
                 }
@@ -2417,15 +2253,15 @@ post_rename:
 #endif // UDF_DBG
                 }
             }
-            UDFReleaseResource(&Fcb->CcbListResource);
+            UDFReleaseResource(&Fcb->FcbNonpaged->CcbListResource);
 
             ASSERT(DirRefCount >= FileInfoRefCount);
             // update counters & pointers
             Fcb->ParentFcb = TargetDirInfo->Fcb;
             // move references to TargetDir
-            UDFInterlockedExchangeAdd((PLONG)&TargetDirInfo->Fcb->FcbReference, DirRefCount);
+            InterlockedExchangeAdd((PLONG)&TargetDirInfo->Fcb->FcbReference, DirRefCount);
             ASSERT(TargetDirInfo->Fcb->FcbReference > TargetDirInfo->RefCount);
-            UDFReferenceFileEx__(TargetDirInfo,FileInfoRefCount);
+            UDFReferenceFileEx__(TargetDirInfo, FileInfoRefCount);
             ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
         }
         ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
@@ -2769,7 +2605,7 @@ UDFHardLink(
 /*          UDFNotifyFullReportChange( Vcb, File2,
                                        UDFIsADirectory(File1) ? FILE_NOTIFY_CHANGE_DIR_NAME : FILE_NOTIFY_CHANGE_FILE_NAME,
                                        FILE_ACTION_ADDED );*/
-            FsRtlNotifyFullReportChange( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
+            FsRtlNotifyFullReportChange( Vcb->NotifySync, &(Vcb->NextNotifyIRP),
                                          (PSTRING)&LocalPath,
                                          ((Dir2->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ? 0 : Dir2->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
                                          NULL,NULL,
@@ -2785,7 +2621,7 @@ UDFHardLink(
                                        FILE_NOTIFY_CHANGE_CREATION |
                                        FILE_NOTIFY_CHANGE_EA,
                                        FILE_ACTION_MODIFIED );*/
-            FsRtlNotifyFullReportChange( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
+            FsRtlNotifyFullReportChange( Vcb->NotifySync, &(Vcb->NextNotifyIRP),
                                          (PSTRING)&LocalPath,
                                          ((Dir2->Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY) ? 0 : Dir2->Fcb->FCBName->ObjectName.Length) + sizeof(WCHAR),
                                          NULL,NULL,

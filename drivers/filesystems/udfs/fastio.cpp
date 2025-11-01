@@ -166,9 +166,6 @@ UDFFastIoQueryBasicInfo(
 
     TypeOfOpen = UDFDecodeFileObject(FileObject, &Fcb, &Ccb);
 
-    ASSERT_FCB(Fcb);
-    ASSERT_CCB(Ccb);
-
     // We only support this request on user file or directory objects.
 
     if ((TypeOfOpen != UserFileOpen) &&
@@ -176,6 +173,9 @@ UDFFastIoQueryBasicInfo(
 
         return FALSE;
     }
+
+    ASSERT_FCB(Fcb);
+    ASSERT_CCB(Ccb);
 
     FsRtlEnterFileSystem();
 
@@ -254,9 +254,6 @@ UDFFastIoQueryStdInfo(
 
     TypeOfOpen = UDFDecodeFileObject(FileObject, &Fcb, &Ccb);
 
-    ASSERT_FCB(Fcb);
-    ASSERT_CCB(Ccb);
-
     // We only support this request on user file or directory objects.
 
     if ((TypeOfOpen != UserFileOpen) &&
@@ -264,6 +261,9 @@ UDFFastIoQueryStdInfo(
 
         return FALSE;
     }
+
+    ASSERT_FCB(Fcb);
+    ASSERT_CCB(Ccb);
 
     FsRtlEnterFileSystem();
 
@@ -580,9 +580,6 @@ UDFFastIoQueryNetInfo(
 
     TypeOfOpen = UDFDecodeFileObject(FileObject, &Fcb, &Ccb);
 
-    ASSERT_FCB(Fcb);
-    ASSERT_CCB(Ccb);
-
     // We only support this request on user file or directory objects.
 
     if ((TypeOfOpen != UserFileOpen) &&
@@ -590,6 +587,9 @@ UDFFastIoQueryNetInfo(
 
         return FALSE;
     }
+
+    ASSERT_FCB(Fcb);
+    ASSERT_CCB(Ccb);
 
     FsRtlEnterFileSystem();
 
@@ -671,9 +671,6 @@ IN PDEVICE_OBJECT           DeviceObject)
         } __except (UDFExceptionFilter(IrpContext, GetExceptionInformation())) {
 
             RC = UDFExceptionHandler(IrpContext, NULL);
-
-            UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-
         }
 
         //try_exit: NOTHING;
@@ -726,9 +723,6 @@ IN PDEVICE_OBJECT               DeviceObject)
         } __except (UDFExceptionFilter(IrpContext, GetExceptionInformation())) {
 
             RC = UDFExceptionHandler(IrpContext, NULL);
-
-            UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-
         }
 
         //try_exit: NOTHING;
@@ -785,9 +779,6 @@ UDFFastIoPrepareMdlWrite(
         } __except (UDFExceptionFilter(IrpContext, GetExceptionInformation())) {
 
             RC = UDFExceptionHandler(IrpContext, NULL);
-
-            UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-
         }
 
         //try_exit: NOTHING;
@@ -841,9 +832,6 @@ IN PDEVICE_OBJECT               DeviceObject)
         } __except (UDFExceptionFilter(IrpContext, GetExceptionInformation())) {
 
             RC = UDFExceptionHandler(IrpContext, NULL);
-
-            UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-
         }
 
         //try_exit: NOTHING;

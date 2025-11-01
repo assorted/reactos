@@ -24,8 +24,6 @@ typedef struct _UDF_PH_CALL_CONTEXT {
     IO_STATUS_BLOCK IosbToUse;
 } UDF_PH_CALL_CONTEXT, *PUDF_PH_CALL_CONTEXT;
 
-#ifdef _BROWSE_UDF_
-
 // convert UDF timestamp to NT time
 LONGLONG UDFTimeToNT(IN PUDF_TIME_STAMP UdfTime);
 // translate UDF file attributes to NT ones
@@ -159,7 +157,7 @@ __inline LARGE_INTEGER UDFMakeLargeInteger(LONGLONG value) {
 
 #define UnicodeIsPrint(a) RtlIsValidOemCharacter(&(a))
 
-#define UDFSysGetAllocSize(Vcb, Size) ((Size + Vcb->LBlockSize - 1) & ~((LONGLONG)(Vcb->LBlockSize - 1)))
+#define UDFSysGetAllocSize(Vcb, Size) ((Size + Vcb->SectorSize - 1) & ~((LONGLONG)(Vcb->SectorSize - 1)))
 
 NTSTATUS UDFDoesOSAllowFileToBeTargetForRename__(IN PUDF_FILE_INFO FileInfo);
 #define UDFDoesOSAllowFileToBeTargetForHLink__  UDFDoesOSAllowFileToBeTargetForRename__
@@ -167,18 +165,5 @@ NTSTATUS UDFDoesOSAllowFileToBeUnlinked__(IN PUDF_FILE_INFO FileInfo);
 #define UDFDoesOSAllowFileToBeMoved__  UDFDoesOSAllowFileToBeUnlinked__
 NTSTATUS UDFDoesOSAllowFilePretendDeleted__(IN PUDF_FILE_INFO FileInfo);
 BOOLEAN UDFRemoveOSReferences__(IN PUDF_FILE_INFO FileInfo);
-
-/*
-extern ULONG  MajorVersion;
-extern ULONG  MinorVersion;
-extern ULONG  BuildNumber;
-
-#define WinVer_Is351  (MajorVersion==0x03 && MinorVersion==51)
-#define WinVer_IsNT   (MajorVersion==0x04)
-#define WinVer_Is2k   (MajorVersion==0x05 && MinorVersion==0x00)
-#define WinVer_IsXP   (MajorVersion==0x05 && MinorVersion==0x01)
-#define WinVer_IsdNET (MajorVersion==0x05 && MinorVersion==0x02)
-*/
-#endif //_BROWSE_UDF_
 
 #endif  // _UDF_SYS_SPEC_LIB__H_

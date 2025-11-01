@@ -28,70 +28,6 @@ UDFAutoUnlock (
 
 /*************************************************************************
 *
-* Function: UDFCleanup()
-*
-* Description:
-*   The I/O Manager will invoke this routine to handle a cleanup
-*   request
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL (invocation at higher IRQL will cause execution
-*   to be deferred to a worker thread context)
-*
-* Return Value: STATUS_SUCCESS
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFCleanup(
-    PDEVICE_OBJECT  DeviceObject,  // the logical volume device object
-    PIRP            Irp            // I/O Request Packet
-    )
-{
-    NTSTATUS                RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN                 AreWeTopLevel = FALSE;
-
-    TmPrint(("UDFCleanup\n"));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-            RC = UDFCommonCleanup(IrpContext, Irp);
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFCleanup()
-
-/*************************************************************************
-*
 * Function: UDFCommonCleanup()
 *
 * Description:
@@ -217,7 +153,7 @@ UDFCommonCleanup(
 
             if (FileObject->Flags & FO_CACHE_SUPPORTED) {
                 // we've cached close
-                UDFInterlockedDecrement((PLONG)&(Fcb->CachedOpenHandleCount));
+                InterlockedDecrement((PLONG)&Fcb->CachedOpenHandleCount);
             }
             ASSERT(Fcb->FcbCleanup <= (Fcb->FcbReference-1));
 
@@ -259,7 +195,7 @@ UDFCommonCleanup(
 
         if (FileObject->Flags & FO_CACHE_SUPPORTED) {
             // we've cached close
-            UDFInterlockedDecrement((PLONG)&Fcb->CachedOpenHandleCount);
+            InterlockedDecrement((PLONG)&Fcb->CachedOpenHandleCount);
         }
         ASSERT(Fcb->FcbCleanup <= (Fcb->FcbReference-1));
 
@@ -272,7 +208,7 @@ UDFCommonCleanup(
             FileObject->DeletePending = TRUE;
             //  Report this to the dir notify package for a directory.
             if (Fcb->FcbState & UDF_FCB_DIRECTORY) {
-                FsRtlNotifyFullChangeDirectory( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP),
+                FsRtlNotifyFullChangeDirectory( Vcb->NotifySync, &(Vcb->NextNotifyIRP),
                                                 (PVOID)Ccb, NULL, FALSE, FALSE,
                                                 0, NULL, NULL, NULL );
             }
@@ -471,7 +407,7 @@ DiscardDelete:
 
         if (Fcb->FcbState & UDF_FCB_DIRECTORY) {
             //  Report to the dir notify package for a directory.
-            FsRtlNotifyCleanup( Vcb->NotifyIRPMutex, &(Vcb->NextNotifyIRP), (PVOID)Ccb );
+            FsRtlNotifyCleanup( Vcb->NotifySync, &(Vcb->NextNotifyIRP), (PVOID)Ccb );
         }
 
         // we can't purge Cache when more than one link exists

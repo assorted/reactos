@@ -70,66 +70,6 @@ UDFSetLabelInfo (
     IN OUT PULONG Length);
 
 /*
-    This is the routine for querying volume information
-
-Arguments:
-
-    Irp - Supplies the Irp being processed
-
-Return Value:
-
-    NTSTATUS - The return status for the operation
-
- */
-NTSTATUS
-NTAPI
-UDFQueryVolInfo(
-    PDEVICE_OBJECT      DeviceObject,       // the logical volume device object
-    PIRP                Irp                 // I/O Request Packet
-    )
-{
-    NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN             AreWeTopLevel = FALSE;
-
-    UDFPrint(("UDFQueryVolInfo: \n"));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-            RC = UDFCommonQueryVolInfo(IrpContext, Irp);
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFQueryVolInfo()
-
-/*
     This is the common routine for querying volume information called by both
     the fsd and fsp threads.
 
@@ -271,29 +211,38 @@ UDFQueryFsVolumeInfo(
 
     PAGED_CODE();
 
-    UDFPrint(("  UDFQueryFsVolumeInfo: \n"));
-    //  Fill in the data from the Vcb.
+    // Fill in the data from the Vcb.
+
     Buffer->VolumeCreationTime.QuadPart = Vcb->VolCreationTime;
     Buffer->VolumeSerialNumber = Vcb->PhSerialNumber;
-    UDFPrint(("  SN %x\n", Vcb->PhSerialNumber));
 
     Buffer->SupportsObjects = FALSE;
 
-    *Length -= FIELD_OFFSET( FILE_FS_VOLUME_INFORMATION, VolumeLabel[0] );
+    *Length -= FIELD_OFFSET(FILE_FS_VOLUME_INFORMATION, VolumeLabel[0]);
 
     //  Check if the buffer we're given is long enough
+
     if (*Length >= (ULONG) Vcb->VolIdent.Length) {
+
         BytesToCopy = Vcb->VolIdent.Length;
         Status = STATUS_SUCCESS;
+
     } else {
+
         BytesToCopy = *Length;
         Status = STATUS_BUFFER_OVERFLOW;
     }
-    //  Copy over what we can of the volume label, and adjust *Length
+
+    // Copy over what we can of the volume label, and adjust *Length
+
     Buffer->VolumeLabelLength = BytesToCopy;
 
-    if (BytesToCopy)
-        RtlCopyMemory( &(Buffer->VolumeLabel[0]), Vcb->VolIdent.Buffer, BytesToCopy );
+    if (BytesToCopy) {
+
+        RtlCopyMemory(&Buffer->VolumeLabel[0], Vcb->VolIdent.Buffer, BytesToCopy);
+
+    }
+
     *Length -= BytesToCopy;
 
     return Status;
@@ -335,12 +284,8 @@ UDFQueryFsSizeInfo(
     Vcb->LowFreeSpace = (Vcb->FreeAllocUnits < max(Vcb->FECharge,UDF_DEFAULT_FE_CHARGE)*128);
     if (!Buffer->TotalAllocationUnits.QuadPart)
         Buffer->TotalAllocationUnits.QuadPart = max(1, Vcb->LastPossibleLBA);
-    Buffer->SectorsPerAllocationUnit = Vcb->LBlockSize / Vcb->BlockSize;
-    if (!Buffer->SectorsPerAllocationUnit)
-        Buffer->SectorsPerAllocationUnit = 1;
-    Buffer->BytesPerSector = Vcb->BlockSize;
-    if (!Buffer->BytesPerSector)
-        Buffer->BytesPerSector = 2048;
+    Buffer->SectorsPerAllocationUnit = Vcb->SectorSize >> Vcb->SectorShift;
+    Buffer->BytesPerSector = Vcb->SectorSize;
 
     UDFPrint(("  Space: Total %I64x, Free %I64x\n",
         Buffer->TotalAllocationUnits.QuadPart,
@@ -388,12 +333,8 @@ UDFQueryFsFullSizeInfo(
     }
     if (!Buffer->TotalAllocationUnits.QuadPart)
         Buffer->TotalAllocationUnits.QuadPart = max(1, Vcb->LastPossibleLBA);
-    Buffer->SectorsPerAllocationUnit = Vcb->LBlockSize / Vcb->BlockSize;
-    if (!Buffer->SectorsPerAllocationUnit)
-        Buffer->SectorsPerAllocationUnit = 1;
-    Buffer->BytesPerSector = Vcb->BlockSize;
-    if (!Buffer->BytesPerSector)
-        Buffer->BytesPerSector = 2048;
+    Buffer->SectorsPerAllocationUnit = Vcb->SectorSize >> Vcb->SectorShift;
+    Buffer->BytesPerSector = Vcb->SectorSize;
 
     UDFPrint(("  Space: Total %I64x, Free %I64x\n",
         Buffer->TotalAllocationUnits.QuadPart,
@@ -473,7 +414,7 @@ UDFQueryFsAttributeInfo(
     //  Fill out the fixed portion of the buffer.
     Buffer->FileSystemAttributes = FILE_CASE_SENSITIVE_SEARCH |
                                    FILE_CASE_PRESERVED_NAMES |
-                                   (UDFStreamsSupported(Vcb) ? FILE_NAMED_STREAMS : 0) |
+                                   (UDFIsStreamsSupported(Vcb) ? FILE_NAMED_STREAMS : 0) |
 #ifdef ALLOW_SPARSE
                                    FILE_SUPPORTS_SPARSE_FILES |
 #endif //ALLOW_SPARSE
@@ -513,51 +454,6 @@ UDFQueryFsAttributeInfo(
     //  And return to our caller
     return Status;
 } // end UDFQueryFsAttributeInfo()
-
-NTSTATUS
-NTAPI
-UDFSetVolInfo(
-    PDEVICE_OBJECT      DeviceObject,       // the logical volume device object
-    PIRP                Irp                 // I/O Request Packet
-    )
-{
-    NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN             AreWeTopLevel = FALSE;
-
-    UDFPrint(("UDFSetVolInfo: \n"));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        ASSERT(IrpContext);
-
-        RC = UDFCommonSetVolInfo(IrpContext, Irp);
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFSetVolInfo()
-
 
 /*
     This is the common routine for setting volume information called by both

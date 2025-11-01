@@ -7,46 +7,6 @@
 #ifndef __UDF_PHYS_LIB__H__
 #define __UDF_PHYS_LIB__H__
 
-#ifndef UDF_FORMAT_MEDIA
-extern BOOLEAN open_as_device;
-extern BOOLEAN opt_invalidate_volume;
-extern ULONG LockMode;
-#endif //UDF_FORMAT_MEDIA
-
-NTSTATUS
-__fastcall
-UDFTIOVerify(
-    IN PIRP_CONTEXT IrpContext,
-    IN void* _Vcb,
-    IN void* Buffer,     // Target buffer
-    IN SIZE_T Length,
-    IN uint32 LBA,
-    OUT PSIZE_T IOBytes,
-    IN uint32 Flags
-    );
-
-extern NTSTATUS
-UDFTWriteVerify(
-    IN PIRP_CONTEXT IrpContext,
-    IN void* _Vcb,
-    IN void* Buffer,     // Target buffer
-    IN SIZE_T Length,
-    IN uint32 LBA,
-    OUT PSIZE_T WrittenBytes,
-    IN uint32 Flags
-    );
-
-NTSTATUS
-UDFTReadVerify(
-    IN PIRP_CONTEXT IrpContext,
-    IN void* _Vcb,
-    IN void* Buffer,     // Target buffer
-    IN SIZE_T Length,
-    IN uint32 LBA,
-    OUT PSIZE_T ReadBytes,
-    IN uint32 Flags
-    );
-
 NTSTATUS
 UDFTRead(
     PIRP_CONTEXT IrpContext,
@@ -54,7 +14,7 @@ UDFTRead(
     PVOID Buffer,     // Target buffer
     SIZE_T Length,
     ULONG LBA,
-    PSIZE_T ReadBytes,
+    PULONG ReadBytes,
     ULONG Flags = 0
     );
 
@@ -70,7 +30,6 @@ UDFTWrite(
     );
 
 #define PH_TMP_BUFFER          1
-#define PH_VCB_IN_RETLEN       2
 #define PH_LOCK_CACHE          0x10000000
 
 #define PH_EX_WRITE            0x80000000
@@ -82,10 +41,12 @@ extern NTSTATUS UDFPrepareForWriteOperation(
     IN ULONG BCount);
 
 NTSTATUS
-UDFUseStandard(
+UDFDetermineVolumeLayout(
     PIRP_CONTEXT IrpContext,
-    PDEVICE_OBJECT DeviceObject, // the target device object
-    PVCB Vcb                     // Volume control block fro this DevObj
+    PDEVICE_OBJECT DeviceObject,
+    PVCB Vcb,
+    PULONG SessionStart,
+    PULONG SessionEnd
     );
 
 extern NTSTATUS UDFGetBlockSize(PDEVICE_OBJECT DeviceObject, // the target device object
@@ -119,7 +80,7 @@ UDFReadSectors(
     IN ULONG BCount,
     IN BOOLEAN Direct,
     OUT PCHAR Buffer,
-    OUT PSIZE_T ReadBytes
+    OUT PULONG ReadBytes
     );
 
 // read data inside physical sector
@@ -133,7 +94,7 @@ UDFReadInSector(
     IN ULONG l,                 // transfer length
     IN BOOLEAN Direct,
     OUT PCHAR Buffer,
-    OUT PSIZE_T ReadBytes
+    OUT PULONG ReadBytes
     );
 
 // read unaligned data
@@ -146,7 +107,7 @@ UDFReadData(
     IN ULONG Length,
     IN BOOLEAN Direct,
     OUT PCHAR Buffer,
-    OUT PSIZE_T ReadBytes
+    OUT PULONG ReadBytes
     );
 
 // write physical sectors
@@ -185,23 +146,10 @@ UDFWriteData(
     OUT PSIZE_T WrittenBytes
 );
 
-NTSTATUS UDFResetDeviceDriver(IN PVCB Vcb,
-                              IN PDEVICE_OBJECT TargetDeviceObject,
-                              IN BOOLEAN Unlock);
-
 // This macro copies an unaligned src longword to a dst longword,
 // performing an little/big endian swap.
 
-typedef union _UCHAR1 {
-    UCHAR  Uchar[1];
-    UCHAR  ForceAlignment;
-} UCHAR1, *PUCHAR1;
-
-#define SwapCopyUchar4(Dst,Src) {                                        \
-    *((UNALIGNED UCHAR1 *)(Dst)) = *((UNALIGNED UCHAR1 *)(Src) + 3);     \
-    *((UNALIGNED UCHAR1 *)(Dst) + 1) = *((UNALIGNED UCHAR1 *)(Src) + 2); \
-    *((UNALIGNED UCHAR1 *)(Dst) + 2) = *((UNALIGNED UCHAR1 *)(Src) + 1); \
-    *((UNALIGNED UCHAR1 *)(Dst) + 3) = *((UNALIGNED UCHAR1 *)(Src));     \
-}
+#define SwapCopyUchar4(Dst, Src) \
+    (*(UNALIGNED ULONG*)(Dst) = _byteswap_ulong(*(UNALIGNED ULONG*)(Src)))
 
 #endif //__UDF_PHYS_LIB__H__

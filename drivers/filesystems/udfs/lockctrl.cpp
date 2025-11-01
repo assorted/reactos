@@ -19,70 +19,6 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID                UDF_FILE_SHUTDOWN
 
-
-/*************************************************************************
-*
-* Function: UDFLockControl()
-*
-* Description:
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL
-*
-* Return Value: Irrelevant.
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFLockControl(
-    IN PDEVICE_OBJECT DeviceObject,       // the logical volume device object
-    IN PIRP           Irp)                // I/O Request Packet
-{
-    NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN             AreWeTopLevel = FALSE;
-
-    UDFPrint(("UDFLockControl\n"));
-//    BrutePoint();
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-    //  Call the common Lock Control routine, with blocking allowed if
-    //  synchronous
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-            RC = UDFCommonLockControl(IrpContext, Irp);
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFLockControl()
-
-
 /*************************************************************************
 *
 * Function: UDFCommonLockControl()
@@ -104,16 +40,11 @@ UDFCommonLockControl(
     IN PIRP_CONTEXT IrpContext,
     IN PIRP             Irp)
 {
-    NTSTATUS            RC = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION  IrpSp = IoGetCurrentIrpStackLocation(Irp);
-    //IO_STATUS_BLOCK     LocalIoStatus;
-//    BOOLEAN             CompleteRequest = FALSE;
-    BOOLEAN             PostRequest = FALSE;
-    BOOLEAN             CanWait = FALSE;
-    BOOLEAN             AcquiredFCB = FALSE;
     TYPE_OF_OPEN TypeOfOpen;
-    PFCB                Fcb = NULL;
-    PCCB                Ccb = NULL;
+    PFCB Fcb = NULL;
+    PCCB Ccb = NULL;
 
     UDFPrint(("UDFCommonLockControl\n"));
 
@@ -124,60 +55,55 @@ UDFCommonLockControl(
     ASSERT_CCB(Ccb);
     ASSERT_FCB(Fcb);
 
+    // If the file is not a user file open then we reject the request
+    // as an invalid parameter
+
+    if (TypeOfOpen != UserFileOpen) {
+
+        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    UDFAcquireFcbShared(IrpContext, Fcb, FALSE);
+
     _SEH2_TRY {
 
-        // Validate the sent-in FCB
-        if ( (Fcb == Fcb->Vcb->VolumeDasdFcb) ||
-             (Fcb->FcbState & UDF_FCB_DIRECTORY)) {
-
-//            CompleteRequest = TRUE;
-            try_return(RC = STATUS_INVALID_PARAMETER);
-        }
-
-        CanWait = ((IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE);
-
-        // Acquire the FCB resource shared
-        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-        if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, CanWait)) {
-            PostRequest = TRUE;
-            try_return(RC = STATUS_PENDING);
-        }
-        AcquiredFCB = TRUE;
+        UDFVerifyFcbOperation(IrpContext, Fcb, Ccb);
 
         // If we don't have a file lock, then get one now.
-        if ((Fcb->FileLock == NULL) && !UDFCreateFileLock(NULL, Fcb, FALSE)) {
+        if (Fcb->FileLock == NULL) {
 
             if (!UDFCreateFileLock(NULL, Fcb, FALSE)) {
 
-                try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+                try_return(Status = STATUS_INSUFFICIENT_RESOURCES);
             }
         }
 
-        RC = FsRtlProcessFileLock(Fcb->FileLock, Irp, NULL);
-//        CompleteRequest = TRUE;
+        // Now call the FsRtl routine to do the actual processing of the
+        // Lock request
+
+        Status = FsRtlProcessFileLock(Fcb->FileLock, Irp, NULL);
+
+        // Set the flag indicating if Fast I/O is possible
+
+        //TODO: impl
+        //UDFLockFcb(IrpContext, Fcb);
+        Fcb->Header.IsFastIoPossible = UDFIsFastIoPossible(Fcb);
+        //UDFUnlockFcb(IrpContext, Fcb);
 
 try_exit: NOTHING;
 
     } _SEH2_FINALLY {
 
-        // Release the FCB resources if acquired.
-        if (AcquiredFCB) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
-            AcquiredFCB = FALSE;
-        }
-        if (PostRequest) {
-            // Perform appropriate post related processing here
-            RC = UDFPostRequest(IrpContext, Irp);
-        } else
-        if (!_SEH2_AbnormalTermination()) {
-            // Simply free up the IrpContext since the IRP has been queued or
-            // Completed by FsRtlProcessFileLock
-            UDFCleanupIrpContext(IrpContext);
-        }
+        UDFReleaseFcb(IrpContext, Fcb);
+
     } _SEH2_END; // end of "__finally" processing
 
-    return(RC);
+    // Complete the request.
+
+    UDFCompleteRequest(IrpContext, NULL, Status);
+
+    return Status;
 } // end UDFCommonLockControl()
 
 
