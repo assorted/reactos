@@ -24,65 +24,14 @@
 
 PDIR_INDEX_HDR UDFDirIndexAlloc(IN uint_di i);
 
-/*
- Function: UDFFSControl()
-
- Description:
-    The I/O Manager will invoke this routine to handle a File System
-    Control request (this is IRP_MJ_FILE_SYSTEM_CONTROL dispatch point)
-
-*/
 NTSTATUS
-NTAPI
-UDFFSControl(
-    PDEVICE_OBJECT      DeviceObject,      // the logical volume device object
-    PIRP                Irp                // I/O Request Packet
-    )
-{
-    NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN             AreWeTopLevel = FALSE;
-
-    UDFPrint(("\nUDFFSControl: \n\n"));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-            RC = UDFCommonFSControl(IrpContext, Irp);
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, STATUS_INSUFFICIENT_RESOURCES);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        UDFPrintErr(("UDFFSControl: exception ***"));
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFFSControl()
+UDFAllowExtendedDasdIo(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PIRP Irp
+    );
 
 /*
- Function: UDFCommonFSControl()
+ Function: UDFCommonFsControl()
 
  Description:
     The actual work is performed here.
@@ -95,7 +44,7 @@ UDFFSControl(
 */
 
 NTSTATUS
-UDFCommonFSControl(
+UDFCommonFsControl(
     PIRP_CONTEXT IrpContext,
     PIRP Irp
     )
@@ -154,17 +103,16 @@ Return Value:
 
 */
 NTSTATUS
-NTAPI
 UDFUserFsCtrlRequest(
     PIRP_CONTEXT IrpContext,
-    PIRP             Irp
+    PIRP Irp
     )
 {
     NTSTATUS RC;
-    PEXTENDED_IO_STACK_LOCATION IrpSp = (PEXTENDED_IO_STACK_LOCATION) IoGetCurrentIrpStackLocation( Irp );
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
     //  Case on the control code.
-    switch ( IrpSp->Parameters.FileSystemControl.FsControlCode ) {
+    switch (IrpSp->Parameters.FileSystemControl.FsControlCode) {
 
     case FSCTL_REQUEST_OPLOCK_LEVEL_1 :
     case FSCTL_REQUEST_OPLOCK_LEVEL_2 :
@@ -199,12 +147,7 @@ UDFUserFsCtrlRequest(
 
     case FSCTL_ALLOW_EXTENDED_DASD_IO:
 
-        UDFPrint(("UDFUserFsCtrlRequest: FSCTL_ALLOW_EXTENDED_DASD_IO\n"));
-        // DASD i/o is always permitted
-        // So, no-op this call
-
-        UDFCompleteRequest(IrpContext, Irp, STATUS_SUCCESS);
-        RC = STATUS_SUCCESS;
+        RC = UDFAllowExtendedDasdIo(IrpContext, Irp);
         break;
 
     case FSCTL_DISMOUNT_VOLUME:
@@ -346,7 +289,6 @@ UDFMountVolume(
     BOOLEAN                 RestoreDoVerify = FALSE;
     BOOLEAN                 RemovableMedia = TRUE;
     BOOLEAN                 SetDoVerifyOnFail;
-    ULONG                   Mode;
     BOOLEAN                 VcbAcquired = FALSE;
     BOOLEAN                 DeviceNotTouched = TRUE;
     DISK_GEOMETRY           DiskGeometry;
@@ -470,11 +412,8 @@ UDFMountVolume(
 
         // Initialize the Vcb.  This routine will raise on an allocation
         // failure.
-        RC = UDFInitializeVCB(IrpContext, &VolDo->Vcb, DeviceObjectWeTalkTo, Vpb);
-        if (!NT_SUCCESS(RC)) {
-            Vcb = NULL;
-            try_return(RC);
-        }
+
+        UDFInitializeVCB(IrpContext, &VolDo->Vcb, DeviceObjectWeTalkTo, Vpb, &DiskGeometry, MediaChangeCount);
 
         //  Show that we initialized the Vcb and can cleanup with the Vcb.
 
@@ -508,45 +447,11 @@ UDFMountVolume(
 
         Vcb->MountPhErrorCount = 0;
 
-#ifdef UDF_USE_WCACHE
-        // Initialize internal cache
-        Mode = WCACHE_MODE_ROM;
-        RC = WCacheInit__(&(Vcb->FastCache),
-                          Vcb->WCacheMaxFrames,
-                          Vcb->WCacheMaxBlocks,
-                          Vcb->WriteBlockSize,
-                          5, Vcb->BlockSizeBits,
-                          Vcb->WCacheBlocksPerFrameSh,
-                          0/*Vcb->FirstLBA*/, Vcb->LastPossibleLBA, Mode,
-                              0/*WCACHE_CACHE_WHOLE_PACKET*/ |
-                              (Vcb->DoNotCompareBeforeWrite ? WCACHE_DO_NOT_COMPARE : 0) |
-                              (Vcb->CacheChainedIo ? WCACHE_CHAINED_IO : 0) |
-                              WCACHE_MARK_BAD_BLOCKS | WCACHE_RO_BAD_BLOCKS,  // this will be cleared after mount
-                          Vcb->WCacheFramesToKeepFree,
-//                          UDFTWrite, UDFTRead,
-                          UDFTWriteVerify, UDFTReadVerify,
-#ifdef UDF_ASYNC_IO
-                          UDFTWriteAsync, UDFTReadAsync,
-#else  //UDF_ASYNC_IO
-                          NULL, NULL,
-#endif //UDF_ASYNC_IO
-                          UDFIsBlockAllocated,
-                          UDFUpdateVAT,
-                          UDFWCacheErrorHandler);
-        if (!NT_SUCCESS(RC)) try_return(RC);
-#endif //UDF_USE_WCACHE
-
-        RC = UDFVInit(Vcb);
-        if (!NT_SUCCESS(RC)) try_return(RC);
-
         UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
         RC = UDFGetDiskInfoAndVerify(IrpContext, DeviceObjectWeTalkTo,Vcb);
         UDFReleaseResource(&(Vcb->BitMapResource1));
 
         ASSERT(!Vcb->Modified);
-        WCacheChFlags__(&(Vcb->FastCache),
-                        WCACHE_CACHE_WHOLE_PACKET, // enable cache whole packet
-                        WCACHE_MARK_BAD_BLOCKS | WCACHE_RO_BAD_BLOCKS);  // let user retry request on Bad Blocks
 
         if (!NT_SUCCESS(RC)) {
 
@@ -554,31 +459,6 @@ UDFMountVolume(
 
         } else {
             Vcb->MountPhErrorCount = -1;
-
-            // set cache mode according to media type
-            if (!(Vcb->VcbState & VCB_STATE_MEDIA_WRITE_PROTECT)) {
-                UDFPrint(("UDFMountVolume: writable volume\n"));
-                if (!Vcb->CDR_Mode) {
-                    if (FsDeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) {
-                        UDFPrint(("UDFMountVolume: RAM mode\n"));
-                        Mode = WCACHE_MODE_RAM;
-                    } else {
-                        UDFPrint(("UDFMountVolume: RW mode\n"));
-                        Mode = WCACHE_MODE_RW;
-                    }
-                } else {
-                    UDFPrint(("UDFMountVolume: R mode\n"));
-                    Mode = WCACHE_MODE_R;
-                }
-                // we can't record ACL on old format disks
-                if (!UDFNtAclSupported(Vcb)) {
-                    UDFPrint(("UDFMountVolume: NO ACL and ExtFE support\n"));
-                    Vcb->UseExtendedFE = FALSE;
-                }
-            }
-#ifdef UDF_USE_WCACHE
-            WCacheSetMode__(&(Vcb->FastCache), Mode);
-#endif //UDF_USE_WCACHE
 
             // Complete mount operations: create root FCB
             UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
@@ -591,7 +471,7 @@ UDFMountVolume(
                 // but simply cleanup and return error, Vcb->VcbReference
                 // will be decremented during cleanup. Thus anyway it must
                 // stay 1 unchanged here
-                //UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
+                //InterlockedDecrement((PLONG)&Vcb->VcbReference);
                 UDFCloseResidual(IrpContext, Vcb);
                 Vcb->VcbReference = 1;
 
@@ -621,12 +501,6 @@ UDFMountVolume(
         Vcb->TotalAllocUnits = UDFGetTotalSpace(Vcb);
         Vcb->FreeAllocUnits = UDFGetFreeSpace(Vcb);
 
-        if (UdfData.MountEvent)
-        {
-            Vcb->IsVolumeJustMounted = TRUE;
-            KeSetEvent(UdfData.MountEvent, 0, FALSE);
-        }
-
         //  The new mount is complete.
         UDFReleaseResource( &(Vcb->VcbResource) );
         VcbAcquired = FALSE;
@@ -651,7 +525,7 @@ try_exit: NOTHING;
                 }
                 // Make sure there is no Vcb since it could go away
                 if (Vcb->VcbReference)
-                    UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
+                    InterlockedDecrement((PLONG)&Vcb->VcbReference);
                 // This procedure will also delete the volume device object
                 if (UDFDismountVcb(IrpContext, Vcb, FALSE)) {
                     UDFReleaseResource( &(Vcb->VcbResource) );
@@ -701,7 +575,7 @@ UDFCloseResidual(
 {
     //  Deinitialize Non-alloc file
     if (Vcb->VcbReference)
-        UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
+        InterlockedDecrement((PLONG)&Vcb->VcbReference);
     UDFPrint(("UDFCloseResidual: NonAllocFileInfo %x\n", Vcb->NonAllocFileInfo));
     if (Vcb->NonAllocFileInfo) {
         UDFCloseFile__(IrpContext, Vcb, Vcb->NonAllocFileInfo);
@@ -768,7 +642,7 @@ UDFCloseResidual(
         UDFTeardownStructures(IrpContext, Vcb->RootIndexFcb, 1, NULL);
         // Remove root FCB reference in vcb
         if (Vcb->VcbReference)
-            UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
+            InterlockedDecrement((PLONG)&Vcb->VcbReference);
         Vcb->RootIndexFcb = NULL;
     }
 } // end UDFCloseResidual()
@@ -794,10 +668,7 @@ UDFCleanupVCB(
         DbgFreePool(Vcb->FSBM_Bitmap);
         Vcb->FSBM_Bitmap = NULL;
     }
-    if (Vcb->ZSBM_Bitmap) {
-        DbgFreePool(Vcb->ZSBM_Bitmap);
-        Vcb->ZSBM_Bitmap = NULL;
-    }
+
     if (Vcb->BSBM_Bitmap) {
         DbgFreePool(Vcb->BSBM_Bitmap);
         Vcb->BSBM_Bitmap = NULL;
@@ -858,7 +729,7 @@ UDFScanForDismountedVcb(
 
     while (Link != &(UdfData.VcbQueue)) {
 
-        Vcb = CONTAINING_RECORD( Link, VCB, NextVCB );
+        Vcb = CONTAINING_RECORD(Link, VCB, VcbLinks);
 
         // Move to the next link now since the current Vcb may be deleted.
         Link = Link->Flink;
@@ -1378,8 +1249,7 @@ UDFGetVolumeBitmap(
 {
 //    NTSTATUS RC;
 
-    PEXTENDED_IO_STACK_LOCATION IrpSp =
-        (PEXTENDED_IO_STACK_LOCATION)IoGetCurrentIrpStackLocation( Irp );
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
     UDFPrint(("UDFGetVolumeBitmap\n"));
 
@@ -1398,7 +1268,6 @@ UDFGetVolumeBitmap(
     ULONG i, lim;
     PULONG FSBM;
 //    PULONG Dest;
-    ULONG LSh;
 
     // Decode the file object, the only type of opens we accept are
     // user volume opens.
@@ -1480,11 +1349,11 @@ UDFGetVolumeBitmap(
         RtlZeroMemory( &OutputBuffer->Buffer[0], BytesToCopy );
         lim = BytesToCopy * 8;
         FSBM = (PULONG)(Vcb->FSBM_Bitmap);
-        LSh = Vcb->LB2B_Bits;
+
 //        Dest = (PULONG)(&OutputBuffer->Buffer[0]);
 
         for(i=StartingCluster & ~7; i<lim; i++) {
-            if (UDFGetFreeBit(FSBM, i<<LSh))
+            if (UDFGetFreeBit(FSBM, i << Vcb->SectorShift))
                 UDFSetFreeBit(FSBM, i);
         }
 
@@ -1526,8 +1395,7 @@ UDFGetRetrievalPointers(
 {
     NTSTATUS RC;
 
-    PEXTENDED_IO_STACK_LOCATION IrpSp =
-        (PEXTENDED_IO_STACK_LOCATION)IoGetCurrentIrpStackLocation( Irp );
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
     PUDF_FILE_INFO FileInfo;
 
     ULONG InputBufferLength;
@@ -1548,7 +1416,6 @@ UDFGetRetrievalPointers(
     ULONG i;
     ULONG LBS;
     ULONG LBSh;
-    ULONG L2BSh;
 
     UDFPrint(("UDFGetRetrievalPointers\n"));
 
@@ -1628,9 +1495,8 @@ UDFGetRetrievalPointers(
 
         AllocationSize = UDFGetFileAllocationSize(Vcb, FileInfo);
 
-        LBS   = Vcb->LBlockSize;
-        LBSh  = Vcb->LBlockSizeBits;
-        L2BSh = Vcb->LB2B_Bits;
+        LBS   = Vcb->SectorSize;
+        LBSh  = Vcb->SectorShift;
 
         if (StartingVcn.HighPart ||
             StartingVcn.LowPart >= (ULONG)(AllocationSize >> LBSh)) {
@@ -1656,10 +1522,10 @@ UDFGetRetrievalPointers(
                 OutputBuffer->Extents[i].Lcn.QuadPart = (int64)(-1);
             } else
             if (SubMapping[i].extLocation & 0x80000000) {
-                OutputBuffer->Extents[i].Lcn.LowPart = (SubMapping[i].extLocation & 0x7fffffff) >> L2BSh;
+                OutputBuffer->Extents[i].Lcn.LowPart = (SubMapping[i].extLocation & 0x7fffffff) >> Vcb->SectorShift;
                 OutputBuffer->Extents[i].Lcn.HighPart = 0x80000000;
             } else {
-                OutputBuffer->Extents[i].Lcn.LowPart = SubMapping[i].extLocation >> L2BSh;
+                OutputBuffer->Extents[i].Lcn.LowPart = SubMapping[i].extLocation >> Vcb->SectorShift;
                 OutputBuffer->Extents[i].Lcn.HighPart = 0;
             }
             // alignment for last sector
@@ -1748,6 +1614,30 @@ UDFIsVolumeDirty(
     return STATUS_SUCCESS;
 
 } // end UDFIsVolumeDirty()
+
+NTSTATUS
+UDFAllowExtendedDasdIo(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PIRP Irp
+    )
+{
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    PFCB Fcb;
+    PCCB Ccb;
+
+    // Extract and decode the file object and check for type of open.
+
+    if (UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb) != UserVolumeOpen) {
+
+        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    SetFlag(Ccb->Flags, CCB_FLAG_ALLOW_EXTENDED_DASD_IO);
+
+    UDFCompleteRequest(IrpContext, Irp, STATUS_SUCCESS);
+    return STATUS_SUCCESS;
+}
 
 
 NTSTATUS
@@ -1850,7 +1740,7 @@ UDFInvalidateVolumes(
     while (Links != &UdfData.VcbQueue) {
 
         // Get 'next' Vcb
-        Vcb = CONTAINING_RECORD(Links, VCB, NextVCB);
+        Vcb = CONTAINING_RECORD(Links, VCB, VcbLinks);
 
         // Move to the next link now since the current Vcb may be deleted.
         Links = Links->Flink;
@@ -1867,6 +1757,8 @@ UDFInvalidateVolumes(
             // off immediately.
             IoAcquireVpbSpinLock(&SavedIrql);
 
+#pragma prefast(push)
+#pragma prefast(disable: 28175, "this is a filesystem driver, touching the vpb is allowed")
             if (DeviceToMarkBad->Vpb == Vcb->Vpb) {
 
                 PVPB NewVpb = Vcb->SwapVpb;
@@ -1880,10 +1772,12 @@ UDFInvalidateVolumes(
                 NewVpb->Size = sizeof(VPB);
                 NewVpb->RealDevice = DeviceToMarkBad;
                 NewVpb->Flags = FlagOn(DeviceToMarkBad->Vpb->Flags, VPB_REMOVE_PENDING);
-
                 DeviceToMarkBad->Vpb = NewVpb;
+
                 Vcb->SwapVpb = NULL;
             }
+
+#pragma prefast(pop)
 
             IoReleaseVpbSpinLock(SavedIrql);
 

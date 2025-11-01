@@ -26,7 +26,7 @@ UDFPhReadSynchronous(
     PVOID Buffer,
     ULONG ByteCount,
     LONGLONG Offset,
-    PSIZE_T ReadBytes,
+    PULONG ReadBytes,
     ULONG Flags
     );
 

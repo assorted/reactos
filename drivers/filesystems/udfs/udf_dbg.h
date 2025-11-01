@@ -21,7 +21,6 @@
 //======================================
 
 //#define ALWAYS_CHECK_WAIT_TIMEOUT
-//#define PRINT_ALWAYS
 
 #ifdef UDF_DBG
 
@@ -36,18 +35,16 @@
 
 //#define UDF_SIMULATE_WRITES
 
-//#define USE_PERF_PRINT
-
-#define USE_KD_PRINT
-#define USE_MM_PRINT
-#define USE_AD_PRINT
-#define UDF_DUMP_EXTENT
+//#define USE_KD_PRINT
+//#define USE_MM_PRINT
+//#define USE_AD_PRINT
+//#define UDF_DUMP_EXTENT
 //#define USE_TH_PRINT
 //#define USE_TIME_PRINT
 
 //======================================
 
-#if defined UDF_DBG || defined PRINT_ALWAYS
+#if defined UDF_DBG
 
   ULONG
   _cdecl
@@ -78,12 +75,6 @@
     #define TmPrint(_x_) {UdfTimeStamp++;KdPrint(("TM:%d: ",UdfTimeStamp));KdPrint(_x_);}
   #else
     #define TmPrint KdPrint
-  #endif //USE_MM_PRINT
-
-  #ifdef USE_PERF_PRINT
-    #define PerfPrint(_x_) DbgPrint _x_
-  #else
-    #define PerfPrint(_x_) {NOTHING;}
   #endif //USE_MM_PRINT
 
   #ifdef USE_AD_PRINT
@@ -129,11 +120,25 @@ DbgWaitForSingleObject_(
 
 #ifdef UDF_DBG
 
-#ifdef UDF_DBG
-  #define BrutePoint() DbgBreakPoint()
+#ifdef _X86_
+// This is an illegal use of INT3
+#define UDFBreakPoint() { __asm int 3 }
+#else // _X86_
+
+#define UDFBreakPoint() DbgBreakPoint()
+#endif // _X86_
+
+#ifdef BRUTE
+#define BrutePoint() UDFBreakPoint()
 #else
-  #define BrutePoint() {}
-#endif // UDF_DBG
+#define BrutePoint() {}
+#endif // BRUTE
+
+#ifdef CHECK_REF_COUNTS
+#define ASSERT_REF(_a_) ASSERT(_a_)
+#else
+#define ASSERT_REF(_a_) {NOTHING;}
+#endif //CHECK_REF_COUNTS
 
 #ifdef TRACK_SYS_ALLOCS
 
@@ -161,52 +166,20 @@ VOID DebugFreePool(PVOID addr);
 
 #endif //TRACK_SYS_ALLOCS
 
-
-#ifdef PROTECTED_MEM_RTL
-
-#define DbgMoveMemory(d, s, l)   \
-_SEH2_TRY {                               \
-    RtlMoveMemory(d, s, l);               \
-} _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {  \
-    BrutePoint();                         \
-} _SEH2_END;
-
-#define DbgCopyMemory(d, s, l)   \
-_SEH2_TRY {                               \
-    RtlCopyMemory(d, s, l);               \
-} _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {  \
-    BrutePoint();                         \
-} _SEH2_END;
-
-__inline
-SIZE_T
-DbgCompareMemory(PVOID d, PVOID s, SIZE_T l) {
-    _SEH2_TRY {
-        return RtlCompareMemory(d, s, l);
-    } _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
-    } _SEH2_END;
-    return (SIZE_T)-1;
-}
-
-#else //PROTECTED_MEM_RTL
-
 #define DbgMoveMemory(d, s, l)     RtlMoveMemory(d, s, l)
 #define DbgCopyMemory(d, s, l)     RtlCopyMemory(d, s, l)
 #define DbgCompareMemory(d, s, l)  RtlCompareMemory(d, s, l)
-
-#endif //PROTECTED_MEM_RTL
 
 //#define KdPrint(_x_)
 
 #ifdef VALIDATE_STRUCTURES
 #define ValidateFileInfo(fi)            \
 {    /* validate FileInfo */            \
-    if (!fi || (fi)->IntegrityTag) {            \
+    if(!fi || (fi)->IntegrityTag) {            \
         KdPrint(("UDF: ERROR! Using deallocated structure !!!\n"));\
         BrutePoint();                   \
     }                                   \
-    if (fi && !fi->Dloc) {               \
+    if(fi && !fi->Dloc) {               \
         KdPrint(("UDF: ERROR! FI without Dloc !!!\n"));\
         BrutePoint();                   \
     }                                   \
@@ -246,6 +219,8 @@ __inline VOID UDFTouch(IN PVOID addr)
 #define DbgCopyMemory(d, s, l)     RtlCopyMemory(d, s, l)
 #define DbgCompareMemory(d, s, l)  RtlCompareMemory(d, s, l)
 
+#define ASSERT_REF(_a_) {NOTHING;}
+
 #define UDFBreakPoint() {}
 #define BrutePoint() {}
 #define ValidateFileInfo(fi)  {}
@@ -257,7 +232,7 @@ __inline VOID UDFTouch(IN PVOID addr)
 #if defined UDF_DBG || defined PRINT_ALWAYS
 
 #define KdDump(a,b)                         \
-if ((a)!=NULL) {                             \
+if ((a)!=NULL) {                            \
     ULONG i;                                \
     for(i=0; i<(b); i++) {                  \
         ULONG c;                            \

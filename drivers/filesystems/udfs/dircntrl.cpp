@@ -39,72 +39,6 @@ UDFFindNextMatch(
 
 /*************************************************************************
 *
-* Function: UDFDirControl()
-*
-* Description:
-*   The I/O Manager will invoke this routine to handle a directory control
-*   request
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL (invocation at higher IRQL will cause execution
-*   to be deferred to a worker thread context)
-*
-* Return Value: STATUS_SUCCESS/Error
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFDirControl(
-    PDEVICE_OBJECT      DeviceObject,       // the logical volume device object
-    PIRP                Irp                 // I/O Request Packet
-    )
-{
-    NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN             AreWeTopLevel = FALSE;
-
-    TmPrint(("UDFDirControl: \n"));
-
-    FsRtlEnterFileSystem();
-    ASSERT(DeviceObject);
-    ASSERT(Irp);
-
-    // set the top level context
-    AreWeTopLevel = UDFIsIrpTopLevel(Irp);
-
-    _SEH2_TRY {
-
-        // get an IRP context structure and issue the request
-        IrpContext = UDFCreateIrpContext(Irp, DeviceObject);
-        if (IrpContext) {
-            RC = UDFCommonDirControl(IrpContext, Irp);
-        } else {
-
-            UDFCompleteRequest(IrpContext, Irp, RC);
-            RC = STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
-
-        RC = UDFProcessException(IrpContext, Irp);
-
-        UDFLogEvent(UDF_ERROR_INTERNAL_ERROR, RC);
-    } _SEH2_END;
-
-    if (AreWeTopLevel) {
-        IoSetTopLevelIrp(NULL);
-    }
-
-    FsRtlExitFileSystem();
-
-    return(RC);
-} // end UDFDirControl()
-
-
-
-/*************************************************************************
-*
 * Function: UDFCommonDirControl()
 *
 * Description:
@@ -212,10 +146,7 @@ UDFQueryDirectory(
     )
 {
     NTSTATUS                    RC = STATUS_SUCCESS;
-    BOOLEAN                     PostRequest = FALSE;
-    BOOLEAN                     CanWait = FALSE;
-    _SEH2_VOLATILE PVCB         Vcb = NULL;
-    _SEH2_VOLATILE BOOLEAN      AcquiredFCB = FALSE;
+    PVCB Vcb = NULL;
     unsigned long               BufferLength = 0;
     UNICODE_STRING              SearchPattern;
     PUNICODE_STRING             PtrSearchPattern;
@@ -231,7 +162,6 @@ UDFQueryDirectory(
     ULONG                       Information = 0;
     ULONG                       LastOffset = 0;
     BOOLEAN                     AtLeastOneFound = FALSE;
-    PEXTENDED_IO_STACK_LOCATION pStackLocation = (PEXTENDED_IO_STACK_LOCATION) IrpSp;
     PUDF_FILE_INFO              DirFileInfo = NULL;
     PDIR_INDEX_HDR              hDirIndex = NULL;
     PFILE_BOTH_DIR_INFORMATION  DirInformation = NULL;      // Returned from udf_info module
@@ -250,7 +180,10 @@ UDFQueryDirectory(
 #define IgnoreCase    (FNM_Flags & UDF_FNM_FLAG_IGNORE_CASE)
 #define ContainsWC    (FNM_Flags & UDF_FNM_FLAG_CONTAINS_WC)
 
-    FileInformationClass = pStackLocation->Parameters.QueryDirectory.FileInformationClass;
+    Vcb = Fcb->Vcb;
+    ASSERT_VCB(Vcb);
+
+    FileInformationClass = IrpSp->Parameters.QueryDirectory.FileInformationClass;
 
     // Check if we support this search mode.  Also remember the size of the base part of
     // each of these structures.
@@ -278,37 +211,26 @@ UDFQueryDirectory(
         return STATUS_INVALID_INFO_CLASS;
     }
 
+    // Acquire the directory.
+
+    UDFAcquireFcbShared(IrpContext, Fcb, FALSE);
+
     _SEH2_TRY
     {
-        // Obtain the callers parameters
-        CanWait = (IrpContext->Flags & IRP_CONTEXT_FLAG_WAIT) ? TRUE : FALSE;
-        Vcb = Fcb->Vcb;
-
         DirFileInfo = Fcb->FileInfo;
-        BufferLength = pStackLocation->Parameters.QueryDirectory.Length;
-
-        // If the caller does not want to block, it would be easier to
-        // simply post the request now.
-        if (!CanWait) {
-            PostRequest = TRUE;
-            try_return(RC = STATUS_PENDING);
-        }
+        BufferLength = IrpSp->Parameters.QueryDirectory.Length;
 
         // Continue obtaining the callers parameters...
-        if (FlagOn(Ccb->Flags, CCB_FLAG_IGNORE_CASE) && pStackLocation->Parameters.QueryDirectory.FileName) {
+        if (FlagOn(Ccb->Flags, CCB_FLAG_IGNORE_CASE) && IrpSp->Parameters.QueryDirectory.FileName) {
             PtrSearchPattern = &SearchPattern;
-            if (!NT_SUCCESS(RC = RtlUpcaseUnicodeString(PtrSearchPattern, (PUNICODE_STRING)(pStackLocation->Parameters.QueryDirectory.FileName), TRUE)))
+            if (!NT_SUCCESS(RC = RtlUpcaseUnicodeString(PtrSearchPattern, (PUNICODE_STRING)(IrpSp->Parameters.QueryDirectory.FileName), TRUE)))
                 try_return(RC);
         } else {
-            PtrSearchPattern = (PUNICODE_STRING)(pStackLocation->Parameters.QueryDirectory.FileName);
+            PtrSearchPattern = (PUNICODE_STRING)(IrpSp->Parameters.QueryDirectory.FileName);
         }
 
         // Some additional arguments that affect the FSD behavior
         ReturnSingleEntry = (IrpSp->Flags & SL_RETURN_SINGLE_ENTRY) ? TRUE : FALSE;
-
-        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-        UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, TRUE);
-        AcquiredFCB = TRUE;
 
         // We must determine the buffer pointer to be used. Since this
         // routine could either be invoked directly in the context of the
@@ -418,7 +340,7 @@ UDFQueryDirectory(
             // Caller has told us wherefrom to begin.
             // We may need to round this to an appropriate directory entry
             // entry alignment value.
-            NextMatch = pStackLocation->Parameters.QueryDirectory.FileIndex;
+            NextMatch = IrpSp->Parameters.QueryDirectory.FileIndex;
         } else if (IrpSp->Flags & SL_RESTART_SCAN) {
             NextMatch = 0;
         } else {
@@ -448,7 +370,7 @@ UDFQueryDirectory(
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
         CurrentOffset=0;
-        BytesRemainingInBuffer = pStackLocation->Parameters.QueryDirectory.Length;
+        BytesRemainingInBuffer = IrpSp->Parameters.QueryDirectory.Length;
         RtlZeroMemory(Buffer,BytesRemainingInBuffer);
 
         if ((!FirstTimeQuery) && !UDFDirIndex(hDirIndex, (uint_di)NextMatch) ) {
@@ -566,41 +488,28 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
-        if (PostRequest) {
 
-            if (AcquiredFCB) {
-                UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-                UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
-            }
-            // Map the users buffer and then post the request.
-            RC = UDFLockUserBuffer(IrpContext, BufferLength, IoWriteAccess);
-            ASSERT(NT_SUCCESS(RC));
-
-            RC = UDFPostRequest(IrpContext, Irp);
-
-        } else {
 #ifdef UDF_DBG
-            if (!NT_SUCCESS(RC)) {
-               UDFPrint(("    Not found\n"));
-            }
+        if (!NT_SUCCESS(RC)) {
+            UDFPrint(("    Not found\n"));
+        }
 #endif // UDF_DBG
+
+        UDFReleaseFcb(IrpContext, Fcb);
+
+        if (!_SEH2_AbnormalTermination() && !NT_ERROR(RC)) {
+
             // Remember to update the CurrentByteOffset field in the CCB if required.
-            if (Ccb) Ccb->CurrentIndex = NextMatch;
-
-            if (AcquiredFCB) {
-                UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-                UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
-            }
-            if (!_SEH2_AbnormalTermination()) {
-
-                Irp->IoStatus.Information = Information;
-                UDFCompleteRequest(IrpContext, Irp, RC);
-            }
+            Ccb->CurrentIndex = NextMatch;
         }
 
         if (SearchPattern.Buffer) RtlFreeUnicodeString(&SearchPattern);
         if (DirInformation) MyFreePool__(DirInformation);
     } _SEH2_END;
+
+    Irp->IoStatus.Information = Information;
+
+    UDFCompleteRequest(IrpContext, Irp, RC);
 
     return(RC);
 } // end UDFQueryDirectory()
@@ -706,7 +615,7 @@ UDFNotifyChangeDirectory(
         UDFVerifyVcb(IrpContext, Vcb);
 
         FsRtlNotifyFullChangeDirectory(
-                            Vcb->NotifyIRPMutex,
+                            Vcb->NotifySync,
                             &Vcb->NextNotifyIRP,
                             (PVOID)Ccb,
                             (Fcb->FileInfo->ParentFile) ? (PSTRING)&(Fcb->FCBName->ObjectName) : (PSTRING)&(UdfData.UnicodeStrRoot),

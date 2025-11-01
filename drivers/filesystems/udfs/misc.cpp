@@ -23,6 +23,13 @@
 
 #define FSP_PER_DEVICE_THRESHOLD         (2)
 
+#define UDFAllocateIoContext()                       \
+    FsRtlAllocatePoolWithTag(NonPagedPool,           \
+                            sizeof(UDF_IO_CONTEXT),  \
+                            TAG_IO_CONTEXT)
+
+#define UDFFreeIoContext(IO)     ExFreePool( &(IO) )
+
 /*
 
  Function: UDFInitializeZones()
@@ -50,27 +57,15 @@ UDFInitializeZones(VOID)
         case MmMediumSystem:
             UdfData.MaxDelayedCloseCount = 32;
             UdfData.MinDelayedCloseCount = 8;
-            UdfData.WCacheMaxFrames = 8*4;
-            UdfData.WCacheMaxBlocks = 16*64;
-            UdfData.WCacheBlocksPerFrameSh = 8;
-            UdfData.WCacheFramesToKeepFree = 4;
             break;
         case MmLargeSystem:
             UdfData.MaxDelayedCloseCount = 72;
             UdfData.MinDelayedCloseCount = 18;
-            UdfData.WCacheMaxFrames = 2*16*4;
-            UdfData.WCacheMaxBlocks = 2*16*64;
-            UdfData.WCacheBlocksPerFrameSh = 8;
-            UdfData.WCacheFramesToKeepFree = 8;
             break;
         case MmSmallSystem:
         default:
             UdfData.MaxDelayedCloseCount = 10;
             UdfData.MinDelayedCloseCount = 2;
-            UdfData.WCacheMaxFrames = 8*4/2;
-            UdfData.WCacheMaxBlocks = 16*64/2;
-            UdfData.WCacheBlocksPerFrameSh = 8;
-            UdfData.WCacheFramesToKeepFree = 2;
         }
 
         ExInitializeNPagedLookasideList(&UdfData.IrpContextLookasideList,
@@ -172,41 +167,6 @@ VOID UDFDestroyZones(VOID)
     ExDeletePagedLookasideList(&UdfData.CcbLookasideList);
 }
 
-
-/*************************************************************************
-*
-* Function: UDFIsIrpTopLevel()
-*
-* Description:
-*   Helps the FSD determine who the "top level" caller is for this
-*   request. A request can originate directly from a user process
-*   (in which case, the "top level" will be NULL when this routine
-*   is invoked), OR the user may have originated either from the NT
-*   Cache Manager/VMM ("top level" may be set), or this could be a
-*   recursion into our code in which we would have set the "top level"
-*   field the last time around.
-*
-* Expected Interrupt Level (for execution) :
-*
-*  whatever level a particular dispatch routine is invoked at.
-*
-* Return Value: TRUE/FALSE (TRUE if top level was NULL when routine invoked)
-*
-*************************************************************************/
-BOOLEAN
-__fastcall
-UDFIsIrpTopLevel(
-    PIRP            Irp)            // the IRP sent to our dispatch routine
-{
-    if (!IoGetTopLevelIrp()) {
-        // OK, so we can set ourselves to become the "top level" component
-        IoSetTopLevelIrp(Irp);
-        return TRUE;
-    }
-    return FALSE;
-}
-
-
 /*************************************************************************
 *
 * Function: UDFExceptionFilter()
@@ -231,52 +191,26 @@ UDFIsIrpTopLevel(
 * Return Value: EXCEPTION_EXECUTE_HANDLER/EXECEPTION_CONTINUE_SEARCH
 *
 *************************************************************************/
-long
+LONG
 UDFExceptionFilter(
     PIRP_CONTEXT IrpContext,
     PEXCEPTION_POINTERS ExceptionPointer
     )
 {
-    long                            ReturnCode = EXCEPTION_EXECUTE_HANDLER;
-    NTSTATUS                        ExceptionCode = STATUS_SUCCESS;
-#if defined UDF_DBG || defined PRINT_ALWAYS
-    ULONG i;
+    NTSTATUS ExceptionCode;
 
-    UDFPrint(("UDFExceptionFilter\n"));
-    UDFPrint(("    Ex. Code: %x\n",ExceptionPointer->ExceptionRecord->ExceptionCode));
-    UDFPrint(("    Ex. Addr: %x\n",ExceptionPointer->ExceptionRecord->ExceptionAddress));
-    UDFPrint(("    Ex. Flag: %x\n",ExceptionPointer->ExceptionRecord->ExceptionFlags));
-    UDFPrint(("    Ex. Pnum: %x\n",ExceptionPointer->ExceptionRecord->NumberParameters));
-    for(i=0;i<ExceptionPointer->ExceptionRecord->NumberParameters;i++) {
-        UDFPrint(("       %x\n",ExceptionPointer->ExceptionRecord->ExceptionInformation[i]));
-    }
-#ifdef _X86_
-    UDFPrint(("Exception context:\n"));
-    if (ExceptionPointer->ContextRecord->ContextFlags & CONTEXT_INTEGER) {
-        UDFPrint(("EAX=%8.8x   ",ExceptionPointer->ContextRecord->Eax));
-        UDFPrint(("EBX=%8.8x   ",ExceptionPointer->ContextRecord->Ebx));
-        UDFPrint(("ECX=%8.8x   ",ExceptionPointer->ContextRecord->Ecx));
-        UDFPrint(("EDX=%8.8x\n",ExceptionPointer->ContextRecord->Edx));
+    ASSERT_OPTIONAL_IRP_CONTEXT(IrpContext);
 
-        UDFPrint(("ESI=%8.8x   ",ExceptionPointer->ContextRecord->Esi));
-        UDFPrint(("EDI=%8.8x   ",ExceptionPointer->ContextRecord->Edi));
-    }
-    if (ExceptionPointer->ContextRecord->ContextFlags & CONTEXT_CONTROL) {
-        UDFPrint(("EBP=%8.8x   ",ExceptionPointer->ContextRecord->Esp));
-        UDFPrint(("ESP=%8.8x\n",ExceptionPointer->ContextRecord->Ebp));
-
-        UDFPrint(("EIP=%8.8x\n",ExceptionPointer->ContextRecord->Eip));
-    }
-//    UDFPrint(("Flags: %s %s    ",ExceptionPointer->ContextRecord->Eip));
-#endif //_X86_
-
-#endif // UDF_DBG
-
-    // figure out the exception code
     ExceptionCode = ExceptionPointer->ExceptionRecord->ExceptionCode;
 
-    if ((ExceptionCode == STATUS_IN_PAGE_ERROR) && (ExceptionPointer->ExceptionRecord->NumberParameters >= 3)) {
-        ExceptionCode = (NTSTATUS)ExceptionPointer->ExceptionRecord->ExceptionInformation[2];
+    // If the exception is STATUS_IN_PAGE_ERROR, get the I/O error code
+    // from the exception record.
+
+    if ((ExceptionCode == STATUS_IN_PAGE_ERROR) &&
+        (ExceptionPointer->ExceptionRecord->NumberParameters >= 3)) {
+
+        ExceptionCode =
+            (NTSTATUS)ExceptionPointer->ExceptionRecord->ExceptionInformation[2];
     }
 
     if (IrpContext) {
@@ -293,13 +227,12 @@ UDFExceptionFilter(
         } else {
             // we are not ok, propagate this exception.
             //  NOTE: we will bring down the machine ...
-            ReturnCode = EXCEPTION_CONTINUE_SEARCH;
+            //ReturnCode = EXCEPTION_CONTINUE_SEARCH;
+            BrutePoint();
         }
     }
 
-
-    // return the appropriate code
-    return(ReturnCode);
+    return EXCEPTION_EXECUTE_HANDLER;
 } // end UDFExceptionFilter()
 
 
@@ -323,85 +256,111 @@ UDFExceptionFilter(
 * Return Value: Error code
 *
 *************************************************************************/
+_Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 UDFProcessException(
-    PIRP_CONTEXT IrpContext,
-    PIRP             Irp
+    _In_opt_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp,
+    _In_ NTSTATUS ExceptionCode
     )
 {
-//    NTSTATUS                        RC;
-    NTSTATUS            ExceptionCode = STATUS_INSUFFICIENT_RESOURCES;
-    PDEVICE_OBJECT      Device;
+    PDEVICE_OBJECT Device;
     PVPB Vpb;
     PETHREAD Thread;
 
-    UDFPrint(("UDFExceptionHandler \n"));
+    ASSERT_OPTIONAL_IRP_CONTEXT(IrpContext);
+    ASSERT_IRP(Irp);
 
-//    ASSERT(Irp);
+    // If there is not an irp context, then complete the request with the
+    // current status code.
 
-    if (!Irp) {
-        UDFPrint(("  !Irp, return\n"));
-        ASSERT(!IrpContext);
-        return ExceptionCode;
-    }
-    // If it was a queued close (or something like this) then we need not
-    // completing it because of MUST_SUCCEED requirement.
+    if (!ARGUMENT_PRESENT(IrpContext)) {
 
-    if (IrpContext) {
-        ExceptionCode = IrpContext->ExceptionStatus;
-        // Free irp context here
-//        UDFReleaseIrpContext(IrpContext);
-    } else {
-        UDFPrint(("  complete Irp and return\n"));
-        // must be insufficient resources ...?
-        ExceptionCode = STATUS_INSUFFICIENT_RESOURCES;
-        Irp->IoStatus.Status = ExceptionCode;
-        Irp->IoStatus.Information = 0;
-        // complete the IRP
-        IoCompleteRequest(Irp, IO_NO_INCREMENT);
-
+        UDFCompleteRequest(NULL, Irp, ExceptionCode);
         return ExceptionCode;
     }
 
-    //  Check if we are posting this request.  One of the following must be true
-    //  if we are to post a request.
-    //
-    //      - Status code is STATUS_CANT_WAIT and the request is asynchronous
-    //          or we are forcing this to be posted.
-    //
-    //      - Status code is STATUS_VERIFY_REQUIRED and we are at APC level
-    //          or higher.  Can't wait for IO in the verify path in this case.
-    //
-    //  Set the MORE_PROCESSING flag in the IrpContext to keep if from being
-    //  deleted if this is a retryable condition.
+    // Get the real exception status from the IrpContext.
 
-    if (ExceptionCode == STATUS_VERIFY_REQUIRED) {
-        if (KeGetCurrentIrql() >= APC_LEVEL) {
-            UDFPrint(("  use UDFPostRequest()\n"));
-            ExceptionCode = UDFPostRequest(IrpContext, Irp);
+    ExceptionCode = IrpContext->ExceptionStatus;
+
+    // If this is an Mdl write request, then take care of the Mdl
+    // here so that things get cleaned up properly.  Cc now leaves
+    // the MDL in place so a filesystem can retry after clearing an
+    // internal condition (FAT does not).
+
+    if ((IrpContext->MajorFunction == IRP_MJ_WRITE) &&
+        (FlagOn(IrpContext->MinorFunction, IRP_MN_COMPLETE_MDL) == IRP_MN_COMPLETE_MDL) &&
+        (Irp->MdlAddress != NULL)) {
+
+        PIO_STACK_LOCATION LocalIrpSp = IoGetCurrentIrpStackLocation(Irp);
+
+        CcMdlWriteAbort(LocalIrpSp->FileObject, Irp->MdlAddress);
+        Irp->MdlAddress = NULL;
+    }
+
+    // Check if we are posting this request.  One of the following must be true
+    // if we are to post a request.
+    //
+    //     - Status code is STATUS_CANT_WAIT and the request is asynchronous
+    //         or we are forcing this to be posted.
+    //
+    //     - Status code is STATUS_VERIFY_REQUIRED and we are at APC level
+    //         or higher, or within a guarded region.  Can't wait for IO in 
+    //         the verify path in this case.
+    //
+    // Set the MORE_PROCESSING flag in the IrpContext to keep if from being
+    // deleted if this is a retryable condition.
+
+    // Note that (children of) UDFFsdPostRequest can raise (Mdl allocation).
+
+    _SEH2_TRY {
+
+        if (ExceptionCode == STATUS_CANT_WAIT) {
+
+            if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_FORCE_POST)) {
+
+                ExceptionCode = UDFFsdPostRequest(IrpContext, Irp);
+            }
+        } 
+        else if ((ExceptionCode == STATUS_VERIFY_REQUIRED) &&
+                 FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_TOP_LEVEL) &&
+                 KeAreAllApcsDisabled()) {
+                 
+            ExceptionCode = UDFFsdPostRequest(IrpContext, Irp);
         }
-    }
 
-    //  If we posted the request or our caller will retry then just return here.
+    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
+    
+        ExceptionCode = GetExceptionCode();
+    } _SEH2_END;
+
+    // If we posted the request or our caller will retry then just return here.
+
     if ((ExceptionCode == STATUS_PENDING) ||
         (ExceptionCode == STATUS_CANT_WAIT)) {
 
-        UDFPrint(("  STATUS_PENDING/STATUS_CANT_WAIT, return\n"));
         return ExceptionCode;
     }
 
-    //  Store this error into the Irp for posting back to the Io system.
-    Irp->IoStatus.Status = ExceptionCode;
-    if (IoIsErrorUserInduced( ExceptionCode )) {
+    ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_MORE_PROCESSING);
 
-        //  Check for the various error conditions that can be caused by,
-        //  and possibly resolved my the user.
+    // Store this error into the Irp for posting back to the Io system.
+
+    Irp->IoStatus.Status = ExceptionCode;
+
+    if (IoIsErrorUserInduced(ExceptionCode)) {
+
+        // Check for the various error conditions that can be caused by,
+        // and possibly resolved my the user.
+
         if (ExceptionCode == STATUS_VERIFY_REQUIRED) {
 
-            //  Now we are at the top level file system entry point.
+            // Now we are at the top level file system entry point.
             //
-            //  If we have already posted this request then the device to
-            //  verify is in the original thread.  Find this via the Irp.
+            // If we have already posted this request then the device to
+            // verify is in the original thread.  Find this via the Irp.
+
             Device = IoGetDeviceToVerify( Irp->Tail.Overlay.Thread );
             IoSetDeviceToVerify( Irp->Tail.Overlay.Thread, NULL );
 
@@ -417,14 +376,9 @@ UDFProcessException(
                 //  Let's not BugCheck just because the driver screwed up.
                 if (Device == NULL) {
 
-                    UDFPrint(("  Device == NULL, return\n"));
                     ExceptionCode = STATUS_DRIVER_INTERNAL_ERROR;
-                    Irp->IoStatus.Status = ExceptionCode;
-                    Irp->IoStatus.Information = 0;
-                    // complete the IRP
-                    IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
-                    UDFCleanupIrpContext(IrpContext);
+                    UDFCompleteRequest(IrpContext, Irp, ExceptionCode);
 
                     return ExceptionCode;
                 }
@@ -437,10 +391,8 @@ UDFProcessException(
             return UDFPerformVerify( IrpContext, Irp, Device );
         }
 
-        //
-        //  The other user induced conditions generate an error unless
-        //  they have been disabled for this request.
-        //
+        // The other user induced conditions generate an error unless
+        // they have been disabled for this request.
 
         if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_DISABLE_POPUPS)) {
 
@@ -472,13 +424,8 @@ UDFProcessException(
 
                 //  Let's not BugCheck just because the driver screwed up.
                 if (Device == NULL) {
-                    UDFPrint(("  Device == NULL, return(2)\n"));
-                    Irp->IoStatus.Status = ExceptionCode;
-                    Irp->IoStatus.Information = 0;
-                    // complete the IRP
-                    IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
-                    UDFCleanupIrpContext(IrpContext);
+                    UDFCompleteRequest(IrpContext, Irp, ExceptionCode);
 
                     return ExceptionCode;
                 }
@@ -488,75 +435,30 @@ UDFProcessException(
             //  does this by queuing an APC to the callers thread,
             //  but in some cases it will complete the request immediately,
             //  so it is very important to IoMarkIrpPending() first.
-            IoMarkIrpPending( Irp );
-            IoRaiseHardError( Irp, Vpb, Device );
 
-            //  We will be handing control back to the caller here, so
-            //  reset the saved device object.
+            IoMarkIrpPending(Irp);
+            IoRaiseHardError(Irp, Vpb, Device);
 
-            UDFPrint(("  use IoSetDeviceToVerify()\n"));
-            IoSetDeviceToVerify( Thread, NULL );
-            //  The Irp will be completed by Io or resubmitted.  In either
-            //  case we must clean up the IrpContext here.
+            // We will be handing control back to the caller here, so
+            // reset the saved device object.
 
-            UDFCleanupIrpContext(IrpContext);
+            IoSetDeviceToVerify(Thread, NULL);
+
+            // The Irp will be completed by Io or resubmitted.  In either
+            // case we must clean up the IrpContext here.
+
+            UDFCompleteRequest(IrpContext, NULL, STATUS_SUCCESS);
             return STATUS_PENDING;
         }
     }
 
     // If it was a normal request from IOManager then complete it
-    if (Irp) {
-        UDFPrint(("  complete Irp\n"));
-        // set the error code in the IRP
-        Irp->IoStatus.Status = ExceptionCode;
-        Irp->IoStatus.Information = 0;
 
-        // complete the IRP
-        IoCompleteRequest(Irp, IO_NO_INCREMENT);
-
-        UDFCleanupIrpContext(IrpContext);
-    }
+    UDFCompleteRequest(IrpContext, Irp, ExceptionCode);
 
     UDFPrint(("  return from exception handler with code %x\n", ExceptionCode));
     return(ExceptionCode);
 } // end UDFExceptionHandler()
-
-/*************************************************************************
-*
-* Function: UDFLogEvent()
-*
-* Description:
-*   Log a message in the NT Event Log. This is a rather simplistic log
-*   methodology since we can potentially utilize the event log to
-*   provide a lot of information to the user (and you should too!)
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL
-*
-* Return Value: None
-*
-*************************************************************************/
-VOID
-UDFLogEvent(
-    NTSTATUS UDFEventLogId,      // the UDF private message id
-    NTSTATUS RC)                 // any NT error code we wish to log ...
-{
-    _SEH2_TRY {
-
-        // Implement a call to IoAllocateErrorLogEntry() followed by a call
-        // to IoWriteErrorLogEntry(). You should note that the call to IoWriteErrorLogEntry()
-        // will free memory for the entry once the write completes (which in actuality
-        // is an asynchronous operation).
-
-    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        // nothing really we can do here, just do not wish to crash ...
-        NOTHING;
-    } _SEH2_END;
-
-    return;
-} // end UDFLogEvent()
-
 
 /*************************************************************************
 *
@@ -707,10 +609,9 @@ UDFDeleteCcb(
 
     _SEH2_TRY {
         if (Ccb->Fcb) {
-            UDFTouch(&(Ccb->Fcb->CcbListResource));
-            UDFAcquireResourceExclusive(&(Ccb->Fcb->CcbListResource),TRUE);
+            UDFAcquireResourceExclusive(&Ccb->Fcb->FcbNonpaged->CcbListResource, TRUE);
             RemoveEntryList(&(Ccb->NextCCB));
-            UDFReleaseResource(&(Ccb->Fcb->CcbListResource));
+            UDFReleaseResource(&Ccb->Fcb->FcbNonpaged->CcbListResource);
         } else {
             BrutePoint();
         }
@@ -748,10 +649,10 @@ UDFDeleteCcb(
 * Return Value: A pointer to the IrpContext structure OR NULL.
 *
 *************************************************************************/
-PIRP_CONTEXT
+_Ret_valid_ PIRP_CONTEXT
 UDFCreateIrpContext(
-    PIRP           Irp,
-    PDEVICE_OBJECT PtrTargetDeviceObject
+    _In_ PIRP Irp,
+    _In_ BOOLEAN Wait
     )
 {
     ASSERT(Irp);
@@ -801,14 +702,19 @@ UDFCreateIrpContext(
     // Set the originating Irp field
     NewIrpContext->Irp = Irp;
 
-    NewIrpContext->RealDevice = PtrTargetDeviceObject;
+    // Copy RealDevice for workque algorithms.  We will update this in the Mount or
+    // Verify since they have no file objects to use here.
+
+    if (IrpSp->FileObject != NULL) {
+
+        NewIrpContext->RealDevice = IrpSp->FileObject->DeviceObject;
+    }
 
     // TODO: fix
     if (false && IrpSp->FileObject != NULL) {
 
         PFILE_OBJECT FileObject = IrpSp->FileObject;
 
-        ASSERT(FileObject->DeviceObject == PtrTargetDeviceObject);
         NewIrpContext->RealDevice = FileObject->DeviceObject;
 
         //
@@ -838,18 +744,15 @@ UDFCreateIrpContext(
     NewIrpContext->MajorFunction = IrpSp->MajorFunction;
     NewIrpContext->MinorFunction = IrpSp->MinorFunction;
 
-    // Often, a FSD cannot honor a request for asynchronous processing
-    // of certain critical requests. For example, a "close" request on
-    // a file object can typically never be deferred. Therefore, do not
-    // be surprised if sometimes our FSD (just like all other FSD
-    // implementations on the Windows NT system) has to override the flag
-    // below.
-    if (IrpSp->FileObject == NULL) {
-        NewIrpContext->Flags |= IRP_CONTEXT_FLAG_WAIT;
+    // Set the wait parameter
+
+    if (Wait) {
+
+        SetFlag(NewIrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
+
     } else {
-        if (IoIsOperationSynchronous(Irp)) {
-            NewIrpContext->Flags |= IRP_CONTEXT_FLAG_WAIT;
-        }
+
+        SetFlag(NewIrpContext->Flags, IRP_CONTEXT_FLAG_FORCE_POST);
     }
 
     // Are we top-level ? This information is used by the dispatching code
@@ -862,34 +765,81 @@ UDFCreateIrpContext(
     return NewIrpContext;
 } // end UDFCreateIrpContext()
 
-
-/*************************************************************************
-*
-* Function: UDFCleanupIrpContext()
-*
-* Description:
-*   Deallocate a previously allocated structure.
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL
-*
-* Return Value: None
-*
-*************************************************************************/
 VOID
 UDFCleanupIrpContext(
     _In_ PIRP_CONTEXT IrpContext,
     _In_ BOOLEAN Post
     )
+
+/*++
+
+Routine Description:
+
+    This routine is called to cleanup and possibly deallocate the Irp Context.
+    If the request is being posted or this Irp Context is possibly on the
+    stack then we only cleanup any auxilary structures.
+
+Arguments:
+
+    Post - TRUE if we are posting this request, FALSE if we are deleting
+        or retrying this in the current thread.
+
+Return Value:
+
+    None.
+
+--*/
+
 {
-    ASSERT(IrpContext);
+    PAGED_CODE();
 
-    if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ON_STACK)) {
+    // If we aren't doing more processing then deallocate this as appropriate.
 
-        ExFreeToNPagedLookasideList(&UdfData.IrpContextLookasideList, IrpContext);
+    if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_MORE_PROCESSING)) {
+
+        // If this context is the top level UDFS context then we need to
+        // restore the top level thread context.
+
+        if (IrpContext->ThreadContext != NULL) {
+
+            UDFRestoreThreadContext(IrpContext);
+        }
+
+        // Deallocate the Io context if allocated.
+
+        if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO)) {
+
+            UDFFreeIoContext(IrpContext->IoContext);
+        }
+
+        // Deallocate the IrpContext if not from the stack.
+
+        if (!FlagOn( IrpContext->Flags, IRP_CONTEXT_FLAG_ON_STACK )) {
+
+            ExFreeToNPagedLookasideList(&UdfData.IrpContextLookasideList, IrpContext);
+        }
+
+    // Clear the appropriate flags.
+
+    } else if (Post) {
+
+        // If this context is the top level CDFS context then we need to
+        // restore the top level thread context.
+
+        if (IrpContext->ThreadContext != NULL) {
+
+            UDFRestoreThreadContext(IrpContext);
+        }
+
+        ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAGS_CLEAR_ON_POST);
+
+    } else {
+
+        ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAGS_CLEAR_ON_RETRY);
     }
-} // end UDFCleanupIrpContext()
+
+    return;
+}
 
 _When_(RaiseOnError || return, _At_(Fcb->FileLock, _Post_notnull_))
 _When_(RaiseOnError, _At_(IrpContext, _Pre_notnull_))
@@ -964,9 +914,123 @@ Return Value:
     return Result;
 }
 
+_Requires_lock_held_(_Global_critical_region_)
+VOID
+UDFPrePostIrp(
+    _Inout_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp
+    )
+
+/*++
+
+Routine Description:
+
+    This routine performs any neccessary work before STATUS_PENDING is
+    returned with the Fsd thread.  This routine is called within the
+    filesystem and by the oplock package.
+
+Arguments:
+
+    Context - Pointer to the IrpContext to be queued to the Fsp
+
+    Irp - I/O Request Packet.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    BOOLEAN RemovedFcb;
+
+    PAGED_CODE();
+
+    ASSERT_IRP_CONTEXT(IrpContext);
+    ASSERT_IRP(Irp);
+
+    // Case on the type of the operation.
+
+    switch (IrpContext->MajorFunction) {
+
+    case IRP_MJ_CREATE :
+
+        // If called from the oplock package then there is an
+        // Fcb to possibly teardown.  We will call the teardown
+        // routine and release the Fcb if still present.  The cleanup
+        // code in create will know not to release this Fcb because
+        // we will clear the pointer.
+
+        if ((IrpContext->TeardownFcb != NULL) &&
+            *(IrpContext->TeardownFcb) != NULL) {
+
+            //TODO: Impl
+            ASSERT(FALSE);
+            RemovedFcb = FALSE; //TODO: temp init
+
+            //UDFTeardownStructures( IrpContext, *(IrpContext->TeardownFcb), &RemovedFcb );
+
+            if (!RemovedFcb) {
+
+                _Analysis_assume_lock_held_((*IrpContext->TeardownFcb)->FcbNonpaged->FcbResource);
+                UDFReleaseFcb(IrpContext, *(IrpContext->TeardownFcb));
+            }
+
+            *(IrpContext->TeardownFcb) = NULL;
+            IrpContext->TeardownFcb = NULL;
+        }
+
+        break;
+
+    // We need to lock the user's buffer, unless this is an MDL read/write,
+    // in which case there is no user buffer.
+
+    case IRP_MJ_READ :
+
+        if (!FlagOn( IrpContext->MinorFunction, IRP_MN_MDL)) {
+
+            UDFLockUserBuffer(IrpContext, IrpSp->Parameters.Read.Length, IoWriteAccess);
+        }
+
+        break;
+
+    case IRP_MJ_WRITE :
+
+        if (!FlagOn(IrpContext->MinorFunction, IRP_MN_MDL)) {
+
+            UDFLockUserBuffer(IrpContext, IrpSp->Parameters.Read.Length, IoReadAccess);
+        }
+
+        break;
+
+    // We also need to check whether this is a query file operation.
+
+    case IRP_MJ_DIRECTORY_CONTROL :
+
+        if (IrpContext->MinorFunction == IRP_MN_QUERY_DIRECTORY) {
+
+            UDFLockUserBuffer(IrpContext, IrpSp->Parameters.QueryDirectory.Length, IoWriteAccess);
+        }
+
+        break;
+    }
+
+    // Cleanup the IrpContext for the post.
+
+    SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_MORE_PROCESSING);
+    UDFCleanupIrpContext(IrpContext, TRUE);
+
+    // Mark the Irp to show that we've already returned pending to the user.
+
+    IoMarkIrpPending(Irp);
+
+    return;
+}
+
 /*************************************************************************
 *
-* Function: UDFPostRequest()
+* Function: UDFAddToWorkque()
 *
 * Description:
 *   Queue up a request for deferred processing (in the context of a system
@@ -976,11 +1040,11 @@ Return Value:
 *
 *  IRQL_PASSIVE_LEVEL
 *
-* Return Value: STATUS_PENDING
+* Return Value: None
 *
 *************************************************************************/
-NTSTATUS
-UDFPostRequest(
+VOID
+UDFAddToWorkque(
     IN PIRP_CONTEXT IrpContext,
     IN PIRP             Irp
     )
@@ -988,10 +1052,6 @@ UDFPostRequest(
     PVOLUME_DEVICE_OBJECT Vdo;
     KIRQL SavedIrql;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
-
-    // mark the IRP pending if this is not double post
-    if (Irp)
-        IoMarkIrpPending(Irp);
 
     // Check if this request has an associated file object, and thus volume
     // device object.
@@ -1019,7 +1079,7 @@ UDFPostRequest(
 
             KeReleaseSpinLock(&Vdo->OverflowQueueSpinLock, SavedIrql);
 
-            return STATUS_PENDING;
+            return;
 
         }
         else {
@@ -1043,9 +1103,54 @@ UDFPostRequest(
 #pragma prefast(suppress: 28159, "prefast believes this routine is obsolete, but it is ok for CDFS to continue using it")
     ExQueueWorkItem(&IrpContext->WorkQueueItem, CriticalWorkQueue);
 
-    return STATUS_PENDING;
-} // end UDFPostRequest()
+    return;
+} // end UDFAddToWorkque()
 
+_Requires_lock_held_(_Global_critical_region_)
+NTSTATUS
+UDFFsdPostRequest(
+    _Inout_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp
+    )
+
+/*++
+
+Routine Description:
+
+    This routine enqueues the request packet specified by IrpContext to the
+    work queue associated with the FileSystemDeviceObject.  This is a FSD
+    routine.
+
+Arguments:
+
+    IrpContext - Pointer to the IrpContext to be queued to the Fsp.
+
+    Irp - I/O Request Packet.
+
+Return Value:
+
+    STATUS_PENDING
+
+--*/
+
+{
+    PAGED_CODE();
+
+    ASSERT_IRP_CONTEXT(IrpContext);
+    ASSERT_IRP(Irp);
+
+    // Posting is a three step operation.  First lock down any buffers
+    // in the Irp.  Next cleanup the IrpContext for the post and finally
+    // add this to a workque.
+
+    UDFPrePostIrp(IrpContext, Irp);
+
+    UDFAddToWorkque(IrpContext, Irp);
+
+    // And return to our caller
+
+    return STATUS_PENDING;
+}
 
 /*************************************************************************
 *
@@ -1135,7 +1240,7 @@ UDFFspDispatch(
 
                 case IRP_MJ_DEVICE_CONTROL:
 
-                    Status = UDFCommonDeviceControl(IrpContext, Irp);
+                    Status = UDFCommonDevControl(IrpContext, Irp);
                     break;
 
                 case IRP_MJ_READ:
@@ -1165,7 +1270,7 @@ UDFFspDispatch(
 
                 case IRP_MJ_FILE_SYSTEM_CONTROL:
 
-                    Status = UDFCommonFSControl(IrpContext, Irp);
+                    Status = UDFCommonFsControl(IrpContext, Irp);
                     break;
 
                 case IRP_MJ_LOCK_CONTROL:
@@ -1207,7 +1312,7 @@ UDFFspDispatch(
 
             } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
 
-                Status = UDFProcessException(IrpContext, Irp);
+                Status = UDFProcessException(IrpContext, Irp, _SEH2_GetExceptionCode());
             } _SEH2_END;
 
             // Break out of the loop if we didn't get CANT_WAIT.
@@ -1323,14 +1428,8 @@ UDFReadRegKeys(
     BOOLEAN UseCfg
     )
 {
-    ULONG mult = 1;
     ptrUDFGetParameter UDFGetParameter = UDFGetRegParameter;
 
-    Vcb->DefaultRegName = REG_DEFAULT_UNKNOWN;
-
-    // Should we use Extended FE by default ?
-    Vcb->UseExtendedFE = (UCHAR)UDFGetParameter(Vcb, REG_USEEXTENDEDFE_NAME,
-        Update ? Vcb->UseExtendedFE : FALSE);
     // What type of AllocDescs should we use
     Vcb->DefaultAllocMode = (USHORT)UDFGetParameter(Vcb, REG_DEFALLOCMODE_NAME,
         Update ? Vcb->DefaultAllocMode : ICB_FLAG_AD_SHORT);
@@ -1380,9 +1479,6 @@ UDFReadRegKeys(
         Update ? Vcb->SparseThreshold : 0);
     if (!Vcb->SparseThreshold)
         Vcb->SparseThreshold = UDF_DEFAULT_SPARSE_THRESHOLD;
-    // This option is used to VERIFY all the data written. It decreases performance
-    Vcb->VerifyOnWrite = UDFGetParameter(Vcb, UDF_VERIFY_ON_WRITE_NAME,
-        Update ? Vcb->VerifyOnWrite : FALSE) ? TRUE : FALSE;
 
     // Should we update AttrFileTime on Attr changes
     UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_UPDATE_TIMES_ATTR, UDF_VCB_IC_UPDATE_ATTR_TIME, FALSE);
@@ -1408,45 +1504,12 @@ UDFReadRegKeys(
     // Should we make a copy of VolumeLabel in LVD
     // usually only PVD is updated
     UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_W2K_COMPAT_VLABEL, UDF_VCB_IC_W2K_COMPAT_VLABEL, TRUE);
-    // Should we handle or ignore HW_RO flag
-    UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_HANDLE_HW_RO, UDF_VCB_IC_HW_RO, FALSE);
-    // Should we handle or ignore SOFT_RO flag
-    UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_HANDLE_SOFT_RO, UDF_VCB_IC_SOFT_RO, TRUE);
 
     // Should we ignore FO_SEQUENTIAL_ONLY
     UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_IGNORE_SEQUENTIAL_IO, UDF_VCB_IC_IGNORE_SEQUENTIAL_IO, FALSE);
-// Force Read-only mounts
-    UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_FORCE_HW_RO, UDF_VCB_IC_FORCE_HW_RO, FALSE);
 
-    // compare data from packet with data to be writen there
-    // before physical writing
-    if (!UDFGetParameter(Vcb, UDF_COMPARE_BEFORE_WRITE, Update ? Vcb->DoNotCompareBeforeWrite : FALSE)) {
-        Vcb->DoNotCompareBeforeWrite = TRUE;
-    } else {
-        Vcb->DoNotCompareBeforeWrite = FALSE;
-    }
     if (!Update)  {
-        if (UDFGetParameter(Vcb, UDF_CHAINED_IO, TRUE)) {
-            Vcb->CacheChainedIo = TRUE;
-        }
 
-        // Should we show Blank.Cd file on damaged/unformatted,
-        // but UDF-compatible disks
-        Vcb->ShowBlankCd = (UCHAR)UDFGetParameter(Vcb, UDF_SHOW_BLANK_CD, FALSE);
-        if (Vcb->ShowBlankCd) {
-            Vcb->CompatFlags |= UDF_VCB_IC_SHOW_BLANK_CD;
-            if (Vcb->ShowBlankCd > 2) {
-                Vcb->ShowBlankCd = 2;
-            }
-        }
-
-        // Set partitially damaged volume mount mode
-        Vcb->PartitialDamagedVolumeAction = (UCHAR)UDFGetParameter(Vcb, UDF_PART_DAMAGED_BEHAVIOR, UDF_PART_DAMAGED_RW);
-        if (Vcb->PartitialDamagedVolumeAction > 2) {
-            Vcb->PartitialDamagedVolumeAction = UDF_PART_DAMAGED_RW;
-        }
-
-        // Set partitially damaged volume mount mode
         Vcb->NoFreeRelocationSpaceVolumeAction = (UCHAR)UDFGetParameter(Vcb, UDF_NO_SPARE_BEHAVIOR, UDF_PART_DAMAGED_RW);
         if (Vcb->NoFreeRelocationSpaceVolumeAction > 1) {
             Vcb->NoFreeRelocationSpaceVolumeAction = UDF_PART_DAMAGED_RW;
@@ -1456,11 +1519,6 @@ UDFReadRegKeys(
         if (UDFGetParameter(Vcb, UDF_DIRTY_VOLUME_BEHAVIOR, UDF_PART_DAMAGED_RO)) {
             Vcb->CompatFlags |= UDF_VCB_IC_DIRTY_RO;
         }
-
-        mult = UDFGetParameter(Vcb, UDF_CACHE_SIZE_MULTIPLIER, 1);
-        if (!mult) mult = 1;
-        Vcb->WCacheMaxBlocks *= mult;
-        Vcb->WCacheMaxFrames *= mult;
     }
     return;
 } // end UDFReadRegKeys()
@@ -1472,11 +1530,7 @@ UDFGetRegParameter(
     IN ULONG DefValue
     )
 {
-    return UDFRegCheckParameterValue(&(UdfData.SavedRegPath),
-                                     Name,
-                                     NULL,
-                                     Vcb ? Vcb->DefaultRegName : NULL,
-                                     DefValue);
+    return DefValue;
 } // end UDFGetRegParameter()
 
 VOID
@@ -1494,21 +1548,11 @@ UDFDeleteVCB(
 
     delay.QuadPart = -500000; // 0.05 sec
     while(Vdo->PostedRequestCount) {
-        UDFPrint(("UDFDeleteVCB: PostedRequestCount = %d\n", Vcb->PostedRequestCount));
+        UDFPrint(("UDFDeleteVCB: PostedRequestCount = %d\n", Vdo->PostedRequestCount));
         // spin until all queues IRPs are processed
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
         delay.QuadPart -= 500000; // grow delay 0.05 sec
     }
-
-    _SEH2_TRY {
-        UDFPrint(("UDF: Flushing buffers\n"));
-        UDFVRelease(Vcb);
-        WCacheFlushAll__(IrpContext, &Vcb->FastCache, Vcb);
-        WCacheRelease__(&Vcb->FastCache);
-
-    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
-    } _SEH2_END;
 
 #ifdef UDF_DBG
     _SEH2_TRY {
@@ -1523,7 +1567,7 @@ UDFDeleteVCB(
 #endif
 
     _SEH2_TRY {
-        RemoveEntryList(&(Vcb->NextVCB));
+        RemoveEntryList(&(Vcb->VcbLinks));
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
     } _SEH2_END;
@@ -1545,7 +1589,7 @@ UDFDeleteVCB(
     _SEH2_TRY {
         UDFPrint(("UDF: Cleanup VCB\n"));
         ASSERT(IsListEmpty(&(Vcb->NextNotifyIRP)));
-        FsRtlNotifyUninitializeSync(&(Vcb->NotifyIRPMutex));
+        FsRtlNotifyUninitializeSync(&Vcb->NotifySync);
         UDFCleanupVCB(Vcb);
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
@@ -1562,186 +1606,6 @@ UDFDeleteVCB(
                                                      Vcb));
 
 } // end UDFDeleteVCB()
-
-/*
-    Read DWORD from Registry
-*/
-ULONG
-UDFRegCheckParameterValue(
-    IN PUNICODE_STRING RegistryPath,
-    IN PCWSTR Name,
-    IN PUNICODE_STRING PtrVolumePath,
-    IN PCWSTR DefaultPath,
-    IN ULONG DefValue
-    )
-{
-    NTSTATUS          status;
-
-    ULONG             val = DefValue;
-
-    UNICODE_STRING    paramStr;
-    UNICODE_STRING    defaultParamStr;
-    UNICODE_STRING    paramPathUnknownStr;
-
-    UNICODE_STRING    paramSuffix;
-    UNICODE_STRING    paramPath;
-    UNICODE_STRING    paramPathUnknown;
-    UNICODE_STRING    paramDevPath;
-    UNICODE_STRING    defaultParamPath;
-
-    _SEH2_TRY {
-
-        paramPath.Buffer = NULL;
-        paramDevPath.Buffer = NULL;
-        paramPathUnknown.Buffer = NULL;
-        defaultParamPath.Buffer = NULL;
-
-        // First append \Parameters to the passed in registry path
-        // Note, RtlInitUnicodeString doesn't allocate memory
-        RtlInitUnicodeString(&paramStr, L"\\Parameters");
-        RtlInitUnicodeString(&paramPath, NULL);
-
-        RtlInitUnicodeString(&paramPathUnknownStr, REG_DEFAULT_UNKNOWN);
-        RtlInitUnicodeString(&paramPathUnknown, NULL);
-
-        paramPathUnknown.MaximumLength = RegistryPath->Length + paramPathUnknownStr.Length + paramStr.Length + sizeof(WCHAR);
-        paramPath.MaximumLength = RegistryPath->Length + paramStr.Length + sizeof(WCHAR);
-
-        paramPath.Buffer = (PWCH)MyAllocatePool__(PagedPool, paramPath.MaximumLength);
-        if (!paramPath.Buffer) {
-            UDFPrint(("UDFCheckRegValue: couldn't allocate paramPath\n"));
-            try_return(val = DefValue);
-        }
-        paramPathUnknown.Buffer = (PWCH)MyAllocatePool__(PagedPool, paramPathUnknown.MaximumLength);
-        if (!paramPathUnknown.Buffer) {
-            UDFPrint(("UDFCheckRegValue: couldn't allocate paramPathUnknown\n"));
-            try_return(val = DefValue);
-        }
-
-        RtlZeroMemory(paramPath.Buffer, paramPath.MaximumLength);
-        status = RtlAppendUnicodeToString(&paramPath, RegistryPath->Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        status = RtlAppendUnicodeToString(&paramPath, paramStr.Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        UDFPrint(("UDFCheckRegValue: (1) |%S|\n", paramPath.Buffer));
-
-        RtlZeroMemory(paramPathUnknown.Buffer, paramPathUnknown.MaximumLength);
-        status = RtlAppendUnicodeToString(&paramPathUnknown, RegistryPath->Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        status = RtlAppendUnicodeToString(&paramPathUnknown, paramStr.Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        status = RtlAppendUnicodeToString(&paramPathUnknown, paramPathUnknownStr.Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        UDFPrint(("UDFCheckRegValue: (2) |%S|\n", paramPathUnknown.Buffer));
-
-        // First append \Parameters\Default_XXX to the passed in registry path
-        if (DefaultPath) {
-            RtlInitUnicodeString(&defaultParamStr, DefaultPath);
-            RtlInitUnicodeString(&defaultParamPath, NULL);
-            defaultParamPath.MaximumLength = paramPath.Length + defaultParamStr.Length + sizeof(WCHAR);
-            defaultParamPath.Buffer = (PWCH)MyAllocatePool__(PagedPool, defaultParamPath.MaximumLength);
-            if (!defaultParamPath.Buffer) {
-                UDFPrint(("UDFCheckRegValue: couldn't allocate defaultParamPath\n"));
-                try_return(val = DefValue);
-            }
-
-            RtlZeroMemory(defaultParamPath.Buffer, defaultParamPath.MaximumLength);
-            status = RtlAppendUnicodeToString(&defaultParamPath, paramPath.Buffer);
-            if (!NT_SUCCESS(status)) {
-                try_return(val = DefValue);
-            }
-            status = RtlAppendUnicodeToString(&defaultParamPath, defaultParamStr.Buffer);
-            if (!NT_SUCCESS(status)) {
-                try_return(val = DefValue);
-            }
-            UDFPrint(("UDFCheckRegValue: (3) |%S|\n", defaultParamPath.Buffer));
-        }
-
-        if (PtrVolumePath) {
-            paramSuffix = *PtrVolumePath;
-        } else {
-            RtlInitUnicodeString(&paramSuffix, NULL);
-        }
-
-        RtlInitUnicodeString(&paramDevPath, NULL);
-        // now build the device specific path
-        paramDevPath.MaximumLength = paramPath.Length + paramSuffix.Length + sizeof(WCHAR);
-        paramDevPath.Buffer = (PWCH)MyAllocatePool__(PagedPool, paramDevPath.MaximumLength);
-        if (!paramDevPath.Buffer) {
-            try_return(val = DefValue);
-        }
-
-        RtlZeroMemory(paramDevPath.Buffer, paramDevPath.MaximumLength);
-        status = RtlAppendUnicodeToString(&paramDevPath, paramPath.Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        if (paramSuffix.Buffer) {
-            status = RtlAppendUnicodeToString(&paramDevPath, paramSuffix.Buffer);
-            if (!NT_SUCCESS(status)) {
-                try_return(val = DefValue);
-            }
-        }
-
-        UDFPrint(( " Parameter = %ws\n", Name));
-
-        {
-            HKEY hk = NULL;
-            status = RegTGetKeyHandle(NULL, RegistryPath->Buffer, &hk);
-            if (NT_SUCCESS(status)) {
-                RegTCloseKeyHandle(hk);
-            }
-        }
-
-
-        // *** Read GLOBAL_DEFAULTS from
-        // "\DwUdf\Parameters_Unknown\"
-
-        status = RegTGetDwordValue(NULL, paramPath.Buffer, Name, &val);
-
-        // *** Read DEV_CLASS_SPEC_DEFAULTS (if any) from
-        // "\DwUdf\Parameters_%DevClass%\"
-
-        if (DefaultPath) {
-            status = RegTGetDwordValue(NULL, defaultParamPath.Buffer, Name, &val);
-        }
-
-        // *** Read DEV_SPEC_PARAMS from (if device supports GetDevName)
-        // "\DwUdf\Parameters\%DevName%\"
-
-        status = RegTGetDwordValue(NULL, paramDevPath.Buffer, Name, &val);
-
-try_exit:   NOTHING;
-
-    } _SEH2_FINALLY {
-
-        if (DefaultPath && defaultParamPath.Buffer) {
-            MyFreePool__(defaultParamPath.Buffer);
-        }
-        if (paramPath.Buffer) {
-            MyFreePool__(paramPath.Buffer);
-        }
-        if (paramDevPath.Buffer) {
-            MyFreePool__(paramDevPath.Buffer);
-        }
-        if (paramPathUnknown.Buffer) {
-            MyFreePool__(paramPathUnknown.Buffer);
-        }
-    } _SEH2_END;
-
-    UDFPrint(( "UDFCheckRegValue: %ws for drive %s is %x\n\n", Name, PtrVolumePath, val));
-    return val;
-} // end UDFRegCheckParameterValue()
 
 /*
 Routine Description:
@@ -1856,22 +1720,12 @@ UDFAcquireResourceSharedWithCheck(
     return FALSE;
 } // end UDFAcquireResourceSharedWithCheck()
 
-NTSTATUS
-UDFWCacheErrorHandler(
-    IN PVOID Context,
-    IN PWCACHE_ERROR_CONTEXT ErrorInfo
-    )
-{
-    InterlockedIncrement((PLONG)&(((PVCB)Context)->IoErrorCounter));
-    return ErrorInfo->Status;
-}
-
 VOID
 UDFSetModified(
     IN PVCB        Vcb
     )
 {
-    if (UDFInterlockedIncrement((PLONG) & (Vcb->Modified)) & 0x80000000)
+    if (InterlockedIncrement((PLONG) & (Vcb->Modified)) & 0x80000000)
         Vcb->Modified = 2;
 } // end UDFSetModified()
 
@@ -1889,7 +1743,7 @@ UDFClrModified(
     )
 {
     UDFPrint(("ClrModified\n"));
-    UDFInterlockedDecrement((PLONG) & (Vcb->Modified));
+    InterlockedDecrement((PLONG)&Vcb->Modified);
 } // end UDFClrModified()
 
 NTSTATUS
@@ -2073,9 +1927,7 @@ Return Value:
 
         SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_TOP_LEVEL_UDFS);
 
-    //
     //  Otherwise use the IrpContext in the thread context.
-    //
 
     } else {
 
@@ -2173,6 +2025,85 @@ Return Value:
     }
 
     return Acquired;
+}
+
+VOID
+UDFFinishIoAtEof(
+    IN PFCB Fcb
+    )
+{
+    PEOF_WAIT_BLOCK EofWaitBlock;
+
+    PAGED_CODE();
+
+    // Check if list is empty
+
+    if (IsListEmpty(&Fcb->EofListHead)) {
+
+        // No waiters - clear the EOF advance flag
+
+        ClearFlag(Fcb->Header.Flags, FSRTL_FLAG_EOF_ADVANCE_ACTIVE);
+
+    } else {
+
+        // Remove first waiter from list
+
+        EofWaitBlock = (PEOF_WAIT_BLOCK)RemoveHeadList(&Fcb->EofListHead);
+
+        // Signal the waiter's event
+
+        KeSetEvent(&EofWaitBlock->Event, 0, FALSE);
+    }
+}
+
+BOOLEAN
+UDFWaitForIoAtEof(
+    IN PFCB Fcb,
+    IN LONGLONG FileOffset,
+    IN ULONG Length
+    )
+{
+    EOF_WAIT_BLOCK WaitBlock;
+
+    PAGED_CODE();
+
+    ASSERT(Fcb->Header.FileSize.QuadPart >= Fcb->Header.ValidDataLength.QuadPart);
+
+    // Initialize wait block
+
+    RtlZeroMemory(&WaitBlock, sizeof(EOF_WAIT_BLOCK));
+
+    // Initialize event as synchronization event (NotificationEvent = FALSE)
+
+    KeInitializeEvent(&WaitBlock.Event, SynchronizationEvent, FALSE);
+
+    // Insert wait block at end of list
+
+    InsertTailList(&Fcb->EofListHead, &WaitBlock.EofWaitLinks);
+
+    ExReleaseFastMutex(Fcb->Header.FastMutex);
+
+    // Wait for event to be signaled
+
+    KeWaitForSingleObject(&WaitBlock.Event,
+                          Executive,
+                          KernelMode,
+                          FALSE,
+                          NULL);
+
+    ExAcquireFastMutex(Fcb->Header.FastMutex);
+
+    // Check if we still need to extend EOF
+
+    if ((FileOffset >= 0) &&
+        ((FileOffset + Length) <= Fcb->Header.ValidDataLength.QuadPart)) {
+
+        UDFFinishIoAtEof(Fcb);
+
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 #include "Include/regtools.cpp"

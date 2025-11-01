@@ -951,7 +951,7 @@ UDFBuildFileEntry(
     ASSERT(!ExtAttrSz);
     // calculate the length required
     l = (Extended ? sizeof(EXTENDED_FILE_ENTRY) : sizeof(FILE_ENTRY)) + ExtAttrSz;
-    if (l > Vcb->LBlockSize) return STATUS_INVALID_PARAMETER;
+    if (l > Vcb->SectorSize) return STATUS_INVALID_PARAMETER;
     // allocate block for FE
     if (!NT_SUCCESS(status = UDFAllocateFESpace(IrpContext, Vcb, DirInfo, PartNum, &_FEExtInfo, l) ))
         return status;
@@ -1493,9 +1493,9 @@ UDFChangeFileCounter(
     if (*counter == (ULONG)-1)
         return;
     if (Increase) {
-        UDFInterlockedIncrement((int32*)counter);
+        InterlockedIncrement((int32*)counter);
     } else {
-        UDFInterlockedDecrement((int32*)counter);
+        InterlockedDecrement((int32*)counter);
     }
 
 } // end UDFChangeFileCounter()
@@ -1523,7 +1523,6 @@ UDFReadEntityID_Domain(
     )
 {
     domainIdentSuffix* dis;
-    uint8 flags;
 
     dis = (domainIdentSuffix*)&(eID->identSuffix);
 
@@ -1542,26 +1541,18 @@ UDFReadEntityID_Domain(
         if (Vcb->UdfRevision >= 0x200)
         {
             Vcb->NSRDesc = VRS_NSR03_FOUND;
-            Vcb->UseExtendedFE = FALSE;
         }
         else
         {
             Vcb->NSRDesc = VRS_NSR02_FOUND;
-            Vcb->UseExtendedFE = FALSE;
         }
     }
+
     // Get Read-Only flags
-    flags = dis->flags;
-    UDFPrint(("Flags: %x\n", flags));
-    if ((flags & ENTITYID_FLAGS_SOFT_RO) &&
-        (Vcb->CompatFlags & UDF_VCB_IC_SOFT_RO)) {
+
+    if (FlagOn(dis->flags, ENTITYID_FLAGS_HARD_RO | ENTITYID_FLAGS_SOFT_RO)) {
+
         Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
-        UDFPrint(("       Soft-RO\n"));
-    }
-    if ((flags & ENTITYID_FLAGS_HARD_RO) &&
-       (Vcb->CompatFlags & UDF_VCB_IC_HW_RO)) {
-        Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
-        UDFPrint(("       Hard-RO\n"));
     }
 
 } // end UDFReadEntityID_Domain()
@@ -1588,7 +1579,7 @@ UDFWriteFile__(
     NTSTATUS status;
     int8* OldInIcb = NULL;
     ValidateFileInfo(FileInfo);
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     SIZE_T _WrittenBytes;
     PUDF_DATALOC_INFO Dloc;
     // unwind staff
@@ -1627,7 +1618,7 @@ UDFWriteFile__(
             ExtPrint(("  w2k-compat -> rebuild allocs\n"));
             Dloc->DataLoc.Modified = TRUE;
         } else
-        if ((ULONG)((elen+Vcb->LBlockSize-1) >> Vcb->LBlockSizeBits) != (ULONG)((t+Vcb->LBlockSize-1) >> Vcb->LBlockSizeBits)) {
+        if ((ULONG)((elen+Vcb->SectorSize-1) >> Vcb->SectorShift) != (ULONG)((t+Vcb->SectorSize-1) >> Vcb->SectorShift)) {
             ExtPrint(("  LBS boundary crossed -> rebuild allocs\n"));
             Dloc->DataLoc.Modified = TRUE;
         }
@@ -1723,8 +1714,8 @@ UDFWriteFile__(
     if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
         ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
     } else {
-        ASSERT(((UDFGetFileSize(FileInfo)+Vcb->LBlockSize-1) & (Vcb->LBlockSize-1)) ==
-               ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->LBlockSize-1) & (Vcb->LBlockSize-1)));
+        ASSERT(((UDFGetFileSize(FileInfo)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)) ==
+               ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)));
     }
 #endif // UDF_DBG
     return STATUS_SUCCESS;
@@ -1777,7 +1768,7 @@ UDFUnlinkFile__(
     // we can't delete modified file
     // it should be closed & reopened (or flushed) before deletion
     DirNdx = UDFDirIndex(hDirNdx,Index);
-#if defined UDF_DBG || defined PRINT_ALWAYS
+#if defined UDF_DBG
     if (DirNdx && DirNdx->FName.Buffer) {
         AdPrint(("Unlink: %ws\n",DirNdx->FName.Buffer));
     }
@@ -1996,7 +1987,7 @@ UDFOpenFile__(
     PDIR_INDEX_ITEM DirNdx;
     PUDF_FILE_INFO FileInfo;
     PUDF_FILE_INFO ParFileInfo;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     *_FileInfo = NULL;
     if (!hDirNdx) return STATUS_NOT_A_DIRECTORY;
 
@@ -2081,7 +2072,7 @@ UDFOpenFile__(
     if (FileInfo->Dloc->FileEntry)
         goto init_tree_entry;
     // read (Ex)FileEntry
-    FileInfo->Dloc->FileEntry = (tag*)MyAllocatePoolTag__(NonPagedPool, Vcb->LBlockSize, MEM_FE_TAG);
+    FileInfo->Dloc->FileEntry = (tag*)MyAllocatePoolTag__(NonPagedPool, Vcb->SectorSize, MEM_FE_TAG);
     if (!(FileInfo->Dloc->FileEntry)) return STATUS_INSUFFICIENT_RESOURCES;
     if (!NT_SUCCESS(status = UDFReadFileEntry(IrpContext, Vcb, &FileInfo->FileIdent->icb, (PFILE_ENTRY)(FileInfo->Dloc->FileEntry), &Ident)))
         return status;
@@ -2118,7 +2109,7 @@ init_tree_entry:
         DirNdx->FI_Flags &= ~UDF_FI_FLAG_LINKED;
     }
     // resize FE cache (0x800 instead of 0x40 is not a good idea)
-    if (!MyReallocPool__((int8*)((FileInfo->Dloc->FileEntry)), Vcb->LBlockSize,
+    if (!MyReallocPool__((int8*)((FileInfo->Dloc->FileEntry)), Vcb->SectorSize,
                      (int8**)&((FileInfo->Dloc->FileEntry)), FileInfo->Dloc->FileEntryLen))
         return STATUS_INSUFFICIENT_RESOURCES;
     // check if this file has a SDir
@@ -2169,7 +2160,7 @@ UDFOpenRootFile__(
     uint32 RootLBA;
     NTSTATUS status;
 //    uint32 PartNum = RootLoc->partitionReferenceNum;
-    uint32 LBS = Vcb->LBlockSize;
+    uint32 LBS = Vcb->SectorSize;
     uint16 Ident;
     LONG_AD FELoc;
     EXTENT_AD FEExt;
@@ -2575,11 +2566,12 @@ UDFCreateFile__(
     UDF_DIR_SCAN_CONTEXT ScanContext;
     PDIR_INDEX_HDR hDirNdx = DirInfo->Dloc->DirIndex;
     PDIR_INDEX_ITEM DirNdx;
-    uint32 LBS = Vcb->LBlockSize;
+    uint32 LBS = Vcb->SectorSize;
     PUDF_FILE_INFO FileInfo;
     *_FileInfo = NULL;
     BOOLEAN undel = FALSE;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
+    SIZE_T WrittenBytes;
 //    BOOLEAN PackDir = FALSE;
     BOOLEAN FEAllocated = FALSE;
 
@@ -2826,7 +2818,7 @@ CrF__2:
         FileInfo->Dloc->FELoc.Mapping[0].extLength &= UDF_EXTENT_LENGTH_MASK;
         // zero sector for FileEntry
         if (!Vcb->CDR_Mode) {
-            status = UDFWriteData(IrpContext, Vcb, TRUE, ((int64)(FileInfo->Dloc->FELoc.Mapping[0].extLocation)) << Vcb->BlockSizeBits, LBS, FALSE, Vcb->ZBuffer, &ReadBytes);
+            status = UDFWriteData(IrpContext, Vcb, TRUE, ((int64)(FileInfo->Dloc->FELoc.Mapping[0].extLocation)) << Vcb->SectorShift, LBS, FALSE, Vcb->ZBuffer, &WrittenBytes);
             if (!NT_SUCCESS(status)) {
                 UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum);
                 try_return (status);
@@ -2955,7 +2947,7 @@ UDFPadLastSector(
     // Length should not be zero
     int64 Offset = ExtInfo->Length + ExtInfo->Offset;
     // data is sector-size-aligned, we needn't any padding
-    if (Offset && !((uint32)Offset & (Vcb->LBlockSize-1) )) return STATUS_SUCCESS;
+    if (Offset && !((uint32)Offset & (Vcb->SectorSize-1) )) return STATUS_SUCCESS;
     // get Lba of the last sector
     Lba = UDFExtentOffsetToLba(Vcb, Extent, Offset, &sect_offs, &to_write, &flags, NULL);
     // EOF check. If we have valid ExtInfo this will not happen, but who knows..
@@ -2963,7 +2955,7 @@ UDFPadLastSector(
        (flags == EXTENT_NOT_RECORDED_NOT_ALLOCATED))
         return STATUS_END_OF_FILE;
     // write tail
-    status = UDFWriteData(IrpContext, Vcb, TRUE, (((int64)Lba) << Vcb->BlockSizeBits) + sect_offs, to_write, FALSE, Vcb->ZBuffer, &WrittenBytes);
+    status = UDFWriteData(IrpContext, Vcb, TRUE, (((int64)Lba) << Vcb->SectorShift) + sect_offs, to_write, FALSE, Vcb->ZBuffer, &WrittenBytes);
     return status;
 } // UDFPadLastSector()
 
@@ -2984,10 +2976,10 @@ UDFCloseFile__(
     if (FileInfo->Index<2 && (FileInfo->ParentFile) && !UDFIsAStreamDir(FileInfo)) {
         UDFPrint(("Closing Current or Parent Directory... :-\\\n"));
         if (FileInfo->RefCount) {
-            UDFInterlockedDecrement((PLONG)&(FileInfo->RefCount));
+            InterlockedDecrement((PLONG)&FileInfo->RefCount);
             ASSERT(FileInfo->Dloc);
             if (FileInfo->Dloc)
-                UDFInterlockedDecrement((PLONG)&(FileInfo->Dloc->LinkRefCount));
+                InterlockedDecrement((PLONG)&FileInfo->Dloc->LinkRefCount);
 #ifdef UDF_DBG
         } else {
             BrutePoint();
@@ -2995,7 +2987,7 @@ UDFCloseFile__(
 #endif // UDF_DBG
         }
         if (FileInfo->ParentFile->OpenCount) {
-            UDFInterlockedDecrement((PLONG)&(FileInfo->ParentFile->OpenCount));
+            InterlockedDecrement((PLONG)&FileInfo->ParentFile->OpenCount);
 #ifdef UDF_DBG
         } else {
             BrutePoint();
@@ -3008,10 +3000,10 @@ UDFCloseFile__(
     NTSTATUS status;
     uint32 PartNum;
     if (FileInfo->RefCount) {
-        UDFInterlockedDecrement((PLONG)&(FileInfo->RefCount));
+        InterlockedDecrement((PLONG)&FileInfo->RefCount);
         ASSERT(FileInfo->Dloc);
         if (FileInfo->Dloc)
-            UDFInterlockedDecrement((PLONG)&(FileInfo->Dloc->LinkRefCount));
+            InterlockedDecrement((PLONG)&FileInfo->Dloc->LinkRefCount);
 #ifdef UDF_DBG
     } else {
         BrutePoint();
@@ -3023,7 +3015,7 @@ UDFCloseFile__(
         ValidateFileInfo(DirInfo);
 
         if (DirInfo->OpenCount) {
-            UDFInterlockedDecrement((PLONG)&(DirInfo->OpenCount));
+            InterlockedDecrement((PLONG)&DirInfo->OpenCount);
 #ifdef UDF_DBG
         } else {
             BrutePoint();
@@ -3295,8 +3287,8 @@ cleanup_and_abort_rename:
     DirNdx1->FileInfo = NULL;
     ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     UDFFlushFI(IrpContext, Vcb, FileInfo, UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation));
-    UDFInterlockedExchangeAdd((PLONG)&(DirInfo1->OpenCount),
-                            -((LONG)(FileInfo->RefCount)));
+    InterlockedExchangeAdd((PLONG)&(DirInfo1->OpenCount),
+                          -((LONG)(FileInfo->RefCount)));
     // PHASE 2
     // copy all necessary info from FileInfo to FileInfo2
 
@@ -3313,8 +3305,8 @@ cleanup_and_abort_rename:
     DirNdx2->FileCharacteristics = DirNdx1->FileCharacteristics & ~FILE_DELETED;
     DirNdx2->FileEntryLoc = DirNdx1->FileEntryLoc;
     DirNdx2->FI_Flags = (DirNdx1->FI_Flags & ~UDF_FI_FLAG_SYS_ATTR) | UDF_FI_FLAG_FI_MODIFIED;
-    UDFInterlockedExchangeAdd((PLONG)&(DirInfo2->OpenCount),
-                            FileInfo->RefCount - FileInfo2->RefCount);
+    InterlockedExchangeAdd((PLONG)&(DirInfo2->OpenCount),
+                           FileInfo->RefCount - FileInfo2->RefCount);
 
     UDFAttributesToUDF(DirNdx2, FileInfo2->Dloc->FileEntry, NTAttr);
 
@@ -3406,7 +3398,7 @@ UDFRecordDirectory__(
     lba = DirInfo->Dloc->FELoc.Mapping[0].extLocation;
     ASSERT(lba);
     PartNum = UDFGetRefPartNumByPhysLba(Vcb, lba);
-    FEicb.extLength = Vcb->LBlockSize;
+    FEicb.extLength = Vcb->SectorSize;
     FEicb.extLocation.logicalBlockNum = UDFPhysLbaToPart(Vcb, PartNum, lba);
     FEicb.extLocation.partitionReferenceNum = (uint16)PartNum;
     RtlZeroMemory(&(FEicb.impUse), sizeof(FEicb.impUse));
@@ -3431,8 +3423,8 @@ UDFRecordDirectory__(
     if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
         ASSERT(UDFGetFileSize(DirInfo) <= UDFGetExtentLength(DirInfo->Dloc->DataLoc.Mapping));
     } else {
-        ASSERT(((UDFGetFileSize(DirInfo)+Vcb->LBlockSize-1) & (Vcb->LBlockSize-1)) ==
-               ((UDFGetExtentLength(DirInfo->Dloc->DataLoc.Mapping)+Vcb->LBlockSize-1) & (Vcb->LBlockSize-1)));
+        ASSERT(((UDFGetFileSize(DirInfo)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)) ==
+               ((UDFGetExtentLength(DirInfo->Dloc->DataLoc.Mapping)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)));
     }
 #endif // UDF_DBG
 
@@ -3454,6 +3446,7 @@ UDFResizeFile__(
     IN int64 NewLength
     )
 {
+    ULONG ReadBytes;
     SIZE_T WrittenBytes;
     NTSTATUS status;
     uint32 PartNum;
@@ -3464,7 +3457,7 @@ UDFResizeFile__(
     ValidateFileInfo(FileInfo);
 //    ASSERT(FileInfo->RefCount >= 1);
 
-    if ((NewLength >> Vcb->LBlockSizeBits) > Vcb->TotalAllocUnits) {
+    if ((NewLength >> Vcb->SectorShift) > Vcb->TotalAllocUnits) {
         UDFPrint(("STATUS_DISK_FULL\n"));
         return STATUS_DISK_FULL;
     }
@@ -3477,14 +3470,14 @@ UDFResizeFile__(
         return UDFWriteFile__(IrpContext, Vcb, FileInfo, NewLength, 0, FALSE, NULL, &WrittenBytes);
     }
     // truncate file
-    if (NewLength <= (Vcb->LBlockSize - FileInfo->Dloc->FileEntryLen)) {
+    if (NewLength <= (Vcb->SectorSize - FileInfo->Dloc->FileEntryLen)) {
         // check if we are already in IN_ICB mode
         if ((((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) != ICB_FLAG_AD_IN_ICB) {
             // read data from old location
             if (NewLength) {
                 OldInIcb = (int8*)MyAllocatePool__(NonPagedPool, (uint32)NewLength);
                 if (!OldInIcb) return STATUS_INSUFFICIENT_RESOURCES;
-                status = UDFReadExtent(IrpContext, Vcb, &FileInfo->Dloc->DataLoc, 0, (uint32)NewLength, FALSE, OldInIcb, &WrittenBytes);
+                status = UDFReadExtent(IrpContext, Vcb, &FileInfo->Dloc->DataLoc, 0, (uint32)NewLength, FALSE, OldInIcb, &ReadBytes);
                 if (!NT_SUCCESS(status)) {
                     MyFreePool__(OldInIcb);
                     return status;
@@ -3507,19 +3500,19 @@ mark_data_map_0:
                 UDFMarkSpaceAsXXX(Vcb, FileInfo->Dloc, FileInfo->Dloc->DataLoc.Mapping, AS_DISCARDED); // free
             } else {
                 if ((FileInfo->Dloc->DataLoc.Mapping[0].extLength & UDF_EXTENT_LENGTH_MASK)
-                       > Vcb->LBlockSize) {
+                       > Vcb->SectorSize) {
                     BrutePoint();
-                    FileInfo->Dloc->DataLoc.Mapping[0].extLength -= Vcb->LBlockSize;
-                    FileInfo->Dloc->DataLoc.Mapping[0].extLocation += (1 << Vcb->LB2B_Bits);
+                    FileInfo->Dloc->DataLoc.Mapping[0].extLength -= Vcb->SectorSize;
+                    FileInfo->Dloc->DataLoc.Mapping[0].extLocation += 1;
                     goto mark_data_map_0;
                 }
                 UDFMarkSpaceAsXXX(Vcb, FileInfo->Dloc, &(FileInfo->Dloc->DataLoc.Mapping[1]), AS_DISCARDED); // free
             }
             if (FileInfo->Dloc->AllocLoc.Mapping) {
                 if ((FileInfo->Dloc->AllocLoc.Mapping[0].extLength & UDF_EXTENT_LENGTH_MASK)
-                       > Vcb->LBlockSize) {
-                    FileInfo->Dloc->AllocLoc.Mapping[0].extLength -= Vcb->LBlockSize;
-                    FileInfo->Dloc->AllocLoc.Mapping[0].extLocation += (1 << Vcb->LB2B_Bits);
+                       > Vcb->SectorSize) {
+                    FileInfo->Dloc->AllocLoc.Mapping[0].extLength -= Vcb->SectorSize;
+                    FileInfo->Dloc->AllocLoc.Mapping[0].extLocation += 1;
                     UDFMarkSpaceAsXXX(Vcb, FileInfo->Dloc, FileInfo->Dloc->AllocLoc.Mapping, AS_DISCARDED); // free
                 } else {
                     UDFMarkSpaceAsXXX(Vcb, FileInfo->Dloc, &(FileInfo->Dloc->AllocLoc.Mapping[1]), AS_DISCARDED); // free
@@ -3569,8 +3562,8 @@ mark_data_map_0:
     if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
         ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
     } else {
-        ASSERT(((UDFGetFileSize(FileInfo)+Vcb->LBlockSize-1) & (Vcb->LBlockSize-1)) ==
-               ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->LBlockSize-1) & (Vcb->LBlockSize-1)));
+        ASSERT(((UDFGetFileSize(FileInfo)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)) ==
+               ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)));
     }
 #endif // UDF_DBG
 
@@ -3592,7 +3585,7 @@ UDFLoadVAT(
     PUDF_FILE_INFO VatFileInfo;
     uint32 len, i=0, j, to_read;
     uint32 Offset, hdrOffset;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     uint32 root;
     uint16 PartNum;
 //    uint32 VatFirstLba = 0;
@@ -3610,10 +3603,7 @@ UDFLoadVAT(
     Vcb->CDR_Mode = FALSE;
     PartNum = Vcb->Partitions[PartNdx].PartitionNum;
     root = Vcb->Partitions[PartNdx].PartitionRoot;
-    if (Vcb->LBlockSize != Vcb->BlockSize) {
-        // don't know how to operate... :(((
-        return STATUS_UNRECOGNIZED_VOLUME;
-    }
+
     if ((Vcb->LastTrackNum > 1) &&
        (Vcb->LastLBA == Vcb->TrackMap[Vcb->LastTrackNum-1].LastLba)) {
         UDFPrint(("Hardware Read-only volume\n"));
@@ -3898,8 +3888,8 @@ retry_flush_FE:
         if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
             ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
         } else {
-            ASSERT(((UDFGetFileSize(FileInfo)+Vcb->LBlockSize-1) & (Vcb->LBlockSize-1)) ==
-                   ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->LBlockSize-1) & (Vcb->LBlockSize-1)));
+            ASSERT(((UDFGetFileSize(FileInfo)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)) ==
+                   ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)));
         }
         AllocMode = ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK;
 #endif // UDF_DBG
@@ -3933,8 +3923,8 @@ retry_flush_FE:
             if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
                 ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
             } else {
-                ASSERT(((UDFGetFileSize(FileInfo)+Vcb->LBlockSize-1) & (Vcb->LBlockSize-1)) ==
-                   ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->LBlockSize-1) & (Vcb->LBlockSize-1)));
+                ASSERT(((UDFGetFileSize(FileInfo)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)) ==
+                   ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)));
             }
         }
 #endif // UDF_DBG
@@ -4386,7 +4376,7 @@ UDFReadTagged(
 //    icbtag* Icb = (icbtag*)(Buf+1);
     uint8 checksum;
     unsigned int i;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     int8* tb;
 
     // Read the block
@@ -4428,7 +4418,7 @@ UDFReadTagged(
         }
 
         // Verify the descriptor CRC
-        if (((PTag->descCRCLength) + sizeof(tag) > Vcb->BlockSize) ||
+        if (((PTag->descCRCLength) + sizeof(tag) > Vcb->SectorSize) ||
             ((PTag->descCRC) == UDFCrc((uint8 *)Buf + sizeof(tag), PTag->descCRCLength, 0)) || !(PTag->descCRC))
         {
             /*        UDFPrint(("Tag ID: %x, ver %x\t", PTag->tagIdent, PTag->descVersion ));
@@ -4645,7 +4635,7 @@ UDFCreateRootFile__(
     if (!NT_SUCCESS(status =
         UDFBuildFileEntry(IrpContext, Vcb, NULL, FileInfo, PartNum, ICB_FLAG_AD_IN_ICB, ExtAttrSz, Extended) ))
         return status;
-    FEicb.extLength = Vcb->LBlockSize;
+    FEicb.extLength = Vcb->SectorSize;
     FEicb.extLocation.logicalBlockNum = UDFPhysLbaToPart(Vcb, PartNum, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     FEicb.extLocation.partitionReferenceNum = (uint16)PartNum;
     RtlZeroMemory(&(FEicb.impUse), sizeof(FEicb.impUse));
@@ -4662,7 +4652,7 @@ UDFCreateRootFile__(
     // zero sector for FileEntry
     FileInfo->Dloc->DataLoc.Mapping[0].extLength &= UDF_EXTENT_LENGTH_MASK;
     FileInfo->Dloc->FELoc.Mapping[0].extLength &= UDF_EXTENT_LENGTH_MASK;
-    status = UDFWriteData(IrpContext, Vcb, TRUE, ((int64)(FileInfo->Dloc->FELoc.Mapping[0].extLocation)) << Vcb->BlockSizeBits, Vcb->LBlockSize, FALSE, Vcb->ZBuffer, &ReadBytes);
+    status = UDFWriteData(IrpContext, Vcb, TRUE, ((int64)(FileInfo->Dloc->FELoc.Mapping[0].extLocation)) << Vcb->SectorShift, Vcb->SectorSize, FALSE, Vcb->ZBuffer, &ReadBytes);
     if (!NT_SUCCESS(status))
         return status;
 
@@ -4691,7 +4681,7 @@ UDFCreateStreamDir__(
     *_SDirInfo = NULL;
     ValidateFileInfo(FileInfo);
     // check currently recorded UDF revision
-    if (!UDFStreamsSupported(Vcb))
+    if (!UDFIsStreamsSupported(Vcb))
         return STATUS_INVALID_PARAMETER;
     // check if we are allowed to associate Stream Dir with this file
     if ((FileInfo->ParentFile && UDFIsAStreamDir(FileInfo->ParentFile)) ||
@@ -4723,7 +4713,7 @@ UDFCreateStreamDir__(
     status = UDFRecordDirectory__(IrpContext, Vcb, SDirInfo);
     UDFDecDirCounter(Vcb);
 
-    UDFInterlockedIncrement((PLONG)&(FileInfo->OpenCount));
+    InterlockedIncrement((PLONG)&FileInfo->OpenCount);
     if (!NT_SUCCESS(status)) {
         UDFUnlinkFile__(IrpContext, Vcb, SDirInfo, TRUE);
         UDFCloseFile__(IrpContext, Vcb, SDirInfo);
@@ -4736,7 +4726,7 @@ UDFCreateStreamDir__(
     }
     *_SDirInfo = SDirInfo;
     // do some init
-    ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->streamDirectoryICB.extLength = Vcb->LBlockSize;
+    ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->streamDirectoryICB.extLength = Vcb->SectorSize;
     ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->streamDirectoryICB.extLocation.partitionReferenceNum = (uint16)PartNum;
     ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->streamDirectoryICB.extLocation.logicalBlockNum =
         UDFPhysLbaToPart(Vcb, PartNum, SDirInfo->Dloc->FELoc.Mapping[0].extLocation);
@@ -4824,7 +4814,7 @@ UDFOpenStreamDir__(
     FileInfo->Dloc->SDirInfo = SDirInfo;
     SDirInfo->ParentFile = FileInfo;
 
-    UDFInterlockedIncrement((PLONG)&(FileInfo->OpenCount));
+    InterlockedIncrement((PLONG)&FileInfo->OpenCount);
 
     return STATUS_SUCCESS;
 } // end UDFOpenStreamDir__()
@@ -4843,7 +4833,8 @@ UDFRecordVAT(
     uint32 hdrOffset, hdrOffsetNew;
     uint32 hdrLen;
     NTSTATUS status;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
+    SIZE_T WrittenBytes;
     uint32 len;
     uint16 PartNdx = (uint16)Vcb->VatPartNdx;
     uint16 PartNum = UDFGetPartNumByPartRef(Vcb, PartNdx);
@@ -4858,7 +4849,7 @@ UDFRecordVAT(
     uint8 AllocMode;
     uint32 VatLen;
     uint32 PacketOffset;
-    uint32 BSh = Vcb->BlockSizeBits;
+    uint32 BSh = Vcb->SectorShift;
     uint32 MaxPacket = Vcb->WriteBlockSize >> BSh;
     uint32 OldLen;
     EntityID* eID;
@@ -4972,17 +4963,17 @@ UDFRecordVAT(
         }
         UDFMarkSpaceAsXXX(Vcb, VatFileInfo->Dloc, VatFileInfo->Dloc->DataLoc.Mapping, AS_DISCARDED); //free
     }
-    PacketOffset = WCacheGetWriteBlockCount__(&(Vcb->FastCache));
+    //PacketOffset = WCacheGetWriteBlockCount__(&(Vcb->FastCache));
+    PacketOffset = 0;
     if ( ((((PFILE_ENTRY)(VatFileInfo->Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) ) {
         // now we'll place FE & built-in data to the last sector of
         // the last packet will be recorded
         if (!PacketOffset) {
             // add padding
-            UDFWriteData(IrpContext, Vcb, TRUE, ((uint64)Vcb->NWA) << Vcb->BlockSizeBits, 1, FALSE, Old, &ReadBytes);
+            UDFWriteData(IrpContext, Vcb, TRUE, ((uint64)Vcb->NWA) << Vcb->SectorShift, 1, FALSE, Old, &WrittenBytes);
             PacketOffset++;
         } else {
             Vcb->Vat = (uint32*)(New+Offset);
-            WCacheSyncReloc__(&(Vcb->FastCache), Vcb);
             Vcb->Vat = NULL;
         }
         VatFileInfo->Dloc->FELoc.Mapping[0].extLocation =
@@ -4993,7 +4984,7 @@ UDFRecordVAT(
         ((PFILE_ENTRY)(VatFileInfo->Dloc->FileEntry))->descTag.tagLocation =
             UDFPhysLbaToPart(Vcb, PartNum, VatFileInfo->Dloc->DataLoc.Mapping[0].extLocation);
         // record data
-        if (NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, 0, VatLen + hdrLen, FALSE, New, &ReadBytes))) {
+        if (NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, 0, VatLen + hdrLen, FALSE, New, &WrittenBytes))) {
             status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo);
         }
         return status;
@@ -5005,13 +4996,12 @@ UDFRecordVAT(
     // update VAT with locations of not flushed blocks
     if (PacketOffset) {
         Vcb->Vat = (uint32*)(New+Offset);
-        WCacheSyncReloc__(&(Vcb->FastCache), Vcb);
         Vcb->Vat = NULL;
     }
 
     Mapping = VatFileInfo->Dloc->DataLoc.Mapping;
     off=0;
-    BS = Vcb->BlockSize;
+    BS = Vcb->SectorSize;
     NWA = Vcb->NWA;
     VatLen += hdrLen;
     // record modified parts of VAT & update mapping
@@ -5026,7 +5016,7 @@ UDFRecordVAT(
                 NWA += (MaxPacket + 7);
                 PacketOffset = 0;
             }
-            status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, off, to_read, FALSE, New+off, &ReadBytes);
+            status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, off, to_read, FALSE, New+off, &WrittenBytes);
             if (!NT_SUCCESS(status)) {
                 return status;
             }
@@ -5085,9 +5075,9 @@ UDFRecordVAT(
     Mapping[i].extLength = 0;
 
     if ( !PacketOffset &&
-        (VatFileInfo->Dloc->AllocLoc.Length <= (Vcb->BlockSize - (uint32)(VatFileInfo->Dloc->AllocLoc.Offset)) ) ) {
+        (VatFileInfo->Dloc->AllocLoc.Length <= (Vcb->SectorSize - (uint32)(VatFileInfo->Dloc->AllocLoc.Offset)) ) ) {
         // add padding
-        UDFWriteData(IrpContext, Vcb, TRUE, ((uint64)NWA) << Vcb->BlockSizeBits, 1, FALSE, Old, &ReadBytes);
+        UDFWriteData(IrpContext, Vcb, TRUE, ((uint64)NWA) << Vcb->SectorShift, 1, FALSE, Old, &WrittenBytes);
         PacketOffset++;
     }
     // now we'll place FE & built-in data to the last sector of
@@ -5104,7 +5094,7 @@ UDFRecordVAT(
     status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo);
     if (!NT_SUCCESS(status))
         return status;
-    WCacheFlushAll__(IrpContext, &Vcb->FastCache, Vcb);
+
     return STATUS_SUCCESS;
 } // end UDFRecordVAT()
 
@@ -5161,7 +5151,8 @@ UDFConvertFEToExtended(
     PFILE_ENTRY FileEntry;
     uint32 Length, NewLength, l;
     NTSTATUS status;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
+    SIZE_T WrittenBytes;
 
     if (!FileInfo) return STATUS_INVALID_PARAMETER;
     ValidateFileInfo(FileInfo);
@@ -5223,7 +5214,7 @@ UDFConvertFEToExtended(
             MyFreePool__(FileInfo->Dloc->FileEntry);
             FileInfo->Dloc->FileEntry = (tag*)ExFileEntry;
             if (!NT_SUCCESS(status = UDFResizeFile__(IrpContext, Vcb, FileInfo, l)) ||
-               !NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, FileInfo, 0, l, FALSE, tmp_buff, &ReadBytes)) ) {
+               !NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, FileInfo, 0, l, FALSE, tmp_buff, &WrittenBytes)) ) {
                 MyFreePool__(ExFileEntry);
                 MyFreePool__(tmp_buff);
                 return status;

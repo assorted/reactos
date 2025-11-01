@@ -32,6 +32,13 @@ typedef enum _TYPE_OF_OPEN {
 
 } TYPE_OF_OPEN;
 
+// The following macro is used to determine if an FSD thread can block
+// for I/O or wait for a resource.  It returns TRUE if the thread can
+// block and FALSE otherwise.  This attribute can then be used to call
+// the FSD & FSP common work routine with the proper wait value.
+
+#define CanFsdWait(I)   IoIsOperationSynchronous(I)
+
 _When_(TypeOfOpen == UnopenedFileObject, _At_(Fcb, _In_opt_))
 _When_(TypeOfOpen != UnopenedFileObject, _At_(Fcb, _In_))
 VOID
@@ -203,7 +210,7 @@ PDEVICE_OBJECT              DeviceObject,       // the logical volume device obj
 PIRP                        Irp);               // I/O Request Packet
 
 NTSTATUS
-UDFCommonDeviceControl(
+UDFCommonDevControl(
     PIRP_CONTEXT IrpContext,
     PIRP Irp
     );
@@ -229,8 +236,11 @@ IN BOOLEAN                  CheckForReadOperation,
 OUT PIO_STATUS_BLOCK        IoStatus,
 IN PDEVICE_OBJECT           DeviceObject);
 
-extern FAST_IO_POSSIBLE NTAPI UDFIsFastIoPossible(
-IN PFCB Fcb);
+FAST_IO_POSSIBLE
+NTAPI
+UDFIsFastIoPossible(
+    IN PFCB Fcb
+    );
 
 extern BOOLEAN NTAPI UDFFastIoQueryBasicInfo(
 IN PFILE_OBJECT             FileObject,
@@ -350,13 +360,6 @@ UDFFastIoCopyWrite(
 /*************************************************************************
 * Prototypes for the file fileinfo.cpp
 *************************************************************************/
-extern NTSTATUS NTAPI UDFQueryInfo(
-PDEVICE_OBJECT  DeviceObject,       // the logical volume device object
-PIRP            Irp);               // I/O Request Packet
-
-extern NTSTATUS NTAPI UDFSetInfo(
-PDEVICE_OBJECT  DeviceObject,       // the logical volume device object
-PIRP            Irp);               // I/O Request Packet
 
 extern NTSTATUS UDFCommonQueryInfo(
     PIRP_CONTEXT IrpContext,
@@ -566,14 +569,15 @@ PDEVICE_OBJECT      DeviceObject,
 PIRP                Irp);
 
 NTSTATUS
-UDFCommonFSControl(
+UDFCommonFsControl(
     PIRP_CONTEXT IrpContext,
     PIRP Irp
     );
 
-extern NTSTATUS NTAPI UDFUserFsCtrlRequest(
-PIRP_CONTEXT IrpContext,
-PIRP                Irp);
+NTSTATUS
+UDFUserFsCtrlRequest(
+    PIRP_CONTEXT IrpContext,
+    PIRP Irp);
 
 extern NTSTATUS NTAPI UDFMountVolume(
 PIRP_CONTEXT IrpContext,
@@ -710,8 +714,28 @@ VOID);
 extern VOID UDFDestroyZones(
 VOID);
 
-extern BOOLEAN __fastcall UDFIsIrpTopLevel(
-PIRP                        Irp);                   // the IRP sent to our dispatch routine
+_IRQL_requires_max_(APC_LEVEL)
+__drv_dispatchType(DRIVER_DISPATCH)
+__drv_dispatchType(IRP_MJ_CREATE)
+__drv_dispatchType(IRP_MJ_CLOSE)
+__drv_dispatchType(IRP_MJ_READ)
+__drv_dispatchType(IRP_MJ_WRITE)
+__drv_dispatchType(IRP_MJ_QUERY_INFORMATION)
+__drv_dispatchType(IRP_MJ_SET_INFORMATION)
+__drv_dispatchType(IRP_MJ_QUERY_VOLUME_INFORMATION)
+__drv_dispatchType(IRP_MJ_DIRECTORY_CONTROL)
+__drv_dispatchType(IRP_MJ_FILE_SYSTEM_CONTROL)
+__drv_dispatchType(IRP_MJ_DEVICE_CONTROL)
+__drv_dispatchType(IRP_MJ_LOCK_CONTROL)
+__drv_dispatchType(IRP_MJ_CLEANUP)
+__drv_dispatchType(IRP_MJ_PNP)
+__drv_dispatchType(IRP_MJ_SHUTDOWN)
+NTSTATUS
+NTAPI
+UDFFsdDispatch(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    );
 
 LONG
 UDFExceptionFilter(
@@ -719,13 +743,13 @@ UDFExceptionFilter(
     PEXCEPTION_POINTERS ExceptionPointer
     );
 
-extern NTSTATUS UDFProcessException(
-PIRP_CONTEXT IrpContext,
-PIRP                        Irp);
-
-extern VOID UDFLogEvent(
-NTSTATUS                    UDFEventLogId,  // the UDF private message id
-NTSTATUS                    RC);            // any NT error code we wish to log ...
+_Requires_lock_held_(_Global_critical_region_)
+NTSTATUS
+UDFProcessException(
+    _In_opt_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp,
+    _In_ NTSTATUS ExceptionCode
+    );
 
 extern PtrUDFObjectName UDFAllocateObjectName(
 VOID);
@@ -760,14 +784,16 @@ UDFDeleteFcb(
 
 VOID UDFCleanUpFCB(PFCB Fcb);
 
-extern PIRP_CONTEXT UDFCreateIrpContext(
-PIRP                        Irp,
-PDEVICE_OBJECT              PtrTargetDeviceObject);
+_Ret_valid_ PIRP_CONTEXT
+UDFCreateIrpContext(
+    _In_ PIRP Irp,
+    _In_ BOOLEAN Wait
+    );
 
 VOID
 UDFCleanupIrpContext(
     _In_ PIRP_CONTEXT IrpContext,
-    _In_ BOOLEAN Post = FALSE
+    _In_ BOOLEAN Post
     );
 
 VOID
@@ -777,9 +803,18 @@ UDFCompleteRequest(
     _In_ NTSTATUS Status
     );
 
-extern NTSTATUS UDFPostRequest(
-PIRP_CONTEXT IrpContext,
-PIRP                        Irp);
+VOID
+UDFAddToWorkque(
+    PIRP_CONTEXT IrpContext,
+    PIRP Irp
+    );
+
+_Requires_lock_held_(_Global_critical_region_)
+NTSTATUS
+UDFFsdPostRequest(
+    _Inout_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp
+);
 
 VOID
 NTAPI
@@ -787,12 +822,14 @@ UDFFspDispatch(
     PVOID Context
     );
 
-NTSTATUS
+VOID
 UDFInitializeVCB(
     _In_ PIRP_CONTEXT IrpContext,
     _Inout_ PVCB Vcb,
     _In_ PDEVICE_OBJECT TargetDeviceObject,
-    _In_ PVPB Vpb
+    _In_ PVPB Vpb,
+    _In_ PDISK_GEOMETRY DiskGeometry,
+    _In_ ULONG MediaChangeCount
     );
 
 VOID
@@ -812,13 +849,6 @@ UDFDeleteVCB(
     PVCB Vcb
     );
 
-extern ULONG UDFRegCheckParameterValue(
-    IN PUNICODE_STRING RegistryPath,
-    IN PCWSTR Name,
-    IN PUNICODE_STRING PtrVolumePath,
-    IN PCWSTR DefaultPath,
-    IN ULONG DefValue = 0);
-
 extern VOID UDFInitializeStackIrpContextFromLite(
     OUT PIRP_CONTEXT IrpContext,
     IN PIRP_CONTEXT_LITE IrpContextLite);
@@ -834,11 +864,6 @@ extern BOOLEAN UDFAcquireResourceExclusiveWithCheck(
 
 extern BOOLEAN UDFAcquireResourceSharedWithCheck(
     IN PERESOURCE Resource
-    );
-
-extern NTSTATUS UDFWCacheErrorHandler(
-    IN PVOID Context,
-    IN PWCACHE_ERROR_CONTEXT ErrorInfo
     );
 
 extern NTSTATUS NTAPI UDFFilterCallbackAcquireForCreateSection(
@@ -862,109 +887,6 @@ UDFCreateFileLock(
 #include "namesup.h"
 
 /*************************************************************************
-* Prototypes for the file Udf_info\physical.cpp
-*************************************************************************/
-#if 0
-
-extern NTSTATUS UDFTRead(PVOID           _Vcb,
-                         PVOID           Buffer,     // Target buffer
-                         ULONG           Length,
-                         ULONG           LBA,
-                         PULONG          ReadBytes,
-                         ULONG           Flags = 0);
-
-extern NTSTATUS UDFTWrite(IN PVOID _Vcb,
-                   IN PVOID Buffer,     // Target buffer
-                   IN ULONG Length,
-                   IN ULONG LBA,
-                   OUT PULONG WrittenBytes,
-                   IN ULONG Flags = 0);
-
-extern NTSTATUS UDFPrepareForWriteOperation(
-    IN PVCB Vcb,
-    IN ULONG Lba,
-    IN ULONG BCount);
-
-extern NTSTATUS UDFReadDiscTrackInfo(PDEVICE_OBJECT DeviceObject, // the target device object
-                                     PVCB           Vcb);         // Volume Control Block for ^ DevObj
-
-extern NTSTATUS UDFUseStandard(PDEVICE_OBJECT DeviceObject, // the target device object
-                               PVCB           Vcb);         // Volume control block fro this DevObj
-
-extern NTSTATUS UDFGetBlockSize(PDEVICE_OBJECT DeviceObject, // the target device object
-                                PVCB           Vcb);         // Volume control block fro this DevObj
-
-extern NTSTATUS UDFGetDiskInfo(IN PDEVICE_OBJECT DeviceObject, // the target device object
-                               IN PVCB           Vcb);         // Volume control block from this DevObj
-
-extern VOID     UDFUpdateNWA(PVCB Vcb,
-                             ULONG LBA,
-                             ULONG BCount,
-                             NTSTATUS RC);
-
-extern NTSTATUS UDFDoDismountSequence(IN PVCB Vcb,
-                                      IN BOOLEAN Eject);
-
-// read physical sectors
-NTSTATUS UDFReadSectors(IN PVCB Vcb,
-                        IN BOOLEAN Translate,// Translate Logical to Physical
-                        IN ULONG Lba,
-                        IN ULONG BCount,
-                        IN BOOLEAN Direct,
-                        OUT PCHAR Buffer,
-                        OUT PSIZE_T ReadBytes);
-
-// read data inside physical sector
-extern NTSTATUS UDFReadInSector(IN PVCB Vcb,
-                         IN BOOLEAN Translate,       // Translate Logical to Physical
-                         IN ULONG Lba,
-                         IN ULONG i,                 // offset in sector
-                         IN ULONG l,                 // transfer length
-                         IN BOOLEAN Direct,
-                         OUT PCHAR Buffer,
-                         OUT PULONG ReadBytes);
-// read unaligned data
-extern NTSTATUS UDFReadData(IN PVCB Vcb,
-                     IN BOOLEAN Translate,   // Translate Logical to Physical
-                     IN LONGLONG Offset,
-                     IN ULONG Length,
-                     IN BOOLEAN Direct,
-                     OUT PCHAR Buffer,
-                     OUT PULONG ReadBytes);
-
-// write physical sectors
-NTSTATUS UDFWriteSectors(IN PVCB Vcb,
-                         IN BOOLEAN Translate,      // Translate Logical to Physical
-                         IN ULONG Lba,
-                         IN ULONG WBCount,
-                         IN BOOLEAN Direct,         // setting this flag delays flushing of given
-                                                    // data to indefinite term
-                         IN PCHAR Buffer,
-                         OUT PULONG WrittenBytes);
-// write directly to cached sector
-NTSTATUS UDFWriteInSector(IN PVCB Vcb,
-                          IN BOOLEAN Translate,       // Translate Logical to Physical
-                          IN ULONG Lba,
-                          IN ULONG i,                 // offset in sector
-                          IN ULONG l,                 // transfer length
-                          IN BOOLEAN Direct,
-                          OUT PCHAR Buffer,
-                          OUT PULONG WrittenBytes);
-// write data at unaligned offset & length
-NTSTATUS UDFWriteData(IN PVCB Vcb,
-                      IN BOOLEAN Translate,      // Translate Logical to Physical
-                      IN LONGLONG Offset,
-                      IN ULONG Length,
-                      IN BOOLEAN Direct,         // setting this flag delays flushing of given
-                                                 // data to indefinite term
-                      IN PCHAR Buffer,
-                      OUT PULONG WrittenBytes);
-
-NTSTATUS UDFResetDeviceDriver(IN PVCB Vcb.
-                              IN PDEVICE_OBJECT TargetDeviceObject,
-                              IN BOOLEAN Unlock);
-#endif
-/*************************************************************************
 * Prototypes for the file Pnp.cpp
 *************************************************************************/
 NTSTATUS
@@ -980,11 +902,6 @@ UDFPnp (
 extern NTSTATUS NTAPI UDFRead(
     PDEVICE_OBJECT              DeviceObject,       // the logical volume device object
     PIRP                        Irp);               // I/O Request Packet
-
-extern NTSTATUS UDFPostStackOverflowRead(
-    IN PIRP_CONTEXT IrpContext,
-    IN PIRP             Irp,
-    IN PFCB             Fcb);
 
 extern VOID NTAPI UDFStackOverflowRead(
     IN PVOID Context,
@@ -1036,93 +953,12 @@ UDFSetAccessRights(
 /*************************************************************************
 * Prototypes for the file Shutdown.cpp
 *************************************************************************/
-extern NTSTATUS NTAPI UDFShutdown(
-PDEVICE_OBJECT              DeviceObject,       // the logical volume device object
-PIRP                        Irp);               // I/O Request Packet
 
 NTSTATUS
 UDFCommonShutdown(
     _Inout_ PIRP_CONTEXT IrpContext,
     _Inout_ PIRP Irp
     );
-
-/*************************************************************************
-* Prototypes for the file Udf_dbg.cpp
-*************************************************************************/
-extern BOOLEAN
-UDFDebugAcquireResourceSharedLite(
-      IN PERESOURCE Resource,
-      IN BOOLEAN    Wait,
-      ULONG         BugCheckId,
-      ULONG         Line);
-
-extern BOOLEAN
-UDFDebugAcquireSharedStarveExclusive(
-      IN PERESOURCE Resource,
-      IN BOOLEAN    Wait,
-      ULONG         BugCheckId,
-      ULONG         Line);
-
-extern BOOLEAN
-UDFDebugAcquireResourceExclusiveLite(
-      IN PERESOURCE Resource,
-      IN BOOLEAN    Wait,
-      ULONG         BugCheckId,
-      ULONG         Line);
-
-extern VOID
-UDFDebugReleaseResourceForThreadLite(
-    IN PERESOURCE  Resource,
-    IN ERESOURCE_THREAD  ResourceThreadId,
-    ULONG         BugCheckId,
-    ULONG         Line);
-
-extern VOID
-UDFDebugDeleteResource(
-    IN PERESOURCE  Resource,
-    IN ERESOURCE_THREAD  ResourceThreadId,
-    ULONG         BugCheckId,
-    ULONG         Line);
-
-extern NTSTATUS
-UDFDebugInitializeResourceLite(
-    IN PERESOURCE  Resource,
-    IN ERESOURCE_THREAD  ResourceThreadId,
-    ULONG         BugCheckId,
-    ULONG         Line);
-
-extern VOID
-UDFDebugConvertExclusiveToSharedLite(
-    IN PERESOURCE  Resource,
-    IN ERESOURCE_THREAD  ResourceThreadId,
-    ULONG         BugCheckId,
-    ULONG         Line);
-
-extern BOOLEAN
-UDFDebugAcquireSharedWaitForExclusive(
-    IN PERESOURCE Resource,
-    IN BOOLEAN    Wait,
-    ULONG         BugCheckId,
-    ULONG         Line);
-
-extern LONG
-UDFDebugInterlockedIncrement(
-    IN PLONG      addr,
-    ULONG         BugCheckId,
-    ULONG         Line);
-
-extern LONG
-UDFDebugInterlockedDecrement(
-    IN PLONG      addr,
-    ULONG         BugCheckId,
-    ULONG         Line);
-
-extern LONG
-UDFDebugInterlockedExchangeAdd(
-    IN PLONG      addr,
-    IN LONG       i,
-    ULONG         BugCheckId,
-    ULONG         Line);
 
 /*************************************************************************
 * Prototypes for the file UDFinit.cpp
@@ -1133,23 +969,6 @@ PUNICODE_STRING             RegistryPath);      // path to the registry key
 
 extern VOID NTAPI UDFInitializeFunctionPointers(
 PDRIVER_OBJECT              DriverObject);      // created by the I/O sub-system
-
-extern VOID NTAPI
-UDFFsNotification(IN PDEVICE_OBJECT DeviceObject,
-                  IN BOOLEAN FsActive);
-
-#ifndef WIN64
-//extern ptrFsRtlNotifyVolumeEvent FsRtlNotifyVolumeEvent;
-#endif //WIN64
-
-extern BOOLEAN
-UDFGetInstallVersion(PULONG iVer);
-
-extern BOOLEAN
-UDFGetInstallTime(PULONG iTime);
-
-extern BOOLEAN
-UDFGetTrialEnd(PULONG iTrial);
 
 /*************************************************************************
 * Prototypes for the file verify.cpp
@@ -1439,6 +1258,9 @@ UDFAcquireResource(
 #define UDFAcquireFcbShared(IC,F,I)                                                     \
     UDFAcquireResource((IC), &(F)->FcbNonpaged->FcbResource, (I), AcquireShared)
 
+#define UDFAcquireFcbSharedStarveExclusive(IC,F,I)                                      \
+    UDFAcquireResource((IC), &(F)->FcbNonpaged->FcbResource, (I), AcquireSharedStarveExclusive)
+
 #define UDFReleaseFcb(IC,F)                                                             \
     ExReleaseResourceLite(&(F)->FcbNonpaged->FcbResource)
 
@@ -1448,10 +1270,78 @@ UDFAcquireResource(
 #define UDFReleasePagingIo(IC,F)                                                        \
     ExReleaseResourceLite((F)->Header.PagingIoResource)
 
+inline
+ULONG
+UDFHighBit(
+    ULONG Word
+    )
+{
+    ULONG Index;
+    
+    if (_BitScanReverse(&Index, Word)) {
+        return Index;
+    }
+    return 0;
+}
+
+#define LlBytesFromSectors(V, L) (                                              \
+    Int64ShllMod32( (ULONGLONG)(L), ((V)->SectorShift) )                        \
+)
+
+#define LlSectorsFromBytes(V, L) (                                              \
+    Int64ShrlMod32( (ULONGLONG)(L), ((V)->SectorShift) )                        \
+)
+
+#define SectorSize(V) ((V)->SectorSize)
+
+inline
+ULONG
+SectorAlign(
+    PVCB Vcb,
+    ULONG Length
+) {
+
+    return (Length + (Vcb->SectorSize - 1)) & ~(Vcb->SectorSize - 1);
+}
+
 VOID
 UDFSetThreadContext(
     _Inout_ PIRP_CONTEXT IrpContext,
     _In_ PTHREAD_CONTEXT ThreadContext
+    );
+
+#define UDFRestoreThreadContext(IC)                             \
+    (IC)->ThreadContext->Udfs = 0;                              \
+    IoSetTopLevelIrp( (IC)->ThreadContext->SavedTopLevelIrp );  \
+    (IC)->ThreadContext = NULL
+
+
+inline
+BOOLEAN UdfIsExtendedFESupported(
+    _In_ PVCB Vcb
+)
+{
+    return Vcb->NSRDesc == VRS_NSR03_FOUND;
+}
+
+inline
+BOOLEAN UDFIsStreamsSupported(
+    _In_ PVCB Vcb
+)
+{
+    return Vcb->UdfRevision >= 0x0200;
+}
+
+VOID
+UDFFinishIoAtEof(
+    IN PFCB Fcb
+    );
+
+BOOLEAN
+UDFWaitForIoAtEof(
+    IN PFCB Fcb,
+    IN LONGLONG FileOffset,
+    IN ULONG Length
     );
 
 #endif  // _UDF_PROTOS_H_

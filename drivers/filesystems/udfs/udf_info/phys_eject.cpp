@@ -34,9 +34,6 @@ UDFDoDismountSequence(
     delay.QuadPart = -1000000; // 0.1 sec
     KeDelayExecutionThread(KernelMode, FALSE, &delay);
 
-    // release WCache
-    WCacheRelease__(&(Vcb->FastCache));
-
     UDFAcquireResourceExclusive(&(Vcb->IoResource), TRUE);
 
     // unlock media, drop our own Locks
@@ -67,9 +64,6 @@ UDFDoDismountSequence(
     // allow media change checks (this will lead to dismount)
     // ... and make it Read-Only...  :-\~
     Vcb->VcbState &= ~UDF_VCB_FLAGS_MEDIA_LOCKED;
-
-    UDFPrint(("  set UnsafeIoctl\n"));
-    Vcb->VcbState |= UDF_VCB_FLAGS_UNSAFE_IOCTL;
 
     return STATUS_SUCCESS;
 } // end UDFDoDismountSequence()

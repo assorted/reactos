@@ -73,13 +73,7 @@ DriverEntry(
             UdfData.NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_GLOBAL_DATA;
             UdfData.NodeIdentifier.NodeByteSize = sizeof(UdfData);
 
-            // initialize the global data resource and remember the fact that
-            //  the resource has been initialized
-            RC = UDFInitializeResourceLite(&UdfData.GlobalDataResource);
-            ASSERT(NT_SUCCESS(RC));
-            SetFlag(UdfData.Flags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
-
-//            SetFlag(UDFGlobalData.UDFFlags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
+            ExInitializeResourceLite(&UdfData.GlobalDataResource);
 
             // keep a ptr to the driver object sent to us by the I/O Mgr
             UdfData.DriverObject = DriverObject;
@@ -213,14 +207,6 @@ DriverEntry(
             if (UdfData.Flags & UDF_DATA_FLAGS_ZONES_INITIALIZED) {
                 UDFDestroyZones();
             }
-
-            // delete the resource we may have initialized
-            if (UdfData.Flags & UDF_DATA_FLAGS_RESOURCE_INITIALIZED) {
-                // un-initialize this resource
-                UDFDeleteResource(&UdfData.GlobalDataResource);
-                ClearFlag(UdfData.Flags, UDF_DATA_FLAGS_RESOURCE_INITIALIZED);
-            }
-//        } else {
         }
     } _SEH2_END;
 
@@ -252,49 +238,49 @@ UDFInitializeFunctionPointers(
 {
     PFAST_IO_DISPATCH    PtrFastIoDispatch = NULL;
 
-    // initialize the function pointers for the IRP major
-    //  functions that this FSD is prepared to  handle ...
-    //  NT Version 4.0 has 28 possible functions that a
-    //  kernel mode driver can handle.
-    //  NT Version 3.51 and before has only 22 such functions,
-    //  of which 18 are typically interesting to most FSD's.
+#pragma prefast(push)
+#pragma prefast(disable: 28155, "the dispatch routine has the correct type, prefast is just being paranoid.")
+#pragma prefast(disable: 28168, "the dispatch routine has the correct type, prefast is just being paranoid.")
+#pragma prefast(disable: 28169, "the dispatch routine has the correct type, prefast is just being paranoid.")
+#pragma prefast(disable: 28175, "we're allowed to change these.")
 
-    //  The only interesting new functions that a FSD might
-    //  want to respond to beginning with Version 4.0 are the
-    //  IRP_MJ_QUERY_QUOTA and the IRP_MJ_SET_QUOTA requests.
+    // Note that because of the way data caching is done, we set neither
+    // the Direct I/O or Buffered I/O bit in DeviceObject->Flags.  If
+    // data is not in the cache, or the request is not buffered, we may,
+    // set up for Direct I/O by hand.
 
-    //  The code below does not handle quota manipulation, neither
-    //  does the NT Version 4.0 operating system (or I/O Manager).
-    //  However, you should be on the lookout for any such new
-    //  functionality that the FSD might have to implement in
-    //  the near future.
+    // Initialize the driver object with this driver's entry points.
+    //
+    // NOTE - Each entry in the dispatch table must have an entry in
+    // the Fsp/Fsd dispatch switch statements.
 
-    DriverObject->MajorFunction[IRP_MJ_CREATE]              = UDFCreate;
-    DriverObject->MajorFunction[IRP_MJ_CLOSE]               = UDFClose;
-    DriverObject->MajorFunction[IRP_MJ_READ]                = UDFRead;
-    DriverObject->MajorFunction[IRP_MJ_WRITE]               = UDFWrite;
-    DriverObject->MajorFunction[IRP_MJ_QUERY_INFORMATION]   = UDFQueryInfo;
-    DriverObject->MajorFunction[IRP_MJ_SET_INFORMATION]     = UDFSetInfo;
-    DriverObject->MajorFunction[IRP_MJ_FLUSH_BUFFERS]       = UDFFlushBuffers;
+    DriverObject->MajorFunction[IRP_MJ_CREATE]              =
+    DriverObject->MajorFunction[IRP_MJ_CLOSE]               =
+    DriverObject->MajorFunction[IRP_MJ_READ]                =
+    DriverObject->MajorFunction[IRP_MJ_WRITE]               =
+    DriverObject->MajorFunction[IRP_MJ_QUERY_INFORMATION]   =
+    DriverObject->MajorFunction[IRP_MJ_SET_INFORMATION]     =
+    DriverObject->MajorFunction[IRP_MJ_FLUSH_BUFFERS]       =
 
     // To implement support for querying and modifying volume attributes
     // (volume information query/set operations), enable initialization
     // of the following two function pointers and then implement the supporting
     // functions.
-    DriverObject->MajorFunction[IRP_MJ_QUERY_VOLUME_INFORMATION] = UDFQueryVolInfo;
-    DriverObject->MajorFunction[IRP_MJ_SET_VOLUME_INFORMATION] = UDFSetVolInfo;
-    DriverObject->MajorFunction[IRP_MJ_DIRECTORY_CONTROL]   = UDFDirControl;
+    DriverObject->MajorFunction[IRP_MJ_QUERY_VOLUME_INFORMATION] =
+    DriverObject->MajorFunction[IRP_MJ_SET_VOLUME_INFORMATION] =
+    DriverObject->MajorFunction[IRP_MJ_DIRECTORY_CONTROL]   =
     // To implement support for file system IOCTL calls, enable initialization
     // of the following function pointer and implement appropriate support.
-    DriverObject->MajorFunction[IRP_MJ_FILE_SYSTEM_CONTROL] = UDFFSControl;
-    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL]      = UDFDeviceControl;
-    DriverObject->MajorFunction[IRP_MJ_SHUTDOWN]            = UDFShutdown;
+    DriverObject->MajorFunction[IRP_MJ_FILE_SYSTEM_CONTROL] =
+    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL]      =
+    DriverObject->MajorFunction[IRP_MJ_SHUTDOWN]            =
     // For byte-range lock support, enable initialization of the following
     // function pointer and implement appropriate support.
-    DriverObject->MajorFunction[IRP_MJ_LOCK_CONTROL]        = UDFLockControl;
-    DriverObject->MajorFunction[IRP_MJ_CLEANUP]             = UDFCleanup;
+    DriverObject->MajorFunction[IRP_MJ_LOCK_CONTROL]        =
+    DriverObject->MajorFunction[IRP_MJ_CLEANUP]             =
 
-    DriverObject->MajorFunction[IRP_MJ_PNP]                 = UDFPnp;
+    DriverObject->MajorFunction[IRP_MJ_PNP]                 = (PDRIVER_DISPATCH)UDFFsdDispatch;
+#pragma prefast(pop)
 
     // Now, it is time to initialize the fast-io stuff ...
     PtrFastIoDispatch = DriverObject->FastIoDispatch = &UdfData.UDFFastIoDispatch;

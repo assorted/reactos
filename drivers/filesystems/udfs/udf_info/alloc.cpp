@@ -56,7 +56,7 @@ UDFPhysLbaToPart(
     for(i=RefPartNum; i<Vcb->PartitionMaps; i++, pm++) {
         if (pm->PartitionNum == UDFGetPartNumByPartRef(Vcb, RefPartNum))
             // wow! return relative address
-            retval = (Addr - pm->PartitionRoot) >> Vcb->LB2B_Bits;
+            retval = (Addr - pm->PartitionRoot);
     }
 
 #ifdef UDF_DBG
@@ -99,8 +99,7 @@ UDFPartLbaToPhys(
     // to physical
     for(i=Addr->partitionReferenceNum; i<Vcb->PartitionMaps; i++) {
         if (Vcb->Partitions[i].PartitionNum == Addr->partitionReferenceNum) {
-            a = Vcb->Partitions[i].PartitionRoot +
-                    (Addr->logicalBlockNum << Vcb->LB2B_Bits);
+            a = Vcb->Partitions[i].PartitionRoot + Addr->logicalBlockNum;
             if (a > Vcb->LastPossibleLBA) {
                 AdPrint(("UDFPartLbaToPhys: root %x, lbn %x, lba %x (err1)\n",
                     Vcb->Partitions[i].PartitionRoot, Addr->logicalBlockNum, a));
@@ -110,8 +109,8 @@ UDFPartLbaToPhys(
             return a;
         }
     }
-    a = Vcb->Partitions[i-1].PartitionRoot +
-            (Addr->logicalBlockNum << Vcb->LB2B_Bits);
+    a = Vcb->Partitions[i-1].PartitionRoot + Addr->logicalBlockNum;
+
     if (a > Vcb->LastPossibleLBA) {
         AdPrint(("UDFPartLbaToPhys: i %x, root %x, lbn %x, lba %x (err2)\n",
             i, Vcb->Partitions[i-1].PartitionRoot, Addr->logicalBlockNum, a));
@@ -142,16 +141,14 @@ UDFPartLbaToPhysCompat(
     // to physical
     for(i=Addr->partitionReferenceNum; i<Vcb->PartitionMaps; i++) {
         if (Vcb->Partitions[i].PartitionNum == Addr->partitionReferenceNum) {
-            a = Vcb->Partitions[i].PartitionRoot +
-                    (Addr->logicalBlockNum << Vcb->LB2B_Bits);
+            a = Vcb->Partitions[i].PartitionRoot + Addr->logicalBlockNum;
             if (a > Vcb->LastPossibleLBA) {
                 BrutePoint();
             }
             return a;
         }
     }
-    a = Vcb->Partitions[i-1].PartitionRoot +
-            (Addr->logicalBlockNum << Vcb->LB2B_Bits);
+    a = Vcb->Partitions[i-1].PartitionRoot + Addr->logicalBlockNum;
     if (a > Vcb->LastPossibleLBA) {
         BrutePoint();
     }
@@ -324,7 +321,7 @@ UDFFindMinSuitableExtent(
     SIZE_T max_lba=0;
     SIZE_T max_len=0;
     BOOLEAN align = FALSE;
-    SIZE_T PS = Vcb->WriteBlockSize >> Vcb->BlockSizeBits;
+    SIZE_T PS = Vcb->WriteBlockSize >> Vcb->SectorShift;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
 
@@ -333,11 +330,9 @@ UDFFindMinSuitableExtent(
         align = TRUE;
     if (AllocFlags & EXTENT_FLAG_ALLOC_SEQUENTIAL)
         align = TRUE;
-    if (Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->BlockSizeBits))
-        Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->BlockSizeBits);
-    // align Length according to _Logical_ block size & convert it to BCount
-    i = (1<<Vcb->LB2B_Bits)-1;
-    Length = (Length+i) & ~i;
+    if (Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift))
+        Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift);
+
     cur = (uint32*)(Vcb->FSBM_Bitmap);
 
 retry_no_align:
@@ -558,8 +553,8 @@ UDFMarkSpaceAsXXXNoProtect_(
 
     if (!Map) return;
 
-    BS = Vcb->BlockSize;
-    BSh = Vcb->BlockSizeBits;
+    BS = Vcb->SectorSize;
+    BSh = Vcb->SectorShift;
     Vcb->BitmapModified = TRUE;
     UDFSetModified(Vcb);
     // walk through all frags in data area specified
@@ -649,8 +644,6 @@ UDFMarkSpaceAsXXXNoProtect_(
 
             if (asXXX & AS_DISCARDED) {
                 UDFUnmapRange(Vcb, lba, len);
-                WCacheDiscardBlocks__(&(Vcb->FastCache), Vcb, lba, len);
-                UDFSetZeroBits(Vcb->ZSBM_Bitmap, lba, len);
             }
             if (Vcb->Vat) {
                 // mark logical blocks in VAT as free
@@ -733,8 +726,8 @@ UDFAllocFreeExtent_(
     PEXTENT_MAP Map = NULL;
     uint32 len, LBS, BSh, blen;
 
-    LBS = Vcb->LBlockSize;
-    BSh = Vcb->BlockSizeBits;
+    LBS = Vcb->SectorSize;
+    BSh = Vcb->SectorShift;
     uint32 MaxExtentLength = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS);
     blen = (uint32)(((Length+LBS-1) & ~((int64)LBS-1)) >> BSh);
     ExtInfo->Mapping = NULL;
@@ -778,9 +771,6 @@ no_free_space_err:
         // append the frag found to mapping
         ASSERT(!(Ext.extLength >> 30));
         ASSERT(Ext.extLocation);
-
-        // mark newly allocated blocks as zero-filled
-        UDFSetZeroBits(Vcb->ZSBM_Bitmap, Ext.extLocation, (Ext.extLength & UDF_EXTENT_LENGTH_MASK) >> BSh);
 
         if (AllocFlags & EXTENT_FLAG_VERIFY) {
             if (!UDFCheckArea(IrpContext, Vcb, Ext.extLocation, Ext.extLength >> BSh)) {
@@ -881,7 +871,7 @@ UDFGetFreeSpace(
         s = Vcb->LastPossibleLBA - max(Vcb->NWA, Vcb->LastLBA);
         //if (s & ((int64)1 << 64)) s=0;
     }
-    return s >> Vcb->LB2B_Bits;
+    return s;
 } // end UDFGetFreeSpace()
 
 /*
@@ -903,43 +893,5 @@ UDFGetTotalSpace(
         if (s & ((int64)1 << 63)) s=0;  /* FIXME ReactOS this shift value was 64, which is undefiened behavior. */
         s= Vcb->LastPossibleLBA - Vcb->Partitions[0].PartitionRoot;
     }
-    return s >> Vcb->LB2B_Bits;
+    return s;
 } // end UDFGetTotalSpace()
-
-/*
-    Callback for WCache
-    returns Allocated and Zero-filled flags for given block
-    any data in 'unallocated' blocks may be changed during flush process
- */
-uint32
-UDFIsBlockAllocated(
-    IN void* _Vcb,
-    IN uint32 Lba
-    )
-{
-    ULONG ret_val = 0;
-    uint32* bm;
-//    return TRUE;
-    if (!(((PVCB)_Vcb)->VcbState & UDF_VCB_ASSUME_ALL_USED)) {
-        // check used
-        if ((bm = (uint32*)(((PVCB)_Vcb)->FSBM_Bitmap)))
-            ret_val = (UDFGetUsedBit(bm, Lba) ? WCACHE_BLOCK_USED : 0);
-        // check zero-filled
-        if ((bm = (uint32*)(((PVCB)_Vcb)->ZSBM_Bitmap)))
-            ret_val |= (UDFGetZeroBit(bm, Lba) ? WCACHE_BLOCK_ZERO : 0);
-    } else {
-        ret_val = WCACHE_BLOCK_USED;
-    }
-    // check bad block
-
-    // WCache works with LOGICAL addresses, not PHYSICAL, BB check must be performed UNDER cache
-/*
-    if (bm = (uint32*)(((PVCB)_Vcb)->BSBM_Bitmap)) {
-        ret_val |= (UDFGetBadBit(bm, Lba) ? WCACHE_BLOCK_BAD : 0);
-        if (ret_val & WCACHE_BLOCK_BAD) {
-            UDFPrint(("Marked BB @ %#x\n", Lba));
-        }
-    }
-*/
-    return ret_val;
-} // end UDFIsBlockAllocated()

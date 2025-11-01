@@ -102,6 +102,7 @@ using PCCB = CCB*;
 // the CCB has had an IRP_MJ_CLEANUP issued on it. we must
 //  no longer allow the file object / CCB to be used in I/O requests.
 #define UDF_CCB_CLEANED                         (0x00000008)
+#define CCB_FLAG_ALLOW_EXTENDED_DASD_IO         (0x00000010)
 // if an application process set the file date time, we must
 //  honor that request and *not* overwrite the values at cleanup
 #define UDF_CCB_ACCESS_TIME_SET                 (0x00000040)
@@ -138,6 +139,8 @@ struct FCB_NONPAGED {
     ERESOURCE FcbResource;
 
     ERESOURCE FcbPagingIoResource;
+
+    ERESOURCE CcbListResource;
 
     // This is the FastMutex for this Fcb.
 
@@ -205,6 +208,7 @@ struct FCB {
         FSRTL_ADVANCED_FCB_HEADER Header;
     };
 
+    LIST_ENTRY EofListHead;
     ULONG NtReqFCBFlags;
 
     // UDF related data
@@ -244,8 +248,7 @@ struct FCB {
 
     // for the UDF fsd, there exists a 1-1 correspondence between a
     //  full object pathname and a FCB
-    PtrUDFObjectName                    FCBName;
-    ERESOURCE                           CcbListResource;
+    PtrUDFObjectName FCBName;
 
     // Pointer to the Fcb non-paged structures.
 
@@ -297,17 +300,12 @@ using PFCB = FCB*;
 #define     UDF_FCB_VALID                               (0x00000002)
 #define     UDF_FCB_DIRECTORY                           (0x00000008)
 #define     UDF_FCB_ROOT_DIRECTORY                      (0x00000010)
-#define     UDF_FCB_MAPPED                              (0x00000040)
-#define     UDF_FCB_FAST_IO_READ_IN_PROGESS             (0x00000080)
-#define     UDF_FCB_FAST_IO_WRITE_IN_PROGESS            (0x00000100)
 #define     UDF_FCB_DELETE_ON_CLOSE                     (0x00000200)
 #define     UDF_FCB_MODIFIED                            (0x00000400)
 #define     UDF_FCB_ACCESSED                            (0x00000800)
 #define     UDF_FCB_READ_ONLY                           (0x00001000)
 #define     UDF_FCB_DELAY_CLOSE                         (0x00002000)
 #define     UDF_FCB_DELETED                             (0x00004000)
-
-#define     UDF_FCB_INITIALIZED_CCB_LIST_RESOURCE       (0x00008000)
 #define     UDF_FCB_POSTED_RENAME                       (0x00010000)
 
 #define     FCB_STATE_INITIALIZED                       (0x00020000)
@@ -323,8 +321,6 @@ using PFCB = FCB*;
     the mounted logical volume.
 
 **************************************************************************/
-
-#define _BROWSE_UDF_
 
 enum UDFFSD_MEDIA_TYPE {
     MediaUnknown = 0,
@@ -360,20 +356,29 @@ struct VCB {
     ULONG                               VcbResidualReference;
     ULONG                               VcbResidualUserReference;
     ERESOURCE                           FlushResource;
-    // each VCB is accessible off a global linked list
-    LIST_ENTRY                          NextVCB;
+
+    // Link into queue of Vcb's in the CdData structure.  We will create a union with
+    // a LONGLONG to force the Vcb to be quad-aligned.
+
+    union {
+
+        LIST_ENTRY VcbLinks;
+        LONGLONG Alignment;
+    };
+
     // each VCB points to a VPB structure created by the NT I/O Manager
     PVPB                                Vpb;
     // we will maintain a global list of IRP's that are pending
     //  because of a directory notify request.
     LIST_ENTRY                          NextNotifyIRP;
     // the above list is protected only by the mutex declared below
-    PNOTIFY_SYNC                        NotifyIRPMutex;
+    PNOTIFY_SYNC                        NotifySync;
+
     // We also retain a pointer to the physical device object on which we
     // have mounted ourselves. The I/O Manager passes us a pointer to this
     // device object when requesting a mount operation.
     PDEVICE_OBJECT                      TargetDeviceObject;
-    PCWSTR                               DefaultRegName;
+
     // the volume structure contains a pointer to the root directory FCB
     FCB* RootIndexFcb;
     FCB* VolumeDasdFcb;
@@ -405,8 +410,6 @@ struct VCB {
     //
     ULONG           MediaLockCount;
 
-    BOOLEAN         IsVolumeJustMounted;
-
     // FS size cache
     LONGLONG        TotalAllocUnits;
     LONGLONG        FreeAllocUnits;
@@ -434,12 +437,13 @@ struct VCB {
     // Physical media parameters
     //---------------
 
-    ULONG           BlockSize;
-    ULONG           BlockSizeBits;
+    ULONG           SectorSize;
+    ULONG           SectorShift;
     ULONG           WriteBlockSize;
-    ULONG           LBlockSize;
-    ULONG           LBlockSizeBits;
-    ULONG           LB2B_Bits;
+
+    ULONG SessionStartLba;
+    ULONG SessionEndLba;
+
     // Number of last session
     ULONG           LastSession;
     ULONG           FirstTrackNum;
@@ -457,41 +461,18 @@ struct VCB {
     struct _UDFTrackMap* TrackMap;
     ULONG           LastModifiedTrack;
     ULONG           LastReadTrack;
-    ULONG           CdrwBufferSize;
-    ULONG           CdrwBufferSizeCounter;
     uint32          SavedFeatures;
-    // OPC info
-//    PCHAR           OPC_buffer;
-    UCHAR           OPCNum;
-    BOOLEAN         OPCDone;
+
     UCHAR           MediaType;
     UCHAR           MediaClassEx;
 
-    UCHAR           PhErasable;
-    UCHAR           PhDiskType;
-    UCHAR           PhMediaCapFlags;
-
     UCHAR           MRWStatus;
     BOOLEAN         BlankCD;
-    UCHAR           Reserved;
 
     ULONG           PhSerialNumber;
 
     BOOLEAN         CDR_Mode;
     BOOLEAN         DVD_Mode;
-
-#define SYNC_CACHE_RECOVERY_NONE     0
-#define SYNC_CACHE_RECOVERY_ATTEMPT  1
-#define SYNC_CACHE_RECOVERY_RETRY    2
-
-    UCHAR           SyncCacheState;
-
-    // W-cache
-    W_CACHE         FastCache;
-    ULONG           WCacheMaxFrames;
-    ULONG           WCacheMaxBlocks;
-    ULONG           WCacheBlocksPerFrameSh;
-    ULONG           WCacheFramesToKeepFree;
 
     PCHAR           ZBuffer;
     PCHAR           fZBuffer;
@@ -500,22 +481,10 @@ struct VCB {
     ULONG           IoErrorCounter;
     // Media change count (equal to the same field in CDFS VCB)
     ULONG           MediaChangeCount;
-
-#define INCREMENTAL_SEEK_NONE        0
-#define INCREMENTAL_SEEK_WORKAROUND  1
-#define INCREMENTAL_SEEK_DONE        2
-
-    UCHAR           IncrementalSeekState;
-
-    BOOLEAN         VerifyOnWrite;
-    BOOLEAN         DoNotCompareBeforeWrite;
-    BOOLEAN         CacheChainedIo;
-
     ULONG           MountPhErrorCount;
 
     // a set of flags that might mean something useful
     uint32          VcbState;
-    BOOLEAN         FP_disc;
 
     //---------------
     // UDF related data
@@ -524,9 +493,6 @@ struct VCB {
     // Anchors LBA
 #define MAX_ANCHOR_LOCATIONS 11
     ULONG           Anchor[MAX_ANCHOR_LOCATIONS];
-    ULONG           BadSeqLoc[MAX_ANCHOR_LOCATIONS * 2];
-    NTSTATUS        BadSeqStatus[MAX_ANCHOR_LOCATIONS * 2];
-    ULONG           BadSeqLocIndex;
     // Volume label
     UNICODE_STRING  VolIdent;
     // Volume creation time
@@ -580,9 +546,6 @@ struct VCB {
 
     PCHAR           FSBM_OldBitmap;  // 0 - free, 1 - used
     ULONG           BitmapModified;
-
-    PCHAR           ZSBM_Bitmap;     // 0 - data, 1 - zero-filleld
-
     PCHAR           BSBM_Bitmap;     // 0 - normal, 1 - bad-block
 
     // pointers to Volume Descriptor Sequences
@@ -611,13 +574,10 @@ struct VCB {
     ULONG           DlocCount;
     // FS compatibility
     USHORT          DefaultAllocMode; // Default alloc mode (from registry)
-    BOOLEAN         UseExtendedFE;
     BOOLEAN         LowFreeSpace;
     UDFFSD_MEDIA_TYPE MediaTypeEx;
     ULONG           DefaultAttr;      // Default file attributes (NT-style)
 
-
-    UCHAR           PartitialDamagedVolumeAction;
     BOOLEAN         NoFreeRelocationSpaceVolumeAction;
     BOOLEAN         ForgetVolume;
     UCHAR           Reserved5[3];
@@ -634,10 +594,7 @@ struct VCB {
     PUDF_ALLOCATION_CACHE_ITEM    PreallocCache;
     ULONG                         PreallocCacheMaxSize;
 
-    UDF_VERIFY_CTX  VerifyCtx;
-
     uint32          CompatFlags;
-    UCHAR           ShowBlankCd;
 
     // Fcb table.  Synchronized with the Vcb fast mutex.
 
@@ -902,18 +859,10 @@ typedef struct _UDFData {
 
     LARGE_INTEGER               UDFLargeZero;
 
-    // mount event (for udf gui app)
-    PKEVENT                     MountEvent;
-
     UNICODE_STRING              SavedRegPath;
     UNICODE_STRING              UnicodeStrRoot;
     UNICODE_STRING              UnicodeStrSDir;
     UNICODE_STRING              AclName;
-
-    ULONG                       WCacheMaxFrames;
-    ULONG                       WCacheMaxBlocks;
-    ULONG                       WCacheBlocksPerFrameSh;
-    ULONG                       WCacheFramesToKeepFree;
 
 } UDFData, *PUDFData;
 
@@ -935,12 +884,11 @@ typedef struct _UDFData {
 #define         VCB_STATE_MOUNTED_DIRTY             (0x00000004)
 #define         VCB_STATE_SHUTDOWN                  (0x00000008)
 #define         VCB_STATE_VOLUME_READ_ONLY          (0x00000010)
-#define         UDF_VCB_FLAGS_VCB_INITIALIZED       (0x00000020)
+#define         VCB_STATE_PACKET_RUNOUT_FIXUP       (0x00000020)
 #define         VCB_STATE_VPB_NOT_ON_DEVICE         (0x00000040)
 #define         VCB_STATE_MEDIA_WRITE_PROTECT       (0x00000080)
 #define         VCB_STATE_REMOVABLE_MEDIA           (0x00000100)
 #define         UDF_VCB_FLAGS_MEDIA_LOCKED          (0x00000200)
-#define         UDF_VCB_SKIP_EJECT_CHECK            (0x00000400)
 #define         UDF_VCB_LAST_WRITE                  (0x00001000)
 #define         UDF_VCB_FLAGS_TRACKMAP              (0x00002000)
 #define         UDF_VCB_ASSUME_ALL_USED             (0x00004000)
@@ -952,8 +900,6 @@ typedef struct _UDFData {
 #define         UDF_VCB_FLAGS_FLUSH_BREAK_REQ       (0x01000000)
 #define         UDF_VCB_FLAGS_EJECT_REQ             (0x02000000)
 #define         UDF_VCB_FLAGS_FORCE_SYNC_CACHE      (0x04000000)
-
-#define         UDF_VCB_FLAGS_UNSAFE_IOCTL          (0x10000000)
 #define         UDF_VCB_FLAGS_DEAD                  (0x20000000)  // device unexpectedly disappeared
 
 
@@ -967,25 +913,18 @@ typedef struct _UDFData {
 #define         UDF_VCB_IC_WRITE_IN_RO_DIR             (0x00000040)
 #define         UDF_VCB_IC_UPDATE_UCHG_DIR_ACCESS_TIME (0x00000080)
 #define         UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS      (0x00000100)
-#define         UDF_VCB_IC_HW_RO                       (0x00000200)
-#define         UDF_VCB_IC_FORCE_HW_RO                 (0x00001000)
 #define         UDF_VCB_IC_IGNORE_SEQUENTIAL_IO        (0x00002000)
 #define         UDF_VCB_IC_NO_SYNCCACHE_AFTER_WRITE    (0x00004000)
 #define         UDF_VCB_IC_BAD_RW_SEEK                 (0x00008000)
-#define         UDF_VCB_IC_FP_ADDR_PROBLEM             (0x00010000)
-#define         UDF_VCB_IC_MRW_ADDR_PROBLEM            (0x00020000)
 #define         UDF_VCB_IC_BAD_DVD_LAST_LBA            (0x00040000)
 #define         UDF_VCB_IC_SYNCCACHE_BEFORE_READ       (0x00080000)
 #define         UDF_VCB_IC_INSTANT_COMPAT_ALLOC_DESCS  (0x00100000)
-#define         UDF_VCB_IC_SOFT_RO                     (0x00200000)
 
 #define         UDF_VCB_IC_DIRTY_RO                    (0x04000000)
 #define         UDF_VCB_IC_W2K_COMPAT_VLABEL           (0x08000000)
-#define         UDF_VCB_IC_SHOW_BLANK_CD               (0x40000000)
 #define         UDF_VCB_IC_ADAPTEC_NONALLOC_COMPAT     (0x80000000)
 
 // valid flag values for the global data structure
-#define     UDF_DATA_FLAGS_RESOURCE_INITIALIZED     (0x00000001)
 #define     UDF_DATA_FLAGS_ZONES_INITIALIZED        (0x00000002)
 #define     UDF_DATA_FLAGS_SHUTDOWN                 (0x00000004)
 
@@ -994,7 +933,6 @@ typedef struct _UDFData {
 
 // Some defines
 #define UDFIsDvdMedia(Vcb)       (Vcb->DVD_Mode)
-#define UDFIsWriteParamsReq(Vcb) (Vcb->WriteParamsReq && !Vcb->DVD_Mode)
 
 typedef struct _UDFFileIDCacheItem {
     FILE_ID Id;

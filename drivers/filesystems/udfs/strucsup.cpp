@@ -130,6 +130,8 @@ Return Value:
     ExInitializeFastMutex(&FcbNonpaged->FcbMutex);
     ExInitializeFastMutex(&FcbNonpaged->AdvancedFcbHeaderMutex);
 
+    ExInitializeResourceLite(&FcbNonpaged->CcbListResource);
+
     return FcbNonpaged;
 }
 
@@ -161,6 +163,8 @@ Return Value:
     UNREFERENCED_PARAMETER(IrpContext);
     
     ExDeleteResourceLite(&FcbNonpaged->FcbResource);
+    ExDeleteResourceLite(&FcbNonpaged->FcbPagingIoResource);
+    ExDeleteResourceLite(&FcbNonpaged->CcbListResource);
 
     UDFDeallocateFcbNonpaged(FcbNonpaged);
 
@@ -543,34 +547,14 @@ UDFInitializeFCB(
 {
     ASSERT_LOCKED_VCB(Vcb);
 
-    AdPrint(("UDFInitializeFCB\n"));
-    NTSTATUS status;
-
     // Fill NT required Fcb part
 
     ASSERT(!Fcb->Header.Resource);
     Fcb->Header.Resource = &Fcb->FcbNonpaged->FcbResource;
     Fcb->Header.PagingIoResource = &Fcb->FcbNonpaged->FcbPagingIoResource;
+    InitializeListHead(&Fcb->EofListHead);
     FsRtlSetupAdvancedHeader(&Fcb->Header, &Fcb->FcbNonpaged->AdvancedFcbHeaderMutex);
     Fcb->FileLock = NULL;
-
-    if (!NT_SUCCESS(status = UDFInitializeResourceLite(&Fcb->CcbListResource))) {
-
-        AdPrint(("    Can't init resource (3)\n"));
-        BrutePoint();
-
-        UDFDeleteResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
-        UDFDeleteResource(&Fcb->FcbNonpaged->FcbResource);
-        Fcb->Header.Resource = NULL;
-        Fcb->Header.PagingIoResource = NULL;
-
-        if (Fcb->FileLock != NULL) {
-
-            FsRtlFreeFileLock(Fcb->FileLock);
-        }
-
-        return status;
-    }
 
     Fcb->FcbState = Flags;
 
@@ -582,8 +566,6 @@ UDFInitializeFCB(
 
     Fcb->FcbReference = 0;
     Fcb->FcbCleanup = 0;
-
-    SetFlag(Fcb->FcbState, UDF_FCB_INITIALIZED_CCB_LIST_RESOURCE);
 
     Fcb->FCBName = PtrObjectName;
 
@@ -724,198 +706,135 @@ Return Value:
 * Return Value: status
 *
 *************************************************************************/
-NTSTATUS
+VOID
 UDFInitializeVCB(
     _In_ PIRP_CONTEXT IrpContext,
     _Inout_ PVCB Vcb,
     _In_ PDEVICE_OBJECT TargetDeviceObject,
-    _In_ PVPB Vpb
+    _In_ PVPB Vpb,
+    _In_ PDISK_GEOMETRY DiskGeometry,
+    _In_ ULONG MediaChangeCount
     )
 {
-    NTSTATUS RC = STATUS_SUCCESS;
+    PAGED_CODE();
 
-    BOOLEAN VCBResourceInit     = FALSE;
-    BOOLEAN BitMapResource1Init = FALSE;
-    BOOLEAN FileIdResourceInit  = FALSE;
-    BOOLEAN DlocResourceInit    = FALSE;
-    BOOLEAN DlocResource2Init   = FALSE;
-    BOOLEAN FlushResourceInit   = FALSE;
-    BOOLEAN PreallocResourceInit= FALSE;
-    BOOLEAN IoResourceInit      = FALSE;
+    UNREFERENCED_PARAMETER(IrpContext);
 
-    _SEH2_TRY {
-    // Zero it out (typically this has already been done by the I/O
-    // Manager but it does not hurt to do it again)!
+    // We start by first zeroing out all of the VCB, this will guarantee
+    // that any stale data is wiped clean.
+
     RtlZeroMemory(Vcb, sizeof(VCB));
 
-    // Initialize the signature fields
+    // Set the proper node type code and node byte size.
+
     Vcb->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_VCB;
     Vcb->NodeIdentifier.NodeByteSize = sizeof(VCB);
 
-    // Initialize the ERESOURCE object.
-    RC = UDFInitializeResourceLite(&(Vcb->VcbResource));
-    if (!NT_SUCCESS(RC))
-        try_return(RC);
-    VCBResourceInit = TRUE;
+    // Initialize the notify sync mutex. FsRtlNotifyInitializeSync can raise.
 
-    RC = UDFInitializeResourceLite(&(Vcb->BitMapResource1));
-    if (!NT_SUCCESS(RC))
-        try_return(RC);
-    BitMapResource1Init = TRUE;
+    FsRtlNotifyInitializeSync(&Vcb->NotifySync);
 
-    RC = UDFInitializeResourceLite(&(Vcb->FileIdResource));
-    if (!NT_SUCCESS(RC))
-        try_return(RC);
-    FileIdResourceInit = TRUE;
+    _SEH2_TRY {
 
-    RC = UDFInitializeResourceLite(&(Vcb->DlocResource));
-    if (!NT_SUCCESS(RC))
-        try_return(RC);
-    DlocResourceInit = TRUE;
+        ExInitializeResourceLite(&Vcb->VcbResource);
+        ExInitializeResourceLite(&Vcb->BitMapResource1);
+        ExInitializeResourceLite(&Vcb->FileIdResource);
+        ExInitializeResourceLite(&Vcb->DlocResource);
+        ExInitializeResourceLite(&Vcb->DlocResource2);
+        ExInitializeResourceLite(&Vcb->FlushResource);
+        ExInitializeResourceLite(&Vcb->PreallocResource);
+        ExInitializeResourceLite(&Vcb->IoResource);
 
-    RC = UDFInitializeResourceLite(&(Vcb->DlocResource2));
-    if (!NT_SUCCESS(RC))
-        try_return(RC);
-    DlocResource2Init = TRUE;
+        ExInitializeFastMutex(&Vcb->VcbMutex);
 
-    RC = UDFInitializeResourceLite(&(Vcb->FlushResource));
-    if (!NT_SUCCESS(RC))
-        try_return(RC);
-    FlushResourceInit = TRUE;
+        // Initialize the generic Fcb Table.
 
-    RC = UDFInitializeResourceLite(&(Vcb->PreallocResource));
-    if (!NT_SUCCESS(RC))
-        try_return(RC);
-    PreallocResourceInit = TRUE;
+        RtlInitializeGenericTable(&Vcb->FcbTable,
+                                  (PRTL_GENERIC_COMPARE_ROUTINE)UDFFcbTableCompare,
+                                  (PRTL_GENERIC_ALLOCATE_ROUTINE)UDFAllocateFcbTable,
+                                  (PRTL_GENERIC_FREE_ROUTINE)UDFDeallocateFcbTable,
+                                  NULL);
 
-    RC = UDFInitializeResourceLite(&(Vcb->IoResource));
-    if (!NT_SUCCESS(RC))
-        try_return(RC);
-    IoResourceInit = TRUE;
+        // Pick up a VPB right now so we know we can pull this filesystem stack
+        // off of the storage stack on demand.  This can raise - if it does,  
+        // uninitialize the notify structures before returning.
 
-//    RC = UDFInitializeResourceLite(&(Vcb->DelayedCloseResource));
-//    ASSERT(NT_SUCCESS(RC));
+        Vcb->SwapVpb = (PVPB)FsRtlAllocatePoolWithTag(NonPagedPoolNx, sizeof(VPB), TAG_VPB);
 
-    ExInitializeFastMutex(&Vcb->VcbMutex);
+        RtlZeroMemory(Vcb->SwapVpb, sizeof(VPB));
 
-    // Initialize the generic Fcb Table.
+        // We know the target device object.
+        // Note that this is not neccessarily a pointer to the actual
+        // physical/virtual device on which the logical volume should
+        // be mounted. This is actually a pointer to either the actual
+        // (real) device or to any device object that may have been
+        // attached to it. Any IRPs that we send down should be sent to this
+        // device object. However, the "real" physical/virtual device object
+        // on which we perform our mount operation can be determined from the
+        // RealDevice field in the VPB sent to us.
+        Vcb->TargetDeviceObject = TargetDeviceObject;
 
-    RtlInitializeGenericTable(&Vcb->FcbTable,
-                              (PRTL_GENERIC_COMPARE_ROUTINE)UDFFcbTableCompare,
-                              (PRTL_GENERIC_ALLOCATE_ROUTINE)UDFAllocateFcbTable,
-                              (PRTL_GENERIC_FREE_ROUTINE)UDFDeallocateFcbTable,
-                              NULL);
+        // We also have the VPB pointer. This was obtained from the
+        // Parameters.MountVolume.Vpb field in the current I/O stack location
+        // for the mount IRP.
+        Vcb->Vpb = Vpb;
 
-    // Pick up a VPB right now so we know we can pull this filesystem stack off
-    // of the storage stack on demand.
-    Vcb->SwapVpb = (PVPB)FsRtlAllocatePoolWithTag(NonPagedPoolNx, sizeof(VPB), TAG_VPB);
+        //  Set the removable media flag based on the real device's
+        //  characteristics
+        if (Vpb->RealDevice->Characteristics & FILE_REMOVABLE_MEDIA) {
 
-    if (!Vcb->SwapVpb) {
-        try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-    }
+            Vcb->VcbState |= VCB_STATE_REMOVABLE_MEDIA;
+        }
 
-    RtlZeroMemory(Vcb->SwapVpb, sizeof(VPB));
+        // Initialize the list anchor (head) for some lists in this VCB.
+        InitializeListHead(&Vcb->NextNotifyIRP);
 
-    // We know the target device object.
-    // Note that this is not neccessarily a pointer to the actual
-    // physical/virtual device on which the logical volume should
-    // be mounted. This is actually a pointer to either the actual
-    // (real) device or to any device object that may have been
-    // attached to it. Any IRPs that we send down should be sent to this
-    // device object. However, the "real" physical/virtual device object
-    // on which we perform our mount operation can be determined from the
-    // RealDevice field in the VPB sent to us.
-    Vcb->TargetDeviceObject = TargetDeviceObject;
+        // Intilize FCB for this VCB
 
-    // We also have the VPB pointer. This was obtained from the
-    // Parameters.MountVolume.Vpb field in the current I/O stack location
-    // for the mount IRP.
-    Vcb->Vpb = Vpb;
+        // Refererence the Vcb for two reasons.  The first is a reference
+        // that prevents the Vcb from going away on the last close unless
+        // dismount has already occurred.  The second is to make sure
+        // we don't go into the dismount path on any error during mount
+        // until we get to the Mount cleanup.
 
-    //  Set the removable media flag based on the real device's
-    //  characteristics
-    if (Vpb->RealDevice->Characteristics & FILE_REMOVABLE_MEDIA) {
+        Vcb->VcbResidualReference = UDFS_BASE_RESIDUAL_REFERENCE;
+        Vcb->VcbResidualUserReference = UDFS_BASE_RESIDUAL_USER_REFERENCE;
 
-        Vcb->VcbState |= VCB_STATE_REMOVABLE_MEDIA;
-    }
+        Vcb->VcbReference = 1 + Vcb->VcbResidualReference;
 
-    // Initialize the list anchor (head) for some lists in this VCB.
-    InitializeListHead(&Vcb->NextNotifyIRP);
+        // Create a stream file object for this volume.
+        //Vcb->PtrStreamFileObject = IoCreateStreamFileObject(NULL,
+        //                                            Vcb->Vpb->RealDevice);
+        //ASSERT(Vcb->PtrStreamFileObject);
 
-    // Initialize the notify IRP list mutex
-    FsRtlNotifyInitializeSync(&(Vcb->NotifyIRPMutex));
+        // Initialize some important fields in the newly created file object.
+        //Vcb->PtrStreamFileObject->FsContext = (PVOID)Vcb;
+        //Vcb->PtrStreamFileObject->FsContext2 = NULL;
+        //Vcb->PtrStreamFileObject->SectionObjectPointer = &(Vcb->SectionObject);
 
-    // Intilize FCB for this VCB
+        //Vcb->PtrStreamFileObject->Vpb = PtrVPB;
 
-    // Refererence the Vcb for two reasons.  The first is a reference
-    // that prevents the Vcb from going away on the last close unless
-    // dismount has already occurred.  The second is to make sure
-    // we don't go into the dismount path on any error during mount
-    // until we get to the Mount cleanup.
+        // Insert this Vcb record on the CdData.VcbQueue.
 
-    Vcb->VcbResidualReference = UDFS_BASE_RESIDUAL_REFERENCE;
-    Vcb->VcbResidualUserReference = UDFS_BASE_RESIDUAL_USER_REFERENCE;
+        ASSERT_EXCLUSIVE_CDDATA;
+        InsertTailList(&(UdfData.VcbQueue), &(Vcb->VcbLinks));
 
-    Vcb->VcbReference = 1 + Vcb->VcbResidualReference;
+        // Initialize caching for the stream file object.
+        //CcInitializeCacheMap(Vcb->PtrStreamFileObject, (PCC_FILE_SIZES)(&(Vcb->AllocationSize)),
+        //                            TRUE,       // We will use pinned access.
+        //                            &(UDFGlobalData.CacheMgrCallBacks), Vcb);
 
-    Vcb->WCacheMaxBlocks        = UdfData.WCacheMaxBlocks;
-    Vcb->WCacheMaxFrames        = UdfData.WCacheMaxFrames;
-    Vcb->WCacheBlocksPerFrameSh = UdfData.WCacheBlocksPerFrameSh;
-    Vcb->WCacheFramesToKeepFree = UdfData.WCacheFramesToKeepFree;
-
-    // Create a stream file object for this volume.
-    //Vcb->PtrStreamFileObject = IoCreateStreamFileObject(NULL,
-    //                                            Vcb->Vpb->RealDevice);
-    //ASSERT(Vcb->PtrStreamFileObject);
-
-    // Initialize some important fields in the newly created file object.
-    //Vcb->PtrStreamFileObject->FsContext = (PVOID)Vcb;
-    //Vcb->PtrStreamFileObject->FsContext2 = NULL;
-    //Vcb->PtrStreamFileObject->SectionObjectPointer = &(Vcb->SectionObject);
-
-    //Vcb->PtrStreamFileObject->Vpb = PtrVPB;
-
-    // Insert this Vcb record on the CdData.VcbQueue.
-
-    ASSERT_EXCLUSIVE_CDDATA;
-    InsertTailList(&(UdfData.VcbQueue), &(Vcb->NextVCB));
-
-    // Initialize caching for the stream file object.
-    //CcInitializeCacheMap(Vcb->PtrStreamFileObject, (PCC_FILE_SIZES)(&(Vcb->AllocationSize)),
-    //                            TRUE,       // We will use pinned access.
-    //                            &(UDFGlobalData.CacheMgrCallBacks), Vcb);
-
-    // Mark the fact that this VCB structure is initialized.
-    Vcb->VcbState |= UDF_VCB_FLAGS_VCB_INITIALIZED;
-
-    RC = STATUS_SUCCESS;
-
-try_exit:   NOTHING;
+        Vcb->SectorSize = DiskGeometry->BytesPerSector;
+        Vcb->SectorShift = UDFHighBit(DiskGeometry->BytesPerSector);
+        Vcb->MediaChangeCount = MediaChangeCount;
 
     } _SEH2_FINALLY {
 
-        if (!NT_SUCCESS(RC)) {
+        if (_SEH2_AbnormalTermination()) {
 
-            if (VCBResourceInit)
-                UDFDeleteResource(&(Vcb->VcbResource));
-            if (BitMapResource1Init)
-                UDFDeleteResource(&(Vcb->BitMapResource1));
-            if (FileIdResourceInit)
-                UDFDeleteResource(&(Vcb->FileIdResource));
-            if (DlocResourceInit)
-                UDFDeleteResource(&(Vcb->DlocResource));
-            if (DlocResource2Init)
-                UDFDeleteResource(&(Vcb->DlocResource2));
-            if (FlushResourceInit)
-                UDFDeleteResource(&(Vcb->FlushResource));
-            if (PreallocResourceInit)
-                UDFDeleteResource(&(Vcb->PreallocResource));
-            if (IoResourceInit)
-                UDFDeleteResource(&(Vcb->IoResource));
+            FsRtlNotifyUninitializeSync(&Vcb->NotifySync);
         }
     } _SEH2_END;
-
-    return RC;
 } // end UDFInitializeVCB()
 
 VOID
@@ -970,9 +889,6 @@ UDFCleanUpFCB(
 
         // } end transaction
 
-        if (Fcb->FcbState & UDF_FCB_INITIALIZED_CCB_LIST_RESOURCE)
-            UDFDeleteResource(&(Fcb->CcbListResource));
-
         // Free memory
         UDFDeleteFcb(0, Fcb);
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
@@ -1001,14 +917,14 @@ UDFCompleteMount(
 
     _SEH2_TRY {
 
-        Vcb->ZBuffer = (PCHAR)DbgAllocatePoolWithTag(NonPagedPool, max(Vcb->LBlockSize, PAGE_SIZE), 'zNWD');
+        Vcb->ZBuffer = (PCHAR)DbgAllocatePoolWithTag(NonPagedPool, max(Vcb->SectorSize, PAGE_SIZE), 'zNWD');
 
         if (!Vcb->ZBuffer) {
 
             try_return(Status = STATUS_INSUFFICIENT_RESOURCES);
         }
 
-        RtlZeroMemory(Vcb->ZBuffer, Vcb->LBlockSize);
+        RtlZeroMemory(Vcb->ZBuffer, Vcb->SectorSize);
 
         // Create the root index and reference it in the Vcb.
 
@@ -1086,7 +1002,7 @@ UDFCompleteMount(
         }
 
         // this is a part of UDF_RESIDUAL_REFERENCE
-        UDFInterlockedIncrement((PLONG)&(Vcb->VcbReference));
+        InterlockedIncrement((PLONG)&Vcb->VcbReference);
         Vcb->RootIndexFcb->FcbCleanup = 1;
         Vcb->RootIndexFcb->FcbReference = 1;
 
@@ -1129,7 +1045,7 @@ UDFCompleteMount(
             UDFCleanUpFile__(Vcb, Vcb->NonAllocFileInfo);
             Vcb->NonAllocFileInfo = NULL;
             // this was a part of UDF_RESIDUAL_REFERENCE
-            UDFInterlockedDecrement((PLONG)&(Vcb->VcbReference));
+            InterlockedDecrement((PLONG)&Vcb->VcbReference);
     unwind_1:
 
             // UDFCloseResidual() will clean up everything
@@ -1186,8 +1102,6 @@ UDFCompleteMount(
 
             if (NT_SUCCESS(Status)) {
 
-                Vcb->UniqueIDMapFileInfo->Dloc->DataLoc.Flags |= EXTENT_FLAG_VERIFY;
-
             } else if  (Status == STATUS_OBJECT_NAME_NOT_FOUND) {
 
                 Vcb->UniqueIDMapFileInfo = NULL;
@@ -1208,7 +1122,7 @@ UDFCompleteMount(
         UDFPreClrModified(Vcb);
         UDFClrModified(Vcb);
         // this is a part of UDF_RESIDUAL_REFERENCE
-        UDFInterlockedIncrement((PLONG)&Vcb->VcbReference);
+        InterlockedIncrement((PLONG)&Vcb->VcbReference);
 
         // Start initializing the fields contained in the Header.
 
@@ -1267,7 +1181,7 @@ UDFCompleteMount(
             }
         }
 
-        Vcb->VolumeDasdFcb->Header.FileSize.QuadPart = Int64ShllMod32(Vcb->LB2B_Bits, LastSector);
+        Vcb->VolumeDasdFcb->Header.FileSize.QuadPart = LlBytesFromSectors(Vcb, LastSector);
 
         Vcb->VolumeDasdFcb->Header.AllocationSize.QuadPart =
         Vcb->VolumeDasdFcb->Header.ValidDataLength.QuadPart = Vcb->VolumeDasdFcb->Header.FileSize.QuadPart;

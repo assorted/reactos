@@ -471,7 +471,7 @@ UDFIndexDirectory(
     int8* buff;
     PEXTENT_INFO ExtInfo;  // Extent array for directory
     uint16 PartNum;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     uint16 valueCRC;
 
     if (!FileInfo) return STATUS_INVALID_PARAMETER;
@@ -517,7 +517,7 @@ UDFIndexDirectory(
                 FileId = (PFILE_IDENT_DESC)((buff)+Offset);
             }
         }
-        if (((ULONG)Offset & (Vcb->LBlockSize-1)) > (Vcb->LBlockSize-sizeof(FILE_IDENT_DESC))) {
+        if (((ULONG)Offset & (Vcb->SectorSize-1)) > (Vcb->SectorSize-sizeof(FILE_IDENT_DESC))) {
             DirPrint(("  badly aligned\n", Offset));
             if (Vcb->Modified) {
                 DirPrint(("  queue repack request\n"));
@@ -707,7 +707,8 @@ UDFPackDirectory__(
     uint32 Offset, curOffset;
     int8* Buf;
     NTSTATUS status;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
+    SIZE_T WrittenBytes;
     int8* storedFI;
     PUDF_FILE_INFO curFileInfo;
     PDIR_INDEX_ITEM DirNdx = NULL, DirNdx2;
@@ -727,7 +728,7 @@ UDFPackDirectory__(
     if (!Vcb->Modified)
         return STATUS_SUCCESS;
     // start packing
-    LBS = Vcb->LBlockSize;
+    LBS = Vcb->SectorSize;
     Buf = (int8*)DbgAllocatePool(PagedPool, LBS*2);
     if (!Buf) return STATUS_INSUFFICIENT_RESOURCES;
     // we shall never touch 1st entry 'cause it can't be deleted
@@ -815,7 +816,7 @@ UDFPackDirectory__(
                                      UDFExtentOffsetToLba(Vcb, FileInfo->Dloc->DataLoc.Mapping,
                                                 Offset, NULL, NULL, NULL, NULL)), 0);
 
-                status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, l, FALSE, Buf, &ReadBytes);
+                status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, l, FALSE, Buf, &WrittenBytes);
                 if (!NT_SUCCESS(status)) {
                     DbgFreePool(Buf);
                     return status;
@@ -863,7 +864,8 @@ UDFReTagDirectory(
     uint32 Offset;
     int8* Buf;
     NTSTATUS status;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
+    SIZE_T WrittenBytes;
     PUDF_FILE_INFO curFileInfo;
     PDIR_INDEX_ITEM DirNdx;
     UDF_DIR_SCAN_CONTEXT ScanContext;
@@ -883,7 +885,7 @@ UDFReTagDirectory(
     }
 
     // start packing
-    Buf = (int8*)DbgAllocatePool(PagedPool, Vcb->LBlockSize*2);
+    Buf = (int8*)DbgAllocatePool(PagedPool, Vcb->SectorSize*2);
     if (!Buf) return STATUS_INSUFFICIENT_RESOURCES;
 
     Offset = UDFDirIndex(hDirNdx,1)->Offset;
@@ -917,7 +919,7 @@ UDFReTagDirectory(
             FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
         }
 
-        status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, l, FALSE, Buf, &ReadBytes);
+        status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, l, FALSE, Buf, &WrittenBytes);
         if (!NT_SUCCESS(status)) {
             DbgFreePool(Buf);
             return status;
