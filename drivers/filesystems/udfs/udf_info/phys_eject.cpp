@@ -34,9 +34,6 @@ UDFDoDismountSequence(
     delay.QuadPart = -1000000; // 0.1 sec
     KeDelayExecutionThread(KernelMode, FALSE, &delay);
 
-    // release WCache
-    WCacheRelease__(&(Vcb->FastCache));
-
     UDFAcquireResourceExclusive(&(Vcb->IoResource), TRUE);
 
     // unlock media, drop our own Locks

@@ -123,7 +123,7 @@ UDFPhReadSynchronous(
     PVOID Buffer,
     ULONG ByteCount,
     LONGLONG Offset,
-    PSIZE_T ReadBytes,
+    PULONG ReadBytes,
     ULONG Flags
     )
 {
@@ -135,10 +135,6 @@ UDFPhReadSynchronous(
     KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
     PVCB Vcb = NULL;
-
-    if (Flags & PH_VCB_IN_RETLEN) {
-        Vcb = (PVCB)(*ReadBytes);
-    }
 
     ROffset.QuadPart = Offset;
     (*ReadBytes) = 0;
@@ -216,17 +212,6 @@ UDFPhReadSynchronous(
         RtlCopyMemory(Buffer, IoBuf, *ReadBytes);
     }
 
-    if (NT_SUCCESS(RC)) {
-/*
-        for(i=0; i<(*ReadBytes); i+=2048) {
-            UDFPrint(("IOCRC %8.8x R %x\n", crc32((PUCHAR)Buffer+i, 2048), (ULONG)((Offset+i)/2048) ));
-        }
-*/
-        if (Vcb) {
-            RC = UDFVRead(Vcb, IoBuf, ByteCount >> Vcb->SectorShift, (ULONG)(Offset >> Vcb->SectorShift), Flags);
-        }
-    }
-
 try_exit: NOTHING;
 
     if (Context) MyFreePool__(Context);
@@ -268,10 +253,6 @@ UDFPhWriteSynchronous(
     PVOID               IoBuf = NULL;
 
     PVCB Vcb = NULL;
-    if (Flags & PH_VCB_IN_RETLEN) {
-        Vcb = (PVCB)(*WrittenBytes);
-    }
-
 
 #ifdef DBG
     if (UDF_SIMULATE_WRITES) {
@@ -322,14 +303,6 @@ UDFPhWriteSynchronous(
 
     (IoGetNextIrpStackLocation(irp))->Flags |= SL_OVERRIDE_VERIFY_VOLUME;
     RC = IoCallDriver(DeviceObject, irp);
-/*
-    for(i=0; i<Length; i+=2048) {
-        UDFPrint(("IOCRC %8.8x W %x\n", crc32((PUCHAR)Buffer+i, 2048), (ULONG)((Offset+i)/2048) ));
-    }
-*/
-    if (Vcb) {
-        UDFVWrite(Vcb, IoBuf, ByteCount >> Vcb->SectorShift, (ULONG)(Offset >> Vcb->SectorShift), Flags);
-    }
 
     if (RC == STATUS_PENDING) {
         DbgWaitForSingleObject(&(Context->event), NULL);

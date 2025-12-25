@@ -64,7 +64,7 @@ UDFPrepareXSpaceBitmap(
     lb_addr locAddr;
     int8* _XSBM;
     uint16 Ident;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     uint32 RefPartNum;
 
     if (!(XSpaceBitmap->extLength)) {
@@ -450,7 +450,6 @@ UDFUpdateLogicalVolInt(
 
     Vcb->IntegrityType = INTEGRITY_TYPE_OPEN; // make happy auto-dirty
     RC = UDFWriteSectors(IrpContext, Vcb, TRUE, PTag->tagLocation, len >> Vcb->SectorShift, FALSE, (int8*)(lvid), &WrittenBytes);
-    WCacheFlushBlocks__(IrpContext, &Vcb->FastCache, Vcb, PTag->tagLocation, len >> Vcb->SectorShift);
     // update it here to prevent recursion
     Vcb->IntegrityType = lvid->integrityType;
 
@@ -473,7 +472,7 @@ UDFUpdateSparingTable(
     NTSTATUS status2 = STATUS_SUCCESS;
     uint32 i=0, BC, BC2;
     PSPARING_TABLE SparTable;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
 //    uint32 n,m;
 //    BOOLEAN merged;
     BOOLEAN sorted;
@@ -942,22 +941,13 @@ UDFUmount__(
     // prevent discarding metadata
     Vcb->VcbState |= UDF_VCB_ASSUME_ALL_USED;
     if (Vcb->CDR_Mode) {
-        // flush internal cache
-        if (WCacheGetWriteBlockCount__(&(Vcb->FastCache)) >= (Vcb->WriteBlockSize >> Vcb->SectorShift) )
-            WCacheFlushAll__(IrpContext, &Vcb->FastCache, Vcb);
+
         // record VAT
         return UDFRecordVAT(IrpContext, Vcb);
     }
 
     UDFFlushAllCachedAllocations(Vcb, UDF_PREALLOC_CLASS_FE);
     UDFFlushAllCachedAllocations(Vcb, UDF_PREALLOC_CLASS_DIR);
-
-    if (Vcb->VerifyOnWrite) {
-        UDFPrint(("UDF: Flushing cache for verify\n"));
-        //WCacheFlushAll__(&(Vcb->FastCache), Vcb);
-        WCacheFlushBlocks__(IrpContext, &Vcb->FastCache, Vcb, 0, Vcb->LastLBA);
-        UDFVFlush(Vcb);
-    }
 
     // synchronize BAD Block bitmap and NonAllocatable
     UDFUpdateNonAllocated(IrpContext, Vcb);
@@ -1103,7 +1093,7 @@ UDFFindVRS(
     uint32       BeginOffset = Vcb->FirstLBA;
     NTSTATUS     RC;
     int8*        buffer = (int8*)MyAllocatePool__(NonPagedPool,Vcb->SectorSize);
-    SIZE_T       ReadBytes;
+    ULONG       ReadBytes;
 
     if (!buffer) return 0;
     // Relative to First LBA in Last Session
@@ -1234,7 +1224,6 @@ UDFLoadLogicalVolInt(
     NTSTATUS    RC = STATUS_SUCCESS;
     uint32      Len;
     uint32      Lbn;
-    uint32      SectorSize;
     int8*       Buf = NULL;
     int8*       TempBuf = NULL;
     uint16      ident;
@@ -1253,19 +1242,18 @@ UDFLoadLogicalVolInt(
 
     Len = loc.extLength;
     Lbn = loc.extLocation;
-    SectorSize = Vcb->SectorSize;
 
 
     // Validate: length must be non-zero and sector-aligned
 
-    if (Len == 0 || ((Len & (SectorSize - 1)) != 0)) {
+    if (Len == 0 || ((Len & (SectorSize(Vcb) - 1)) != 0)) {
         return STATUS_DISK_CORRUPT_ERROR;
     }
 
 
     // Allocate sector buffer
 
-    Buf = (int8*)MyAllocatePool__(NonPagedPool, SectorSize);
+    Buf = (int8*)MyAllocatePool__(NonPagedPool, SectorSize(Vcb));
     if (!Buf) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -1332,7 +1320,7 @@ UDFLoadLogicalVolInt(
                 //
                 // Validate next extent alignment
                 //
-                if ((NextLen & (SectorSize - 1)) != 0) {
+                if ((NextLen & (SectorSize(Vcb) - 1)) != 0) {
                     try_return(RC = STATUS_DISK_CORRUPT_ERROR);
                 }
 
@@ -1341,7 +1329,7 @@ UDFLoadLogicalVolInt(
                 // After "Len -= SectorSize; Lbn++;" below, we'll have
                 // Len = NextLen and Lbn = nextIntegrityExt.extLocation
 
-                Len = NextLen + SectorSize;
+                Len = NextLen + SectorSize(Vcb);
                 Lbn = lvid->nextIntegrityExt.extLocation - 1;
             }
 
@@ -1356,8 +1344,8 @@ UDFLoadLogicalVolInt(
             //
             // Allocate new buffer for next iteration if needed
             //
-            if (Buf == NULL && Len > SectorSize) {
-                Buf = (int8*)MyAllocatePool__(NonPagedPool, SectorSize);
+            if (Buf == NULL && Len > SectorSize(Vcb)) {
+                Buf = (int8*)MyAllocatePool__(NonPagedPool, SectorSize(Vcb));
                 if (!Buf) {
                     try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
                 }
@@ -1365,7 +1353,7 @@ UDFLoadLogicalVolInt(
 
             // Advance to next sector
 
-            Len -= SectorSize;
+            Len -= SectorSize(Vcb);
             Lbn++;
         }
 
@@ -1383,7 +1371,7 @@ UDFLoadLogicalVolInt(
 
         Vcb->origIntegrityType =
             Vcb->IntegrityType = Vcb->LVid->integrityType;
-        Vcb->LVid_loc.extLength = SectorSize;
+        Vcb->LVid_loc.extLength = SectorSize(Vcb);
         Vcb->LVid_loc.extLocation = Lbn - 1;  // Last read sector
 
         LVID_iUse = UDFGetLVIDiUse(Vcb);
@@ -1643,7 +1631,7 @@ UDFAddXSpaceBitmap(
     uint16 Ident;
     uint32 flags;
     SIZE_T Length;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     BOOLEAN bit_set;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
@@ -1724,7 +1712,7 @@ UDFVerifyXSpaceBitmap(
     uint16 Ident;
     uint32 flags;
     uint32 Length;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
 //    BOOLEAN bit_set;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
@@ -2157,8 +2145,6 @@ UDFLoadPartDesc(
                     RC = UDFLoadVAT(IrpContext, Vcb, i);
                     if (!NT_SUCCESS(RC))
                         return RC;
-                    WCacheFlushAll__(IrpContext, &Vcb->FastCache, Vcb);
-                    WCacheSetMode__(&Vcb->FastCache, WCACHE_MODE_R);
                     Vcb->LastModifiedTrack = 0;
                 }
             }
@@ -2621,41 +2607,6 @@ UDFLoadFileset(
 
 } // end UDFLoadFileset()
 
-NTSTATUS
-UDFIsCachedBadSequence(
-    IN PVCB Vcb,
-    IN uint32 Lba
-    )
-{
-    ULONG j;
-    NTSTATUS RC = STATUS_SUCCESS;
-    // Check if it is known bad sequence
-    for(j=0; j<Vcb->BadSeqLocIndex; j++) {
-        if (Vcb->BadSeqLoc[j] == Lba) {
-            RC = Vcb->BadSeqStatus[j];
-            break;
-        }
-    }
-    return RC;
-} // end UDFIsCachedBadSequence()
-
-VOID
-UDFRememberBadSequence(
-    IN PVCB Vcb,
-    IN uint32 Lba,
-    IN NTSTATUS RC
-    )
-{
-    int j;
-    if (!NT_SUCCESS(UDFIsCachedBadSequence(Vcb, Lba)))
-        return;
-    // Remenber bad sequence
-    j = Vcb->BadSeqLocIndex;
-    Vcb->BadSeqLocIndex++;
-    Vcb->BadSeqLoc[j]    = Lba;
-    Vcb->BadSeqStatus[j] = RC;
-} // end UDFRememberBadSequence()
-
 /*
     load partition info
  */
@@ -2699,19 +2650,13 @@ UDFLoadPartition(
             reserve_e = reserve_e >> Vcb->SectorShift;
             reserve_e += reserve_s;
 
-            // Check if it is known bad sequence
-            RC = UDFIsCachedBadSequence(Vcb, main_s);
-            if (NT_SUCCESS(RC)) {
-                // Process the main & reserve sequences
-                // responsible for finding the PartitionDesc(s)
-                UDFPrint(("-----------------------------------\n"));
-                UDFPrint(("UDF: Main sequence:\n"));
-                RC = UDFProcessSequence(IrpContext, DeviceObject, Vcb, main_s, main_e, fileset, &mainVolDesc);
-            }
+            // Process the main & reserve sequences
+            // responsible for finding the PartitionDesc(s)
+            UDFPrint(("-----------------------------------\n"));
+            UDFPrint(("UDF: Main sequence:\n"));
+            RC = UDFProcessSequence(IrpContext, DeviceObject, Vcb, main_s, main_e, fileset, &mainVolDesc);
 
             if (!NT_SUCCESS(RC)) {
-                // Remenber bad sequence
-                UDFRememberBadSequence(Vcb, main_s, RC);
 
                 UDFPrint(("-----------------------------------\n"));
                 UDFPrint(("UDF: Main sequence failed.\n"));
@@ -2719,10 +2664,7 @@ UDFLoadPartition(
                 if (Vcb->LVid) MyFreePool__(Vcb->LVid);
                 Vcb->LVid = NULL;
 
-                RC2 = UDFIsCachedBadSequence(Vcb, reserve_s);
-                if (NT_SUCCESS(RC2)) {
-                    RC2 = UDFProcessSequence(IrpContext, DeviceObject, Vcb, reserve_s, reserve_e, fileset, &reserveVolDesc);
-                }
+                RC2 = UDFProcessSequence(IrpContext, DeviceObject, Vcb, reserve_s, reserve_e, fileset, &reserveVolDesc);
 
                 if (NT_SUCCESS(RC2)) {
                     UDFPrint(("-----------------------------------\n"));
@@ -2734,9 +2676,6 @@ UDFLoadPartition(
 //                    Vcb->VDS1_Len = 0;
 //                    Vcb->VDS1 = 0;
                     break;
-                } else {
-                    // This is also bad sequence. Remenber it too
-                    UDFRememberBadSequence(Vcb, reserve_s, RC);
                 }
             } else {
                 // remember these values for umount__
@@ -2838,7 +2777,7 @@ UDFLoadSparingTable(
     uint32 i=0, BC, BC2;
     PSPARING_TABLE SparTable;
     uint32 TabSize, NewSize;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     uint32 SparTableLoc;
     uint32 n,m;
     BOOLEAN merged;

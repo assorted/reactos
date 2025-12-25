@@ -91,7 +91,7 @@ UDFCommonShutdown(
 
         while (Link != &(UdfData.VcbQueue)) {
 
-            Vcb = CONTAINING_RECORD( Link, VCB, NextVCB );
+            Vcb = CONTAINING_RECORD(Link, VCB, VcbLinks);
 
             // Move to the next link now since the current Vcb may be deleted.
 

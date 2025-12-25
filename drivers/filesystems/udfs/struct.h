@@ -102,6 +102,7 @@ using PCCB = CCB*;
 // the CCB has had an IRP_MJ_CLEANUP issued on it. we must
 //  no longer allow the file object / CCB to be used in I/O requests.
 #define UDF_CCB_CLEANED                         (0x00000008)
+#define CCB_FLAG_ALLOW_EXTENDED_DASD_IO         (0x00000010)
 // if an application process set the file date time, we must
 //  honor that request and *not* overwrite the values at cleanup
 #define UDF_CCB_ACCESS_TIME_SET                 (0x00000040)
@@ -207,6 +208,7 @@ struct FCB {
         FSRTL_ADVANCED_FCB_HEADER Header;
     };
 
+    LIST_ENTRY EofListHead;
     ULONG NtReqFCBFlags;
 
     // UDF related data
@@ -295,6 +297,9 @@ using PFCB = FCB*;
     values are bit fields; therefore we can test whether
     a bit position is set (1) or not set (0).
 **************************************************************************/
+// File data is embedded in ICB (IN_ICB allocation mode)
+// Requires exclusive lock for writes since data shares sector with metadata
+#define     UDF_FCB_EMBEDDED_DATA                       (0x00000001)
 #define     UDF_FCB_VALID                               (0x00000002)
 #define     UDF_FCB_DIRECTORY                           (0x00000008)
 #define     UDF_FCB_ROOT_DIRECTORY                      (0x00000010)
@@ -354,8 +359,16 @@ struct VCB {
     ULONG                               VcbResidualReference;
     ULONG                               VcbResidualUserReference;
     ERESOURCE                           FlushResource;
-    // each VCB is accessible off a global linked list
-    LIST_ENTRY                          NextVCB;
+
+    // Link into queue of Vcb's in the CdData structure.  We will create a union with
+    // a LONGLONG to force the Vcb to be quad-aligned.
+
+    union {
+
+        LIST_ENTRY VcbLinks;
+        LONGLONG Alignment;
+    };
+
     // each VCB points to a VPB structure created by the NT I/O Manager
     PVPB                                Vpb;
     // we will maintain a global list of IRP's that are pending
@@ -363,11 +376,12 @@ struct VCB {
     LIST_ENTRY                          NextNotifyIRP;
     // the above list is protected only by the mutex declared below
     PNOTIFY_SYNC                        NotifySync;
+
     // We also retain a pointer to the physical device object on which we
     // have mounted ourselves. The I/O Manager passes us a pointer to this
     // device object when requesting a mount operation.
     PDEVICE_OBJECT                      TargetDeviceObject;
-    PCWSTR                               DefaultRegName;
+
     // the volume structure contains a pointer to the root directory FCB
     FCB* RootIndexFcb;
     FCB* VolumeDasdFcb;
@@ -399,8 +413,6 @@ struct VCB {
     //
     ULONG           MediaLockCount;
 
-    BOOLEAN         IsVolumeJustMounted;
-
     // FS size cache
     LONGLONG        TotalAllocUnits;
     LONGLONG        FreeAllocUnits;
@@ -431,7 +443,10 @@ struct VCB {
     ULONG           SectorSize;
     ULONG           SectorShift;
     ULONG           WriteBlockSize;
- 
+
+    ULONG SessionStartLba;
+    ULONG SessionEndLba;
+
     // Number of last session
     ULONG           LastSession;
     ULONG           FirstTrackNum;
@@ -462,19 +477,6 @@ struct VCB {
     BOOLEAN         CDR_Mode;
     BOOLEAN         DVD_Mode;
 
-#define SYNC_CACHE_RECOVERY_NONE     0
-#define SYNC_CACHE_RECOVERY_ATTEMPT  1
-#define SYNC_CACHE_RECOVERY_RETRY    2
-
-    UCHAR           SyncCacheState;
-
-    // W-cache
-    W_CACHE         FastCache;
-    ULONG           WCacheMaxFrames;
-    ULONG           WCacheMaxBlocks;
-    ULONG           WCacheBlocksPerFrameSh;
-    ULONG           WCacheFramesToKeepFree;
-
     PCHAR           ZBuffer;
     PCHAR           fZBuffer;
     ULONG           fZBufferSize;
@@ -482,18 +484,10 @@ struct VCB {
     ULONG           IoErrorCounter;
     // Media change count (equal to the same field in CDFS VCB)
     ULONG           MediaChangeCount;
-
-#define INCREMENTAL_SEEK_NONE        0
-#define INCREMENTAL_SEEK_WORKAROUND  1
-#define INCREMENTAL_SEEK_DONE        2
-
-    UCHAR           IncrementalSeekState;
-    BOOLEAN         VerifyOnWrite;
     ULONG           MountPhErrorCount;
 
     // a set of flags that might mean something useful
     uint32          VcbState;
-    BOOLEAN         FP_disc;
 
     //---------------
     // UDF related data
@@ -502,9 +496,6 @@ struct VCB {
     // Anchors LBA
 #define MAX_ANCHOR_LOCATIONS 11
     ULONG           Anchor[MAX_ANCHOR_LOCATIONS];
-    ULONG           BadSeqLoc[MAX_ANCHOR_LOCATIONS * 2];
-    NTSTATUS        BadSeqStatus[MAX_ANCHOR_LOCATIONS * 2];
-    ULONG           BadSeqLocIndex;
     // Volume label
     UNICODE_STRING  VolIdent;
     // Volume creation time
@@ -605,8 +596,6 @@ struct VCB {
 
     PUDF_ALLOCATION_CACHE_ITEM    PreallocCache;
     ULONG                         PreallocCacheMaxSize;
-
-    UDF_VERIFY_CTX  VerifyCtx;
 
     uint32          CompatFlags;
 
@@ -873,18 +862,10 @@ typedef struct _UDFData {
 
     LARGE_INTEGER               UDFLargeZero;
 
-    // mount event (for udf gui app)
-    PKEVENT                     MountEvent;
-
     UNICODE_STRING              SavedRegPath;
     UNICODE_STRING              UnicodeStrRoot;
     UNICODE_STRING              UnicodeStrSDir;
     UNICODE_STRING              AclName;
-
-    ULONG                       WCacheMaxFrames;
-    ULONG                       WCacheMaxBlocks;
-    ULONG                       WCacheBlocksPerFrameSh;
-    ULONG                       WCacheFramesToKeepFree;
 
 } UDFData, *PUDFData;
 
@@ -911,7 +892,6 @@ typedef struct _UDFData {
 #define         VCB_STATE_MEDIA_WRITE_PROTECT       (0x00000080)
 #define         VCB_STATE_REMOVABLE_MEDIA           (0x00000100)
 #define         UDF_VCB_FLAGS_MEDIA_LOCKED          (0x00000200)
-#define         UDF_VCB_SKIP_EJECT_CHECK            (0x00000400)
 #define         UDF_VCB_LAST_WRITE                  (0x00001000)
 #define         UDF_VCB_FLAGS_TRACKMAP              (0x00002000)
 #define         UDF_VCB_ASSUME_ALL_USED             (0x00004000)

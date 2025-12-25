@@ -35,10 +35,10 @@
 
 //#define UDF_SIMULATE_WRITES
 
-#define USE_KD_PRINT
-#define USE_MM_PRINT
-#define USE_AD_PRINT
-#define UDF_DUMP_EXTENT
+//#define USE_KD_PRINT
+//#define USE_MM_PRINT
+//#define USE_AD_PRINT
+//#define UDF_DUMP_EXTENT
 //#define USE_TH_PRINT
 //#define USE_TIME_PRINT
 

@@ -2211,6 +2211,11 @@ UDFFirstOpenFile(
         UDFUnlockVcb(IrpContext, Vcb);
         return RC;
     }
+    // Set embedded data flag if file data is stored in ICB
+    if (!UDFIsADirectory(NewFileInfo) &&
+        (((PFILE_ENTRY)(NewFileInfo->Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
+        (*PtrNewFcb)->FcbState |= UDF_FCB_EMBEDDED_DATA;
+    }
     // set Read-only attribute
     if (!UDFIsAStreamDir(NewFileInfo)) {
         hDirIndex = UDFGetDirIndexByFileInfo(NewFileInfo);

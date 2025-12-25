@@ -644,7 +644,6 @@ UDFMarkSpaceAsXXXNoProtect_(
 
             if (asXXX & AS_DISCARDED) {
                 UDFUnmapRange(Vcb, lba, len);
-                WCacheDiscardBlocks__(&(Vcb->FastCache), Vcb, lba, len);
             }
             if (Vcb->Vat) {
                 // mark logical blocks in VAT as free
@@ -896,38 +895,3 @@ UDFGetTotalSpace(
     }
     return s;
 } // end UDFGetTotalSpace()
-
-/*
-    Callback for WCache
-    returns Allocated and Zero-filled flags for given block
-    any data in 'unallocated' blocks may be changed during flush process
- */
-uint32
-UDFIsBlockAllocated(
-    IN void* _Vcb,
-    IN uint32 Lba
-    )
-{
-    ULONG ret_val = 0;
-    uint32* bm;
-//    return TRUE;
-    if (!(((PVCB)_Vcb)->VcbState & UDF_VCB_ASSUME_ALL_USED)) {
-        // check used
-        if ((bm = (uint32*)(((PVCB)_Vcb)->FSBM_Bitmap)))
-            ret_val = (UDFGetUsedBit(bm, Lba) ? WCACHE_BLOCK_USED : 0);
-    } else {
-        ret_val = WCACHE_BLOCK_USED;
-    }
-    // check bad block
-
-    // WCache works with LOGICAL addresses, not PHYSICAL, BB check must be performed UNDER cache
-/*
-    if (bm = (uint32*)(((PVCB)_Vcb)->BSBM_Bitmap)) {
-        ret_val |= (UDFGetBadBit(bm, Lba) ? WCACHE_BLOCK_BAD : 0);
-        if (ret_val & WCACHE_BLOCK_BAD) {
-            UDFPrint(("Marked BB @ %#x\n", Lba));
-        }
-    }
-*/
-    return ret_val;
-} // end UDFIsBlockAllocated()

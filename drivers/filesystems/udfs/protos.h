@@ -312,11 +312,13 @@ IN PLARGE_INTEGER           FileOffset,
 OUT PMDL                    MdlChain,
 IN PDEVICE_OBJECT           DeviceObject);
 
-extern NTSTATUS NTAPI UDFFastIoAcqModWrite(
-IN PFILE_OBJECT             FileObject,
-IN PLARGE_INTEGER           EndingOffset,
-OUT PERESOURCE*             ResourceToRelease,
-IN PDEVICE_OBJECT           DeviceObject);
+NTSTATUS
+NTAPI
+UDFFastIoAcqModWrite(
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER EndingOffset,
+    OUT PERESOURCE* ResourceToRelease,
+    IN PDEVICE_OBJECT DeviceObject);
 
 extern NTSTATUS NTAPI UDFFastIoRelModWrite(
 IN PFILE_OBJECT             FileObject,
@@ -574,9 +576,10 @@ UDFCommonFsControl(
     PIRP Irp
     );
 
-extern NTSTATUS NTAPI UDFUserFsCtrlRequest(
-PIRP_CONTEXT IrpContext,
-PIRP                Irp);
+NTSTATUS
+UDFUserFsCtrlRequest(
+    PIRP_CONTEXT IrpContext,
+    PIRP Irp);
 
 extern NTSTATUS NTAPI UDFMountVolume(
 PIRP_CONTEXT IrpContext,
@@ -644,8 +647,7 @@ extern NTSTATUS UDFGetVolumeBitmap(IN PIRP_CONTEXT IrpContext,
                                    IN PIRP Irp);
 
 extern NTSTATUS UDFGetRetrievalPointers(IN PIRP_CONTEXT IrpContext,
-                                        IN PIRP  Irp,
-                                        IN ULONG Special);
+                                        IN PIRP Irp);
 
 extern NTSTATUS UDFInvalidateVolumes(IN PIRP_CONTEXT IrpContext,
                                      IN PIRP Irp);
@@ -848,13 +850,6 @@ UDFDeleteVCB(
     PVCB Vcb
     );
 
-extern ULONG UDFRegCheckParameterValue(
-    IN PUNICODE_STRING RegistryPath,
-    IN PCWSTR Name,
-    IN PUNICODE_STRING PtrVolumePath,
-    IN PCWSTR DefaultPath,
-    IN ULONG DefValue = 0);
-
 extern VOID UDFInitializeStackIrpContextFromLite(
     OUT PIRP_CONTEXT IrpContext,
     IN PIRP_CONTEXT_LITE IrpContextLite);
@@ -870,11 +865,6 @@ extern BOOLEAN UDFAcquireResourceExclusiveWithCheck(
 
 extern BOOLEAN UDFAcquireResourceSharedWithCheck(
     IN PERESOURCE Resource
-    );
-
-extern NTSTATUS UDFWCacheErrorHandler(
-    IN PVOID Context,
-    IN PWCACHE_ERROR_CONTEXT ErrorInfo
     );
 
 extern NTSTATUS NTAPI UDFFilterCallbackAcquireForCreateSection(
@@ -913,11 +903,6 @@ UDFPnp (
 extern NTSTATUS NTAPI UDFRead(
     PDEVICE_OBJECT              DeviceObject,       // the logical volume device object
     PIRP                        Irp);               // I/O Request Packet
-
-extern NTSTATUS UDFPostStackOverflowRead(
-    IN PIRP_CONTEXT IrpContext,
-    IN PIRP             Irp,
-    IN PFCB             Fcb);
 
 extern VOID NTAPI UDFStackOverflowRead(
     IN PVOID Context,
@@ -1274,6 +1259,9 @@ UDFAcquireResource(
 #define UDFAcquireFcbShared(IC,F,I)                                                     \
     UDFAcquireResource((IC), &(F)->FcbNonpaged->FcbResource, (I), AcquireShared)
 
+#define UDFAcquireFcbSharedStarveExclusive(IC,F,I)                                      \
+    UDFAcquireResource((IC), &(F)->FcbNonpaged->FcbResource, (I), AcquireSharedStarveExclusive)
+
 #define UDFReleaseFcb(IC,F)                                                             \
     ExReleaseResourceLite(&(F)->FcbNonpaged->FcbResource)
 
@@ -1317,6 +1305,16 @@ SectorAlign(
     return (Length + (Vcb->SectorSize - 1)) & ~(Vcb->SectorSize - 1);
 }
 
+inline
+ULONGLONG
+LlSectorAlign( 
+    PVCB Vcb, 
+    ULONGLONG Length
+) {
+
+    return (Length + (Vcb->SectorSize - 1)) & ~(ULONGLONG)(Vcb->SectorSize - 1);
+}
+
 VOID
 UDFSetThreadContext(
     _Inout_ PIRP_CONTEXT IrpContext,
@@ -1344,5 +1342,23 @@ BOOLEAN UDFIsStreamsSupported(
 {
     return Vcb->UdfRevision >= 0x0200;
 }
+
+VOID
+UDFFinishIoAtEof(
+    IN PFCB Fcb
+    );
+
+BOOLEAN
+UDFWaitForIoAtEof(
+    IN PFCB Fcb,
+    IN LONGLONG FileOffset,
+    IN ULONG Length
+    );
+
+VOID
+UDFPrePostIrp(
+    _Inout_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp
+    );
 
 #endif  // _UDF_PROTOS_H_

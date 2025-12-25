@@ -552,6 +552,7 @@ UDFInitializeFCB(
     ASSERT(!Fcb->Header.Resource);
     Fcb->Header.Resource = &Fcb->FcbNonpaged->FcbResource;
     Fcb->Header.PagingIoResource = &Fcb->FcbNonpaged->FcbPagingIoResource;
+    InitializeListHead(&Fcb->EofListHead);
     FsRtlSetupAdvancedHeader(&Fcb->Header, &Fcb->FcbNonpaged->AdvancedFcbHeaderMutex);
     Fcb->FileLock = NULL;
 
@@ -801,11 +802,6 @@ UDFInitializeVCB(
 
         Vcb->VcbReference = 1 + Vcb->VcbResidualReference;
 
-        Vcb->WCacheMaxBlocks        = UdfData.WCacheMaxBlocks;
-        Vcb->WCacheMaxFrames        = UdfData.WCacheMaxFrames;
-        Vcb->WCacheBlocksPerFrameSh = UdfData.WCacheBlocksPerFrameSh;
-        Vcb->WCacheFramesToKeepFree = UdfData.WCacheFramesToKeepFree;
-
         // Create a stream file object for this volume.
         //Vcb->PtrStreamFileObject = IoCreateStreamFileObject(NULL,
         //                                            Vcb->Vpb->RealDevice);
@@ -821,7 +817,7 @@ UDFInitializeVCB(
         // Insert this Vcb record on the CdData.VcbQueue.
 
         ASSERT_EXCLUSIVE_CDDATA;
-        InsertTailList(&(UdfData.VcbQueue), &(Vcb->NextVCB));
+        InsertTailList(&(UdfData.VcbQueue), &(Vcb->VcbLinks));
 
         // Initialize caching for the stream file object.
         //CcInitializeCacheMap(Vcb->PtrStreamFileObject, (PCC_FILE_SIZES)(&(Vcb->AllocationSize)),
@@ -1105,8 +1101,6 @@ UDFCompleteMount(
             Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &LocalPath, Vcb->SysSDirFileInfo , &Vcb->UniqueIDMapFileInfo, NULL);
 
             if (NT_SUCCESS(Status)) {
-
-                Vcb->UniqueIDMapFileInfo->Dloc->DataLoc.Flags |= EXTENT_FLAG_VERIFY;
 
             } else if  (Status == STATUS_OBJECT_NAME_NOT_FOUND) {
 

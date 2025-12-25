@@ -534,15 +534,4 @@ typedef struct _UDF_ALLOCATION_CACHE_ITEM {
 
 #endif //UDF_DBG
 
-typedef struct _UDF_VERIFY_CTX {
-    uint8*     StoredBitMap;
-    ULONG      ItemCount;
-    LIST_ENTRY vrfList;
-    ERESOURCE  VerifyLock;
-    KEVENT     vrfEvent;
-    uint32     WaiterCount;
-    uint32     QueuedCount;
-    BOOLEAN    VInited;
-} UDF_VERIFY_CTX, *PUDF_VERIFY_CTX;
-
 #endif /* _UDF_REL_H_ */

@@ -1579,7 +1579,7 @@ UDFWriteFile__(
     NTSTATUS status;
     int8* OldInIcb = NULL;
     ValidateFileInfo(FileInfo);
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     SIZE_T _WrittenBytes;
     PUDF_DATALOC_INFO Dloc;
     // unwind staff
@@ -1645,6 +1645,9 @@ UDFWriteFile__(
         ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags &= ~ICB_FLAG_ALLOC_MASK;
         ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags |= Vcb->DefaultAllocMode;
         WasInIcb = TRUE;
+        // Clear embedded data flag since file is no longer in ICB mode
+        ASSERT(FileInfo->Fcb);
+        FileInfo->Fcb->FcbState &= ~UDF_FCB_EMBEDDED_DATA;
     }
     // increase extent
     ExtPrint(("  %s %s %s\n",
@@ -1987,7 +1990,7 @@ UDFOpenFile__(
     PDIR_INDEX_ITEM DirNdx;
     PUDF_FILE_INFO FileInfo;
     PUDF_FILE_INFO ParFileInfo;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     *_FileInfo = NULL;
     if (!hDirNdx) return STATUS_NOT_A_DIRECTORY;
 
@@ -2570,7 +2573,8 @@ UDFCreateFile__(
     PUDF_FILE_INFO FileInfo;
     *_FileInfo = NULL;
     BOOLEAN undel = FALSE;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
+    SIZE_T WrittenBytes;
 //    BOOLEAN PackDir = FALSE;
     BOOLEAN FEAllocated = FALSE;
 
@@ -2817,7 +2821,7 @@ CrF__2:
         FileInfo->Dloc->FELoc.Mapping[0].extLength &= UDF_EXTENT_LENGTH_MASK;
         // zero sector for FileEntry
         if (!Vcb->CDR_Mode) {
-            status = UDFWriteData(IrpContext, Vcb, TRUE, ((int64)(FileInfo->Dloc->FELoc.Mapping[0].extLocation)) << Vcb->SectorShift, LBS, FALSE, Vcb->ZBuffer, &ReadBytes);
+            status = UDFWriteData(IrpContext, Vcb, TRUE, ((int64)(FileInfo->Dloc->FELoc.Mapping[0].extLocation)) << Vcb->SectorShift, LBS, FALSE, Vcb->ZBuffer, &WrittenBytes);
             if (!NT_SUCCESS(status)) {
                 UDFFlushFI(IrpContext, Vcb, FileInfo, PartNum);
                 try_return (status);
@@ -3445,6 +3449,7 @@ UDFResizeFile__(
     IN int64 NewLength
     )
 {
+    ULONG ReadBytes;
     SIZE_T WrittenBytes;
     NTSTATUS status;
     uint32 PartNum;
@@ -3475,7 +3480,7 @@ UDFResizeFile__(
             if (NewLength) {
                 OldInIcb = (int8*)MyAllocatePool__(NonPagedPool, (uint32)NewLength);
                 if (!OldInIcb) return STATUS_INSUFFICIENT_RESOURCES;
-                status = UDFReadExtent(IrpContext, Vcb, &FileInfo->Dloc->DataLoc, 0, (uint32)NewLength, FALSE, OldInIcb, &WrittenBytes);
+                status = UDFReadExtent(IrpContext, Vcb, &FileInfo->Dloc->DataLoc, 0, (uint32)NewLength, FALSE, OldInIcb, &ReadBytes);
                 if (!NT_SUCCESS(status)) {
                     MyFreePool__(OldInIcb);
                     return status;
@@ -3525,6 +3530,9 @@ mark_data_map_0:
             // switch to IN_ICB mode
             ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags &= ~ICB_FLAG_ALLOC_MASK;
             ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags |= ICB_FLAG_AD_IN_ICB;
+            // Set embedded data flag since file is now in ICB mode
+            ASSERT(FileInfo->Fcb);
+            FileInfo->Fcb->FcbState |= UDF_FCB_EMBEDDED_DATA;
             // init new data location descriptors
             FileInfo->Dloc->DataLoc.Mapping = NewMap;
             RtlZeroMemory((int8*)(FileInfo->Dloc->DataLoc.Mapping), 2*sizeof(EXTENT_MAP));
@@ -3583,7 +3591,7 @@ UDFLoadVAT(
     PUDF_FILE_INFO VatFileInfo;
     uint32 len, i=0, j, to_read;
     uint32 Offset, hdrOffset;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     uint32 root;
     uint16 PartNum;
 //    uint32 VatFirstLba = 0;
@@ -4374,7 +4382,7 @@ UDFReadTagged(
 //    icbtag* Icb = (icbtag*)(Buf+1);
     uint8 checksum;
     unsigned int i;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     int8* tb;
 
     // Read the block
@@ -4831,7 +4839,8 @@ UDFRecordVAT(
     uint32 hdrOffset, hdrOffsetNew;
     uint32 hdrLen;
     NTSTATUS status;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
+    SIZE_T WrittenBytes;
     uint32 len;
     uint16 PartNdx = (uint16)Vcb->VatPartNdx;
     uint16 PartNum = UDFGetPartNumByPartRef(Vcb, PartNdx);
@@ -4960,17 +4969,17 @@ UDFRecordVAT(
         }
         UDFMarkSpaceAsXXX(Vcb, VatFileInfo->Dloc, VatFileInfo->Dloc->DataLoc.Mapping, AS_DISCARDED); //free
     }
-    PacketOffset = WCacheGetWriteBlockCount__(&(Vcb->FastCache));
+    //PacketOffset = WCacheGetWriteBlockCount__(&(Vcb->FastCache));
+    PacketOffset = 0;
     if ( ((((PFILE_ENTRY)(VatFileInfo->Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) ) {
         // now we'll place FE & built-in data to the last sector of
         // the last packet will be recorded
         if (!PacketOffset) {
             // add padding
-            UDFWriteData(IrpContext, Vcb, TRUE, ((uint64)Vcb->NWA) << Vcb->SectorShift, 1, FALSE, Old, &ReadBytes);
+            UDFWriteData(IrpContext, Vcb, TRUE, ((uint64)Vcb->NWA) << Vcb->SectorShift, 1, FALSE, Old, &WrittenBytes);
             PacketOffset++;
         } else {
             Vcb->Vat = (uint32*)(New+Offset);
-            WCacheSyncReloc__(&(Vcb->FastCache), Vcb);
             Vcb->Vat = NULL;
         }
         VatFileInfo->Dloc->FELoc.Mapping[0].extLocation =
@@ -4981,7 +4990,7 @@ UDFRecordVAT(
         ((PFILE_ENTRY)(VatFileInfo->Dloc->FileEntry))->descTag.tagLocation =
             UDFPhysLbaToPart(Vcb, PartNum, VatFileInfo->Dloc->DataLoc.Mapping[0].extLocation);
         // record data
-        if (NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, 0, VatLen + hdrLen, FALSE, New, &ReadBytes))) {
+        if (NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, 0, VatLen + hdrLen, FALSE, New, &WrittenBytes))) {
             status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo);
         }
         return status;
@@ -4993,7 +5002,6 @@ UDFRecordVAT(
     // update VAT with locations of not flushed blocks
     if (PacketOffset) {
         Vcb->Vat = (uint32*)(New+Offset);
-        WCacheSyncReloc__(&(Vcb->FastCache), Vcb);
         Vcb->Vat = NULL;
     }
 
@@ -5014,7 +5022,7 @@ UDFRecordVAT(
                 NWA += (MaxPacket + 7);
                 PacketOffset = 0;
             }
-            status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, off, to_read, FALSE, New+off, &ReadBytes);
+            status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, off, to_read, FALSE, New+off, &WrittenBytes);
             if (!NT_SUCCESS(status)) {
                 return status;
             }
@@ -5075,7 +5083,7 @@ UDFRecordVAT(
     if ( !PacketOffset &&
         (VatFileInfo->Dloc->AllocLoc.Length <= (Vcb->SectorSize - (uint32)(VatFileInfo->Dloc->AllocLoc.Offset)) ) ) {
         // add padding
-        UDFWriteData(IrpContext, Vcb, TRUE, ((uint64)NWA) << Vcb->SectorShift, 1, FALSE, Old, &ReadBytes);
+        UDFWriteData(IrpContext, Vcb, TRUE, ((uint64)NWA) << Vcb->SectorShift, 1, FALSE, Old, &WrittenBytes);
         PacketOffset++;
     }
     // now we'll place FE & built-in data to the last sector of
@@ -5092,7 +5100,7 @@ UDFRecordVAT(
     status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo);
     if (!NT_SUCCESS(status))
         return status;
-    WCacheFlushAll__(IrpContext, &Vcb->FastCache, Vcb);
+
     return STATUS_SUCCESS;
 } // end UDFRecordVAT()
 
@@ -5149,7 +5157,8 @@ UDFConvertFEToExtended(
     PFILE_ENTRY FileEntry;
     uint32 Length, NewLength, l;
     NTSTATUS status;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
+    SIZE_T WrittenBytes;
 
     if (!FileInfo) return STATUS_INVALID_PARAMETER;
     ValidateFileInfo(FileInfo);
@@ -5211,7 +5220,7 @@ UDFConvertFEToExtended(
             MyFreePool__(FileInfo->Dloc->FileEntry);
             FileInfo->Dloc->FileEntry = (tag*)ExFileEntry;
             if (!NT_SUCCESS(status = UDFResizeFile__(IrpContext, Vcb, FileInfo, l)) ||
-               !NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, FileInfo, 0, l, FALSE, tmp_buff, &ReadBytes)) ) {
+               !NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, FileInfo, 0, l, FALSE, tmp_buff, &WrittenBytes)) ) {
                 MyFreePool__(ExFileEntry);
                 MyFreePool__(tmp_buff);
                 return status;

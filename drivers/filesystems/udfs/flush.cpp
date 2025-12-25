@@ -112,8 +112,6 @@ UDFCommonFlush(
         // action we take.
         if ((Fcb == Fcb->Vcb->VolumeDasdFcb) || (Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY)) {
 
-            Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
-
 #ifdef UDF_DELAYED_CLOSE
             UDFFspClose(Vcb);
 #endif //UDF_DELAYED_CLOSE
@@ -464,17 +462,10 @@ UDFFlushVolume(
         if (FlushFlags & UDF_FLUSH_FLAGS_LITE) {
             UDFPrint(("  Lite flush, keep Modified=%d.\n", Vcb->Modified));
         } else {
-            if (Vcb->VerifyOnWrite) {
-                UDFPrint(("UDF: Flushing cache for verify\n"));
-                //WCacheFlushAll__(&(Vcb->FastCache), Vcb);
-                WCacheFlushBlocks__(IrpContext, &Vcb->FastCache, Vcb, 0, Vcb->LastLBA);
-                UDFVFlush(Vcb);
-            }
             // umount (this is internal operation, NT will "dismount" volume later)
             UDFUmount__(IrpContext, Vcb);
 
             UDFPreClrModified(Vcb);
-            WCacheFlushAll__(IrpContext, &Vcb->FastCache, Vcb);
             UDFClrModified(Vcb);
         }
 

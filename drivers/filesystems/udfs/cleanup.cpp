@@ -501,11 +501,28 @@ DiscardDelete:
                     ASize = UDFGetFileAllocationSize(Vcb, NextFileInfo);
 //                        Fcb->CommonFCBHeader.AllocationSize.QuadPart;
                     UDFSetFileSizeInDirNdx(Vcb, NextFileInfo, &ASize);
-                } else
-                if (FileObject->Flags & FO_FILE_SIZE_CHANGED) {
+
+                } else if (FileObject->Flags & FO_FILE_SIZE_CHANGED) {
+
                     ASize = //UDFGetFileAllocationSize(Vcb, NextFileInfo);
                     Fcb->Header.AllocationSize.QuadPart;
                     UDFSetFileSizeInDirNdx(Vcb, NextFileInfo, &ASize);
+
+                    if (UDFIsAStream(Fcb->FileInfo)) {
+
+                        UDFNotifyFullReportChange(Vcb,
+                            Fcb,
+                            FILE_NOTIFY_CHANGE_STREAM_SIZE,
+                            FILE_ACTION_MODIFIED_STREAM);
+                    }
+                    else {
+
+                        UDFNotifyFullReportChange(Vcb,
+                            Fcb,
+                            FILE_NOTIFY_CHANGE_SIZE,
+                            FILE_ACTION_MODIFIED);
+                    }
+
                 }
             }
             // AccessTime

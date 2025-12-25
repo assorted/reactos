@@ -10,7 +10,6 @@
 #include "ecma_167.h"
 #include "osta_misc.h"
 #include "udf_rel.h"
-#include "wcache.h"
 
 // memory re-allocation (returns new buffer size)
 uint32    UDFMemRealloc(IN int8* OldBuff,     // old buffer
@@ -49,7 +48,7 @@ NTSTATUS UDFReadExtent(
     IN SIZE_T Length,
     IN BOOLEAN Direct,
     OUT int8* Buffer,
-    OUT PSIZE_T ReadBytes
+    OUT PULONG ReadBytes
     );
 
 // builds mapping for specified amount of data at any offset from specified extent.
@@ -793,7 +792,7 @@ UDFReadFile__(
     IN SIZE_T Length,
     IN BOOLEAN Direct,
     OUT int8* Buffer,
-    OUT PSIZE_T ReadBytes
+    OUT PULONG ReadBytes
     )
 {
     ValidateFileInfo(FileInfo);
@@ -1041,22 +1040,7 @@ BOOLEAN  UDFCompareFileInfo(IN PUDF_FILE_INFO f1,
 void
 __fastcall UDFPackMapping(IN PVCB Vcb,
                         IN PEXTENT_INFO ExtInfo);   // Extent array
-// check if all the data is in cache.
-BOOLEAN  UDFIsExtentCached(IN PVCB Vcb,
-                           IN PEXTENT_INFO ExtInfo, // Extent array
-                           IN int64 Offset,      // offset in extent
-                           IN uint32 Length,
-                           IN BOOLEAN ForWrite);
-/*BOOLEAN  UDFIsFileCached__(IN PVCB Vcb,
-                       IN PUDF_FILE_INFO FileInfo,
-                       IN int64 Offset,   // offset in extent
-                       IN uint32 Length,
-                       IN BOOLEAN ForWrite);*/
-#define UDFIsFileCached__(Vcb, FileInfo, Offset, Length, ForWrite)  \
-    (UDFIsExtentCached(Vcb, &((FileInfo)->Dloc->DataLoc), Offset, Length, ForWrite))
-// check if specified sector belongs to a file
-ULONG  UDFIsBlockAllocated(IN void* _Vcb,
-                           IN uint32 Lba);
+
 // record VolIdent
 NTSTATUS
 UDFUpdateVolIdent(
@@ -1463,81 +1447,6 @@ UDFDirIndex(
 #endif //UDF_DBG
 
 extern const char hexChar[];
-
-#define UDF_MAX_VERIFY_CACHE   (8*1024*1024/2048)
-#define UDF_VERIFY_CACHE_LOW   (4*1024*1024/2048)
-#define UDF_VERIFY_CACHE_GRAN  (512*1024/2048)
-#define UDF_SYS_CACHE_STOP_THR (10*1024*1024/2048)
-
-NTSTATUS
-UDFVInit(
-    IN PVCB Vcb
-    );
-
-VOID
-UDFVRelease(
-    IN PVCB Vcb
-    );
-
-#define PH_FORGET_VERIFIED    0x00800000
-#define PH_READ_VERIFY_CACHE  0x00400000
-#define PH_KEEP_VERIFY_CACHE  0x00200000
-
-NTSTATUS
-UDFVWrite(
-    IN PVCB Vcb,
-    IN void* Buffer,     // Target buffer
-    IN uint32 BCount,
-    IN uint32 LBA,
-//    OUT PSIZE_T WrittenBytes,
-    IN uint32 Flags
-    );
-
-NTSTATUS
-UDFVRead(
-    IN PVCB Vcb,
-    IN void* Buffer,     // Target buffer
-    IN uint32 BCount,
-    IN uint32 LBA,
-//    OUT uint32* ReadBytes,
-    IN uint32 Flags
-    );
-
-NTSTATUS
-UDFVForget(
-    IN PVCB Vcb,
-    IN uint32 BCount,
-    IN uint32 LBA,
-    IN uint32 Flags
-    );
-
-#define UFD_VERIFY_FLAG_FORCE   0x01
-#define UFD_VERIFY_FLAG_WAIT    0x02
-#define UFD_VERIFY_FLAG_BG      0x04
-#define UFD_VERIFY_FLAG_LOCKED  0x10
-
-VOID
-UDFVVerify(
-    IN PVCB Vcb,
-    IN ULONG Flags
-    );
-
-VOID
-UDFVFlush(
-    IN PVCB Vcb
-    );
-
-__inline
-BOOLEAN
-__fastcall UDFVIsStored(
-    IN PVCB Vcb,
-    IN lba_t lba
-    )
-{
-    if (!Vcb->VerifyCtx.VInited)
-        return FALSE;
-    return UDFGetBit(Vcb->VerifyCtx.StoredBitMap, lba);
-} // end UDFVIsStored()
 
 BOOLEAN
 __fastcall

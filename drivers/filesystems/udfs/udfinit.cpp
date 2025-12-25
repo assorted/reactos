@@ -312,7 +312,7 @@ UDFInitializeFunctionPointers(
     PtrFastIoDispatch->FastIoQueryNetworkOpenInfo = UDFFastIoQueryNetInfo;
 
     PtrFastIoDispatch->AcquireForModWrite       = UDFFastIoAcqModWrite;
-    PtrFastIoDispatch->ReleaseForModWrite       = UDFFastIoRelModWrite;
+    PtrFastIoDispatch->ReleaseForModWrite       = NULL;
     PtrFastIoDispatch->AcquireForCcFlush        = UDFFastIoAcqCcFlush;
     PtrFastIoDispatch->ReleaseForCcFlush        = UDFFastIoRelCcFlush;
 

@@ -34,7 +34,6 @@ list(APPEND SOURCE
     unload.cpp
     verfysup.cpp
     volinfo.cpp
-    wcache.cpp
     write.cpp
     strucsup.cpp
     filobsup.cpp

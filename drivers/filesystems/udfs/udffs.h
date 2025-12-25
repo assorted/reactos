@@ -17,6 +17,8 @@
 #ifndef _UDF_UDF_H_
 #define _UDF_UDF_H_
 
+#pragma warning(disable : 28172)
+
 /**************** OPTIONS *****************/
 
 //#define UDF_TRACK_UNICODE_STR
@@ -39,7 +41,6 @@
 
 // WCACHE was disabled due to errors in it.
 // Test case: Running 'git clone https://github.com/reactos/reactos' under ReactOS results in an error.
-//#define UDF_USE_WCACHE
 
 #define UDF_ALLOW_FRAG_AD
 
@@ -55,7 +56,7 @@
 
 #define UDF_DEFAULT_SPARSE_THRESHOLD (256*PACKETSIZE_UDF)
 
-#define ALLOW_SPARSE
+//#define ALLOW_SPARSE
 
 #define UDF_PACK_DIRS
 
@@ -71,8 +72,6 @@
     FILE_ATTRIBUTE_NORMAL     | \
     FILE_ATTRIBUTE_TEMPORARY  | \
     FILE_ATTRIBUTE_SPARSE_FILE)
-
-//#define UDF_DISABLE_SYSTEM_CACHE_MANAGER
 
 //#define UDF_CDRW_EMULATION_ON_ROM
 
@@ -132,7 +131,6 @@ typedef FILE_ID                     *PFILE_ID;
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
-#include "wcache.h"
 
 #include "Include/regtools.h"
 #include "Include/udf_reg.h"

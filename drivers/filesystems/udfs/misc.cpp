@@ -57,27 +57,15 @@ UDFInitializeZones(VOID)
         case MmMediumSystem:
             UdfData.MaxDelayedCloseCount = 32;
             UdfData.MinDelayedCloseCount = 8;
-            UdfData.WCacheMaxFrames = 8*4;
-            UdfData.WCacheMaxBlocks = 16*64;
-            UdfData.WCacheBlocksPerFrameSh = 8;
-            UdfData.WCacheFramesToKeepFree = 4;
             break;
         case MmLargeSystem:
             UdfData.MaxDelayedCloseCount = 72;
             UdfData.MinDelayedCloseCount = 18;
-            UdfData.WCacheMaxFrames = 2*16*4;
-            UdfData.WCacheMaxBlocks = 2*16*64;
-            UdfData.WCacheBlocksPerFrameSh = 8;
-            UdfData.WCacheFramesToKeepFree = 8;
             break;
         case MmSmallSystem:
         default:
             UdfData.MaxDelayedCloseCount = 10;
             UdfData.MinDelayedCloseCount = 2;
-            UdfData.WCacheMaxFrames = 8*4/2;
-            UdfData.WCacheMaxBlocks = 16*64/2;
-            UdfData.WCacheBlocksPerFrameSh = 8;
-            UdfData.WCacheFramesToKeepFree = 2;
         }
 
         ExInitializeNPagedLookasideList(&UdfData.IrpContextLookasideList,
@@ -1440,10 +1428,7 @@ UDFReadRegKeys(
     BOOLEAN UseCfg
     )
 {
-    ULONG mult = 1;
     ptrUDFGetParameter UDFGetParameter = UDFGetRegParameter;
-
-    Vcb->DefaultRegName = REG_DEFAULT_UNKNOWN;
 
     // What type of AllocDescs should we use
     Vcb->DefaultAllocMode = (USHORT)UDFGetParameter(Vcb, REG_DEFALLOCMODE_NAME,
@@ -1494,9 +1479,6 @@ UDFReadRegKeys(
         Update ? Vcb->SparseThreshold : 0);
     if (!Vcb->SparseThreshold)
         Vcb->SparseThreshold = UDF_DEFAULT_SPARSE_THRESHOLD;
-    // This option is used to VERIFY all the data written. It decreases performance
-    Vcb->VerifyOnWrite = UDFGetParameter(Vcb, UDF_VERIFY_ON_WRITE_NAME,
-        Update ? Vcb->VerifyOnWrite : FALSE) ? TRUE : FALSE;
 
     // Should we update AttrFileTime on Attr changes
     UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_UPDATE_TIMES_ATTR, UDF_VCB_IC_UPDATE_ATTR_TIME, FALSE);
@@ -1537,11 +1519,6 @@ UDFReadRegKeys(
         if (UDFGetParameter(Vcb, UDF_DIRTY_VOLUME_BEHAVIOR, UDF_PART_DAMAGED_RO)) {
             Vcb->CompatFlags |= UDF_VCB_IC_DIRTY_RO;
         }
-
-        mult = UDFGetParameter(Vcb, UDF_CACHE_SIZE_MULTIPLIER, 1);
-        if (!mult) mult = 1;
-        Vcb->WCacheMaxBlocks *= mult;
-        Vcb->WCacheMaxFrames *= mult;
     }
     return;
 } // end UDFReadRegKeys()
@@ -1553,11 +1530,7 @@ UDFGetRegParameter(
     IN ULONG DefValue
     )
 {
-    return UDFRegCheckParameterValue(&(UdfData.SavedRegPath),
-                                     Name,
-                                     NULL,
-                                     Vcb ? Vcb->DefaultRegName : NULL,
-                                     DefValue);
+    return DefValue;
 } // end UDFGetRegParameter()
 
 VOID
@@ -1581,16 +1554,6 @@ UDFDeleteVCB(
         delay.QuadPart -= 500000; // grow delay 0.05 sec
     }
 
-    _SEH2_TRY {
-        UDFPrint(("UDF: Flushing buffers\n"));
-        UDFVRelease(Vcb);
-        WCacheFlushAll__(IrpContext, &Vcb->FastCache, Vcb);
-        WCacheRelease__(&Vcb->FastCache);
-
-    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
-    } _SEH2_END;
-
 #ifdef UDF_DBG
     _SEH2_TRY {
         if (!ExIsResourceAcquiredShared(&UdfData.GlobalDataResource)) {
@@ -1604,7 +1567,7 @@ UDFDeleteVCB(
 #endif
 
     _SEH2_TRY {
-        RemoveEntryList(&(Vcb->NextVCB));
+        RemoveEntryList(&(Vcb->VcbLinks));
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
     } _SEH2_END;
@@ -1643,186 +1606,6 @@ UDFDeleteVCB(
                                                      Vcb));
 
 } // end UDFDeleteVCB()
-
-/*
-    Read DWORD from Registry
-*/
-ULONG
-UDFRegCheckParameterValue(
-    IN PUNICODE_STRING RegistryPath,
-    IN PCWSTR Name,
-    IN PUNICODE_STRING PtrVolumePath,
-    IN PCWSTR DefaultPath,
-    IN ULONG DefValue
-    )
-{
-    NTSTATUS          status;
-
-    ULONG             val = DefValue;
-
-    UNICODE_STRING    paramStr;
-    UNICODE_STRING    defaultParamStr;
-    UNICODE_STRING    paramPathUnknownStr;
-
-    UNICODE_STRING    paramSuffix;
-    UNICODE_STRING    paramPath;
-    UNICODE_STRING    paramPathUnknown;
-    UNICODE_STRING    paramDevPath;
-    UNICODE_STRING    defaultParamPath;
-
-    _SEH2_TRY {
-
-        paramPath.Buffer = NULL;
-        paramDevPath.Buffer = NULL;
-        paramPathUnknown.Buffer = NULL;
-        defaultParamPath.Buffer = NULL;
-
-        // First append \Parameters to the passed in registry path
-        // Note, RtlInitUnicodeString doesn't allocate memory
-        RtlInitUnicodeString(&paramStr, L"\\Parameters");
-        RtlInitUnicodeString(&paramPath, NULL);
-
-        RtlInitUnicodeString(&paramPathUnknownStr, REG_DEFAULT_UNKNOWN);
-        RtlInitUnicodeString(&paramPathUnknown, NULL);
-
-        paramPathUnknown.MaximumLength = RegistryPath->Length + paramPathUnknownStr.Length + paramStr.Length + sizeof(WCHAR);
-        paramPath.MaximumLength = RegistryPath->Length + paramStr.Length + sizeof(WCHAR);
-
-        paramPath.Buffer = (PWCH)MyAllocatePool__(PagedPool, paramPath.MaximumLength);
-        if (!paramPath.Buffer) {
-            UDFPrint(("UDFCheckRegValue: couldn't allocate paramPath\n"));
-            try_return(val = DefValue);
-        }
-        paramPathUnknown.Buffer = (PWCH)MyAllocatePool__(PagedPool, paramPathUnknown.MaximumLength);
-        if (!paramPathUnknown.Buffer) {
-            UDFPrint(("UDFCheckRegValue: couldn't allocate paramPathUnknown\n"));
-            try_return(val = DefValue);
-        }
-
-        RtlZeroMemory(paramPath.Buffer, paramPath.MaximumLength);
-        status = RtlAppendUnicodeToString(&paramPath, RegistryPath->Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        status = RtlAppendUnicodeToString(&paramPath, paramStr.Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        UDFPrint(("UDFCheckRegValue: (1) |%S|\n", paramPath.Buffer));
-
-        RtlZeroMemory(paramPathUnknown.Buffer, paramPathUnknown.MaximumLength);
-        status = RtlAppendUnicodeToString(&paramPathUnknown, RegistryPath->Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        status = RtlAppendUnicodeToString(&paramPathUnknown, paramStr.Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        status = RtlAppendUnicodeToString(&paramPathUnknown, paramPathUnknownStr.Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        UDFPrint(("UDFCheckRegValue: (2) |%S|\n", paramPathUnknown.Buffer));
-
-        // First append \Parameters\Default_XXX to the passed in registry path
-        if (DefaultPath) {
-            RtlInitUnicodeString(&defaultParamStr, DefaultPath);
-            RtlInitUnicodeString(&defaultParamPath, NULL);
-            defaultParamPath.MaximumLength = paramPath.Length + defaultParamStr.Length + sizeof(WCHAR);
-            defaultParamPath.Buffer = (PWCH)MyAllocatePool__(PagedPool, defaultParamPath.MaximumLength);
-            if (!defaultParamPath.Buffer) {
-                UDFPrint(("UDFCheckRegValue: couldn't allocate defaultParamPath\n"));
-                try_return(val = DefValue);
-            }
-
-            RtlZeroMemory(defaultParamPath.Buffer, defaultParamPath.MaximumLength);
-            status = RtlAppendUnicodeToString(&defaultParamPath, paramPath.Buffer);
-            if (!NT_SUCCESS(status)) {
-                try_return(val = DefValue);
-            }
-            status = RtlAppendUnicodeToString(&defaultParamPath, defaultParamStr.Buffer);
-            if (!NT_SUCCESS(status)) {
-                try_return(val = DefValue);
-            }
-            UDFPrint(("UDFCheckRegValue: (3) |%S|\n", defaultParamPath.Buffer));
-        }
-
-        if (PtrVolumePath) {
-            paramSuffix = *PtrVolumePath;
-        } else {
-            RtlInitUnicodeString(&paramSuffix, NULL);
-        }
-
-        RtlInitUnicodeString(&paramDevPath, NULL);
-        // now build the device specific path
-        paramDevPath.MaximumLength = paramPath.Length + paramSuffix.Length + sizeof(WCHAR);
-        paramDevPath.Buffer = (PWCH)MyAllocatePool__(PagedPool, paramDevPath.MaximumLength);
-        if (!paramDevPath.Buffer) {
-            try_return(val = DefValue);
-        }
-
-        RtlZeroMemory(paramDevPath.Buffer, paramDevPath.MaximumLength);
-        status = RtlAppendUnicodeToString(&paramDevPath, paramPath.Buffer);
-        if (!NT_SUCCESS(status)) {
-            try_return(val = DefValue);
-        }
-        if (paramSuffix.Buffer) {
-            status = RtlAppendUnicodeToString(&paramDevPath, paramSuffix.Buffer);
-            if (!NT_SUCCESS(status)) {
-                try_return(val = DefValue);
-            }
-        }
-
-        UDFPrint(( " Parameter = %ws\n", Name));
-
-        {
-            HKEY hk = NULL;
-            status = RegTGetKeyHandle(NULL, RegistryPath->Buffer, &hk);
-            if (NT_SUCCESS(status)) {
-                RegTCloseKeyHandle(hk);
-            }
-        }
-
-
-        // *** Read GLOBAL_DEFAULTS from
-        // "\DwUdf\Parameters_Unknown\"
-
-        status = RegTGetDwordValue(NULL, paramPath.Buffer, Name, &val);
-
-        // *** Read DEV_CLASS_SPEC_DEFAULTS (if any) from
-        // "\DwUdf\Parameters_%DevClass%\"
-
-        if (DefaultPath) {
-            status = RegTGetDwordValue(NULL, defaultParamPath.Buffer, Name, &val);
-        }
-
-        // *** Read DEV_SPEC_PARAMS from (if device supports GetDevName)
-        // "\DwUdf\Parameters\%DevName%\"
-
-        status = RegTGetDwordValue(NULL, paramDevPath.Buffer, Name, &val);
-
-try_exit:   NOTHING;
-
-    } _SEH2_FINALLY {
-
-        if (DefaultPath && defaultParamPath.Buffer) {
-            MyFreePool__(defaultParamPath.Buffer);
-        }
-        if (paramPath.Buffer) {
-            MyFreePool__(paramPath.Buffer);
-        }
-        if (paramDevPath.Buffer) {
-            MyFreePool__(paramDevPath.Buffer);
-        }
-        if (paramPathUnknown.Buffer) {
-            MyFreePool__(paramPathUnknown.Buffer);
-        }
-    } _SEH2_END;
-
-    UDFPrint(( "UDFCheckRegValue: %ws for drive %s is %x\n\n", Name, PtrVolumePath, val));
-    return val;
-} // end UDFRegCheckParameterValue()
 
 /*
 Routine Description:
@@ -1936,16 +1719,6 @@ UDFAcquireResourceSharedWithCheck(
     }
     return FALSE;
 } // end UDFAcquireResourceSharedWithCheck()
-
-NTSTATUS
-UDFWCacheErrorHandler(
-    IN PVOID Context,
-    IN PWCACHE_ERROR_CONTEXT ErrorInfo
-    )
-{
-    InterlockedIncrement((PLONG)&(((PVCB)Context)->IoErrorCounter));
-    return ErrorInfo->Status;
-}
 
 VOID
 UDFSetModified(
@@ -2252,6 +2025,85 @@ Return Value:
     }
 
     return Acquired;
+}
+
+VOID
+UDFFinishIoAtEof(
+    IN PFCB Fcb
+    )
+{
+    PEOF_WAIT_BLOCK EofWaitBlock;
+
+    PAGED_CODE();
+
+    // Check if list is empty
+
+    if (IsListEmpty(&Fcb->EofListHead)) {
+
+        // No waiters - clear the EOF advance flag
+
+        ClearFlag(Fcb->Header.Flags, FSRTL_FLAG_EOF_ADVANCE_ACTIVE);
+
+    } else {
+
+        // Remove first waiter from list
+
+        EofWaitBlock = (PEOF_WAIT_BLOCK)RemoveHeadList(&Fcb->EofListHead);
+
+        // Signal the waiter's event
+
+        KeSetEvent(&EofWaitBlock->Event, 0, FALSE);
+    }
+}
+
+BOOLEAN
+UDFWaitForIoAtEof(
+    IN PFCB Fcb,
+    IN LONGLONG FileOffset,
+    IN ULONG Length
+    )
+{
+    EOF_WAIT_BLOCK WaitBlock;
+
+    PAGED_CODE();
+
+    ASSERT(Fcb->Header.FileSize.QuadPart >= Fcb->Header.ValidDataLength.QuadPart);
+
+    // Initialize wait block
+
+    RtlZeroMemory(&WaitBlock, sizeof(EOF_WAIT_BLOCK));
+
+    // Initialize event as synchronization event (NotificationEvent = FALSE)
+
+    KeInitializeEvent(&WaitBlock.Event, SynchronizationEvent, FALSE);
+
+    // Insert wait block at end of list
+
+    InsertTailList(&Fcb->EofListHead, &WaitBlock.EofWaitLinks);
+
+    ExReleaseFastMutex(Fcb->Header.FastMutex);
+
+    // Wait for event to be signaled
+
+    KeWaitForSingleObject(&WaitBlock.Event,
+                          Executive,
+                          KernelMode,
+                          FALSE,
+                          NULL);
+
+    ExAcquireFastMutex(Fcb->Header.FastMutex);
+
+    // Check if we still need to extend EOF
+
+    if ((FileOffset >= 0) &&
+        ((FileOffset + Length) <= Fcb->Header.ValidDataLength.QuadPart)) {
+
+        UDFFinishIoAtEof(Fcb);
+
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 #include "Include/regtools.cpp"

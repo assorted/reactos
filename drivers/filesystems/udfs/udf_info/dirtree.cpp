@@ -471,7 +471,7 @@ UDFIndexDirectory(
     int8* buff;
     PEXTENT_INFO ExtInfo;  // Extent array for directory
     uint16 PartNum;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     uint16 valueCRC;
 
     if (!FileInfo) return STATUS_INVALID_PARAMETER;
@@ -707,7 +707,8 @@ UDFPackDirectory__(
     uint32 Offset, curOffset;
     int8* Buf;
     NTSTATUS status;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
+    SIZE_T WrittenBytes;
     int8* storedFI;
     PUDF_FILE_INFO curFileInfo;
     PDIR_INDEX_ITEM DirNdx = NULL, DirNdx2;
@@ -815,7 +816,7 @@ UDFPackDirectory__(
                                      UDFExtentOffsetToLba(Vcb, FileInfo->Dloc->DataLoc.Mapping,
                                                 Offset, NULL, NULL, NULL, NULL)), 0);
 
-                status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, l, FALSE, Buf, &ReadBytes);
+                status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, l, FALSE, Buf, &WrittenBytes);
                 if (!NT_SUCCESS(status)) {
                     DbgFreePool(Buf);
                     return status;
@@ -863,7 +864,8 @@ UDFReTagDirectory(
     uint32 Offset;
     int8* Buf;
     NTSTATUS status;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
+    SIZE_T WrittenBytes;
     PUDF_FILE_INFO curFileInfo;
     PDIR_INDEX_ITEM DirNdx;
     UDF_DIR_SCAN_CONTEXT ScanContext;
@@ -917,7 +919,7 @@ UDFReTagDirectory(
             FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
         }
 
-        status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, l, FALSE, Buf, &ReadBytes);
+        status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, l, FALSE, Buf, &WrittenBytes);
         if (!NT_SUCCESS(status)) {
             DbgFreePool(Buf);
             return status;

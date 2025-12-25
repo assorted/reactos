@@ -272,7 +272,7 @@ UDFShortAllocDescToMapping(
     EXTENT_AD AllocExt;
     PALLOC_EXT_DESC NextAllocDesc;
     lb_addr locAddr;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     EXTENT_INFO NextAllocLoc;
     BOOLEAN w2k_compat = FALSE;
 
@@ -466,7 +466,7 @@ UDFLongAllocDescToMapping(
     PEXTENT_MAP Extent, Extent2, AllocMap;
     EXTENT_AD AllocExt;
     PALLOC_EXT_DESC NextAllocDesc;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     EXTENT_INFO NextAllocLoc;
 
     ExtPrint(("UDFLongAllocDescToMapping: len=%x\n", AllocDescLength));
@@ -605,7 +605,7 @@ UDFExtAllocDescToMapping(
     PEXTENT_MAP Extent, Extent2, AllocMap;
     EXTENT_AD AllocExt;
     PALLOC_EXT_DESC NextAllocDesc;
-    SIZE_T ReadBytes;
+    ULONG ReadBytes;
     EXTENT_INFO NextAllocLoc;
 
     ExtPrint(("UDFExtAllocDescToMapping: len=%x\n", AllocDescLength));
@@ -783,7 +783,6 @@ UDFReadMappingFromXEntry(
 //    if (!(Vcb->UDF_VCB_IC_ADAPTEC_NONALLOC_COMPAT))
 
     AllocLoc->Length=len;
-    AllocLoc->Flags |= EXTENT_FLAG_VERIFY; // for metadata
 
     switch (AllocMode) {
     case ICB_FLAG_AD_SHORT: {
@@ -2921,60 +2920,6 @@ UDFRelocateExtent(
 }
 
 /*
-    This routine checks if all the data required is in cache.
- */
-BOOLEAN
-UDFIsExtentCached(
-    IN PVCB Vcb,
-    IN PEXTENT_INFO ExtInfo,   // Extent array
-    IN int64 Offset,      // offset in extent
-    IN uint32 Length,
-    IN BOOLEAN ForWrite
-    )
-{
-    BOOLEAN retstat = FALSE;
-    PEXTENT_MAP Extent = ExtInfo->Mapping;   // Extent array
-    SIZE_T to_read;
-    uint32 Lba, sect_offs, flags, i;
-
-    WCacheStartDirect__(&(Vcb->FastCache), Vcb, TRUE/*FALSE*//*ForWrite*/);
-    if (!ExtInfo || !ExtInfo->Mapping) goto EO_IsCached;
-    if (!Length) {
-        retstat = TRUE;
-        goto EO_IsCached;
-    }
-
-    // prevent reading out of data space
-    if (Offset > ExtInfo->Length) goto EO_IsCached;
-    if (Offset+Length > ExtInfo->Length) goto EO_IsCached;
-    Offset += ExtInfo->Offset;               // used for in-ICB data
-    // read maximal possible part of each frag of extent
-    Lba = UDFExtentOffsetToLba(Vcb, Extent, Offset, &sect_offs, &to_read, &flags, &i);
-    while(((LONG)Length) > 0) {
-        // EOF check
-        if (Lba == LBA_OUT_OF_EXTENT) goto EO_IsCached;
-        Extent += (i + 1);
-        // check for reading tail
-        to_read = min(to_read, Length);
-        if (flags == EXTENT_RECORDED_ALLOCATED) {
-            retstat = UDFIsDataCached(Vcb, Lba, (to_read+sect_offs+Vcb->SectorSize-1)>>Vcb->SectorShift);
-            if (!retstat) goto EO_IsCached;
-        } else if (ForWrite) {
-            goto EO_IsCached;
-        }
-        Offset += to_read;
-        Length -= to_read;
-        Lba = UDFNextExtentToLba(Vcb, Extent, &to_read, &flags, &i);
-    }
-    retstat = TRUE;
-EO_IsCached:
-    if (!retstat) {
-        WCacheEODirect__(&(Vcb->FastCache), Vcb);
-    }
-    return retstat;
-} // end UDFIsExtentCached()
-
-/*
     This routine reads cached data only.
  */
 /*NTSTATUS
@@ -3035,7 +2980,7 @@ UDFReadExtent(
     IN SIZE_T Length,
     IN BOOLEAN Direct,
     OUT int8* Buffer,
-    OUT PSIZE_T ReadBytes
+    OUT PULONG ReadBytes
     )
 {
     (*ReadBytes) = 0;
@@ -3045,7 +2990,8 @@ UDFReadExtent(
     AdPrint(("Read ExtInfo %x, Mapping %x\n", ExtInfo, ExtInfo->Mapping));
 
     PEXTENT_MAP Extent = ExtInfo->Mapping;   // Extent array
-    SIZE_T to_read, _ReadBytes;
+    SIZE_T to_read;
+    ULONG _ReadBytes;
     uint32 Lba, sect_offs, flags;
     uint32 index;
     NTSTATUS status;
