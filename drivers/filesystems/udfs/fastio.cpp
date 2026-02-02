@@ -399,12 +399,17 @@ BOOLEAN NTAPI UDFAcqLazyWrite(
 
     MmPrint(("  UDFAcqLazyWrite()\n"));
 
-    // Acquire the MainResource in the NT_REQ_FCB exclusively. Then, set the
-    // lazy-writer thread id in the NT_REQ_FCB structure for identification
-    // when an actual write request is received by the FSD.
+    // Acquire the MainResource in the NT_REQ_FCB. For embedded data files
+    // (data stored in ICB), acquire exclusively since data shares sector with
+    // metadata. For normal files, acquire shared to allow concurrent access.
     // Note: The lazy-writer typically always supplies WAIT set to TRUE.
-    if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, Wait))
-        return FALSE;
+    if (Fcb->FcbState & UDF_FCB_EMBEDDED_DATA) {
+        if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, Wait))
+            return FALSE;
+    } else {
+        if (!UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, Wait))
+            return FALSE;
+    }
 
     // Now, set the lazy-writer thread id.
     ASSERT(!(Fcb->LazyWriteThread));
@@ -533,7 +538,6 @@ UDFRelReadAhead(
     MmPrint(("  RelFromReadAhead()\n"));
 
     // Release the acquired resource.
-    UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
     UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
 
     // Of course, the FSD should undo whatever else seems appropriate at this
@@ -869,13 +873,9 @@ UDFFastIoAcqModWrite(
     OUT PERESOURCE    *ResourceToRelease,
     IN PDEVICE_OBJECT DeviceObject)
 {
-    NTSTATUS RC = STATUS_SUCCESS;
-
-    FsRtlEnterFileSystem();
-
-    MmPrint(("  AcqModW %I64x\n", EndingOffset->QuadPart));
-
     PFCB Fcb = (PFCB)FileObject->FsContext;
+
+    *ResourceToRelease = NULL;
 
     // We must determine which resource(s) we would like to
     // acquire at this time. We know that a write is imminent;
@@ -897,63 +897,23 @@ UDFFastIoAcqModWrite(
     // the resource that we acquired (single return value). This pointer
     // will be returned back to we in the release call (below).
 
-    if (UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbPagingIoResource, FALSE)) {
-
-        if (EndingOffset->QuadPart <= Fcb->Header.ValidDataLength.QuadPart) {
-
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
-            RC = STATUS_CANT_WAIT;
-        } else {
-
-            *ResourceToRelease = &Fcb->FcbNonpaged->FcbPagingIoResource;
-            MmPrint(("    AcqModW OK\n"));
-        }
-
+    // For embedded data files, acquire exclusive since data shares sector with metadata
+    // For normal files, shared is enough
+    BOOLEAN Acquired;
+    if (Fcb->FcbState & UDF_FCB_EMBEDDED_DATA) {
+        Acquired = UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, FALSE);
     } else {
-        RC = STATUS_CANT_WAIT;
+        Acquired = UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, FALSE);
     }
 
-    return RC;
+    if (!Acquired) {
+        return STATUS_CANT_WAIT;
+    }
+
+    *ResourceToRelease = &Fcb->FcbNonpaged->FcbResource;
+
+    return STATUS_SUCCESS;
 } // end UDFFastIoAcqModWrite()
-
-
-/*************************************************************************
-*
-* Function: UDFFastIoRelModWrite()
-*
-* Description:
-*   Not really a fast-io operation. Used by the VMM to release FSD resources
-*   after processing a modified page/block write operation.
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL
-*
-* Return Value: STATUS_SUCCESS/Error (an error returned here is really not expected!)
-*
-*************************************************************************/
-NTSTATUS
-NTAPI
-UDFFastIoRelModWrite(
-    IN PFILE_OBJECT   FileObject,
-    IN PERESOURCE     ResourceToRelease,
-    IN PDEVICE_OBJECT DeviceObject)
-{
-    MmPrint(("  RelModW\n"));
-
-    PFCB Fcb = (PFCB)FileObject->FsContext;
-
-    // The MPW has complete the write for modified pages and therefore
-    // wants us to release pre-acquired resource(s).
-
-    // We must undo here whatever it is that we did in the
-    // UDFFastIoAcqModWrite() call above.
-
-    ASSERT(ResourceToRelease == &Fcb->FcbNonpaged->FcbPagingIoResource);
-    UDFReleaseResource(ResourceToRelease);
-
-    return(STATUS_SUCCESS);
-} // end UDFFastIoRelModWrite()
 
 
 /*************************************************************************
@@ -999,8 +959,13 @@ UDFFastIoAcqCcFlush(
 
     PFCB Fcb = (PFCB)FileObject->FsContext;
 
-    UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
-    UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
+    // For embedded data files, acquire exclusive since data shares sector with metadata
+    // For normal files, shared is enough
+    if (Fcb->FcbState & UDF_FCB_EMBEDDED_DATA) {
+        UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
+    } else {
+        UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, TRUE);
+    }
 
     return STATUS_SUCCESS;
 
@@ -1036,10 +1001,9 @@ UDFFastIoRelCcFlush(
         IoSetTopLevelIrp(NULL);
     }
 
-    // Release resources acquired in UDFFastIoAcqCcFlush() above.
+    // Release resource acquired in UDFFastIoAcqCcFlush() above.
     PFCB Fcb = (PFCB)FileObject->FsContext;
 
-    UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
     UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
 
     return STATUS_SUCCESS;

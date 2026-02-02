@@ -80,8 +80,11 @@ UDFCheckAccessRights(
             // The FCB is currently in use by some thread.
             // We must check whether the requested access/share access
             // conflicts with the existing open operations.
+            // Use Update=FALSE (check only, don't update ShareAccess).
+            // IoSetShareAccess/IoUpdateShareAccess in UDFCompleteFcbOpen
+            // handles the actual update AFTER all checks pass.
             RC = IoCheckShareAccess(DesiredAccess, ShareAccess, FileObject,
-                                            &Fcb->ShareAccess, TRUE);
+                                            &Fcb->ShareAccess, FALSE);
         } else {
 
             RC = STATUS_SUCCESS;

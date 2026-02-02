@@ -413,16 +413,21 @@ UDFQueryDirectory(
             DirInformation->FileIndex = NextMatch;
             FileNameBytes = DirInformation->FileNameLength;
 
+            // If this won't fit and we have returned a previous entry then just
+            // return STATUS_SUCCESS.
+
             if ((BaseLength + FileNameBytes) > BytesRemainingInBuffer) {
-                // If this won't fit and we have returned a previous entry then just
-                // return STATUS_SUCCESS. Otherwise
-                // use a status code of STATUS_BUFFER_OVERFLOW.
-                if (CurrentOffset) {
+
+                // If we already found an entry then just exit.
+
+                if (CurrentOffset != 0) {
                     try_return(RC = STATUS_SUCCESS);
                 }
-                // strange policy...
+
+                // Reduce the FileNameBytes to just fit in the buffer.
+
+                FileNameBytes = BytesRemainingInBuffer - BaseLength;
                 ReturnSingleEntry = TRUE;
-                FileNameBytes = BaseLength + FileNameBytes - BytesRemainingInBuffer;
                 RC = STATUS_BUFFER_OVERFLOW;
             }
             //  Now we have an entry to return to our caller.
@@ -595,52 +600,45 @@ UDFNotifyChangeDirectory(
     PCCB                        Ccb
     )
 {
-    PVCB Vcb;
+    // Always set the wait bit in the IrpContext so the initial wait can't fail.
 
-    UDFPrint(("UDFNotifyChangeDirectory\n"));
-
-    Vcb = Fcb->Vcb;
+    SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
 
     // Acquire the Vcb shared.
-    UDFAcquireResourceShared(&Vcb->VcbResource, TRUE);
 
-    // Acquire the FCB resource shared
-    UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-    UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, TRUE);
+    UDFAcquireVcbShared(IrpContext, IrpContext->Vcb, FALSE);
 
     _SEH2_TRY {
 
         // Verify the Vcb.
 
-        UDFVerifyVcb(IrpContext, Vcb);
+        UDFVerifyVcb(IrpContext, IrpContext->Vcb);
 
-        FsRtlNotifyFullChangeDirectory(
-                            Vcb->NotifySync,
-                            &Vcb->NextNotifyIRP,
-                            (PVOID)Ccb,
-                            (Fcb->FileInfo->ParentFile) ? (PSTRING)&(Fcb->FCBName->ObjectName) : (PSTRING)&(UdfData.UnicodeStrRoot),
-                            BooleanFlagOn(IrpSp->Flags, SL_WATCH_TREE),
-                            FALSE,
-                            IrpSp->Parameters.NotifyDirectory.CompletionFilter,
-                            Irp,
-                            NULL,
-                            NULL);
+        // Call the Fsrtl package to process the request.  We cast the
+        // unicode strings to ansi strings as the dir notify package
+        // only deals with memory matching.
+
+        FsRtlNotifyFullChangeDirectory(IrpContext->Vcb->NotifySync,
+                                       &IrpContext->Vcb->NextNotifyIRP,
+                                       (PVOID)Ccb,
+                                       (PSTRING)&FileObject->FileName,
+                                       BooleanFlagOn(IrpSp->Flags, SL_WATCH_TREE),
+                                       FALSE,
+                                       IrpSp->Parameters.NotifyDirectory.CompletionFilter,
+                                       Irp,
+                                       NULL,
+                                       NULL);
 
     } _SEH2_FINALLY {
 
-        // Release the FCB resources.
-        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-        UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
-
         // Release the Vcb.
-        UDFReleaseResource(&Vcb->VcbResource);
 
-        if (!_SEH2_AbnormalTermination()) {
-
-            UDFCompleteRequest(IrpContext, NULL, STATUS_SUCCESS);
-        }
+        UDFReleaseVcb(IrpContext, IrpContext->Vcb);
 
     } _SEH2_END;
+
+    //  Cleanup the IrpContext.
+    UDFCompleteRequest(IrpContext, NULL, STATUS_SUCCESS);
 
     return STATUS_PENDING;
 } // end UDFNotifyChangeDirectory()

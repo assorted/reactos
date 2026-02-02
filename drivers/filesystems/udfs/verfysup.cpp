@@ -197,13 +197,17 @@ UDFVerifyVcb(
     }
 
     // Raise the verify / error if neccessary.
-    
+
     if (ForceVerify || DevMarkedForVerify || !NT_SUCCESS( Status)) {
-    
+
         IoSetHardErrorOrVerifyDevice( IrpContext->Irp,
                                       Vcb->Vpb->RealDevice );
-       
-        UDFRaiseStatus(IrpContext, ForceVerify ? STATUS_VERIFY_REQUIRED : Status);
+
+        if (ForceVerify || DevMarkedForVerify) {
+            Status = STATUS_VERIFY_REQUIRED;
+        }
+
+        UDFRaiseStatus(IrpContext, Status);
     }
 
     // Based on the condition of the Vcb we'll either return to our
