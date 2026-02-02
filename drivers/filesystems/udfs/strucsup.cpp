@@ -29,6 +29,23 @@ typedef struct _FCB_TABLE_ELEMENT {
      RtlDeleteElementGenericTable( &(F)->Vcb->FcbTable, &_Key );     \
 }
 
+//
+// Public wrapper for inserting FCB into FcbTable.
+// Called from create.cpp after FCB is fully initialized.
+// VCB must be locked by caller.
+//
+VOID
+UDFInsertFcbIntoTable(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PFCB Fcb
+    )
+{
+    UNREFERENCED_PARAMETER(IrpContext);
+
+    UDFInsertFcbTable(IrpContext, Fcb);
+    SetFlag(Fcb->FcbState, FCB_STATE_IN_FCB_TABLE);
+}
+
 inline
 PFCB_NONPAGED
 UDFAllocateFcbNonpaged(
@@ -173,7 +190,7 @@ Return Value:
 
 VOID
 UDFDeleteFcb(
-    _In_ PIRP_CONTEXT IrpContext,
+    _In_opt_ PIRP_CONTEXT IrpContext,
     _In_ PFCB Fcb
     )
 
@@ -185,9 +202,16 @@ Routine Description:
     are no references remaining.  We cleanup any auxilary structures and
     deallocate this Fcb.
 
+    NOTE: Caller should remove FCB from FcbTable before calling this routine
+    (typically done by UDFTeardownStructures while holding VCB lock).
+    FCB should NOT be in FcbTable when this is called - either it was removed
+    by TeardownStructures, or it was never inserted (error path in create).
+
 Arguments:
 
-    Fcb - This is the Fcb to deallcoate.
+    IrpContext - Optional IrpContext (unused but kept for API consistency).
+
+    Fcb - This is the Fcb to deallocate.
 
 Return Value:
 
@@ -197,100 +221,390 @@ Return Value:
 
 {
     PVCB Vcb = NULL;
+
     PAGED_CODE();
 
-    //  Sanity check the counts.
+    UNREFERENCED_PARAMETER(IrpContext);
+
+    UDFPrint(("UDFDeleteFcb: %x\n", Fcb));
+
+    ASSERT_FCB(Fcb);
+
+    // Sanity check the counts.
 
     NT_ASSERT( Fcb->FcbCleanup == 0 );
     NT_ASSERT( Fcb->FcbReference == 0 );
 
-    //  Release any Filter Context structures associated with this FCB
+    // FCB must NOT be in FcbTable - either TeardownStructures removed it,
+    // or it was never inserted (error path before UDFInsertFcbIntoTable).
+    NT_ASSERT(!FlagOn(Fcb->FcbState, FCB_STATE_IN_FCB_TABLE));
 
-   // FsRtlTeardownPerStreamContexts(&Fcb->Header);
+    // LCB queues must be empty - all LCBs should be removed during teardown
+    NT_ASSERT(IsListEmpty(&Fcb->ParentLcbQueue));
+    NT_ASSERT(IsListEmpty(&Fcb->ChildLcbQueue));
 
-    //  Start with the common structures.
+    // Deinitialize FCBName field.
 
-   // CdUninitializeMcb( IrpContext, Fcb );
+    if (Fcb->FCBName) {
+        if (Fcb->FCBName->ObjectName.Buffer) {
+            MyFreePool__(Fcb->FCBName->ObjectName.Buffer);
+        }
+        UDFReleaseObjectName(Fcb->FCBName);
+        Fcb->FCBName = NULL;
+    }
 
-  //  CdDeleteFcbNonpaged( IrpContext, Fcb->FcbNonpaged );
+    // Release any Filter Context structures associated with this FCB.
+    // Only if FCB was fully initialized (Header.Resource is set by
+    // UDFInitializeFCB).
 
-    //
-    //  Check if we need to deallocate the prefix name buffer.
-    //
+    if (Fcb->Header.Resource) {
+        FsRtlTeardownPerStreamContexts(&Fcb->Header);
+    }
 
-  //  if ((Fcb->FileNamePrefix.ExactCaseName.FileName.Buffer != (PWCHAR) Fcb->FileNamePrefix.FileNameBuffer) &&
-  //      (Fcb->FileNamePrefix.ExactCaseName.FileName.Buffer != NULL)) {
+    // Delete non-paged portion (resources + dealloc).
 
- //       CdFreePool( &Fcb->FileNamePrefix.ExactCaseName.FileName.Buffer );
-  //  }
+    UDFDeleteFcbNonpaged(IrpContext, Fcb->FcbNonpaged);
 
-    //
-    //  Now look at the short name prefix.
-    //
-
- //   if (Fcb->ShortNamePrefix != NULL) {
-
- //       CdFreePool( &Fcb->ShortNamePrefix );
- //   }
-
-    //
-    //  Now do the type specific structures.
-    //
+    // Now do the type specific structures.
 
     switch (Fcb->Header.NodeTypeCode) {
 
     case UDF_NODE_TYPE_INDEX:
 
-    //    NT_ASSERT( Fcb->FileObject == NULL );
-    //    NT_ASSERT( IsListEmpty( &Fcb->FcbQueue ));
+        if (Fcb == Fcb->Vcb->RootIndexFcb) {
 
-    //    if (Fcb == Fcb->Vcb->RootIndexFcb) {
-
-    //        Vcb = Fcb->Vcb;
-    //        Vcb->RootIndexFcb = NULL;
-
-    //    } else if (Fcb == Fcb->Vcb->PathTableFcb) {
-
-    //        Vcb = Fcb->Vcb;
-    //        Vcb->PathTableFcb = NULL;
-    //    }
+            Vcb = Fcb->Vcb;
+            Vcb->RootIndexFcb = NULL;
+        }
 
         UDFDeallocateFcbIndex(Fcb);
         break;
 
     case UDF_NODE_TYPE_DATA:
 
-    //    if (Fcb->FileLock != NULL) {
+        if (Fcb->FileLock != NULL) {
 
-    //        FsRtlFreeFileLock( Fcb->FileLock );
-    //    }
+            FsRtlFreeFileLock( Fcb->FileLock );
+        }
 
-    //    FsRtlUninitializeOplock( CdGetFcbOplock(Fcb) );
+        if (Fcb == Fcb->Vcb->VolumeDasdFcb) {
 
-          if (Fcb == Fcb->Vcb->VolumeDasdFcb) {
-
-              __debugbreak();
-
-              Vcb = Fcb->Vcb;
-              Vcb->VolumeDasdFcb = NULL;
-          }
+            Vcb = Fcb->Vcb;
+            Vcb->VolumeDasdFcb = NULL;
+        }
 
         UDFDeallocateFcbData(Fcb);
+        break;
     }
 
-    //
-    //  Decrement the Vcb reference count if this is a system
-    //  Fcb.
-    //
+    // Decrement the Vcb reference count if this is a system
+    // Fcb.
 
     if (Vcb != NULL) {
 
-     //   InterlockedDecrement( (LONG*)&Vcb->VcbReference );
-     //   InterlockedDecrement( (LONG*)&Vcb->VcbUserReference );
+        InterlockedDecrement( (LONG*)&Vcb->VcbReference );
+        InterlockedDecrement( (LONG*)&Vcb->VcbUserReference );
     }
 
     return;
 }
+
+/*
+    This routine walks through the tree to RootDir & kills all unreferenced
+    structures using LCB-based parent traversal (similar to MS UdfTeardownStructures).
+
+    StartingFcb must be acquired exclusively by caller.
+    This function will acquire locks for parent FCBs as needed.
+
+    The algorithm:
+    1. If FcbReference != 0, break (FCB still in use)
+    2. Walk ParentLcbQueue to find LCBs with Reference == 0
+    3. For each such LCB: remove it and decrement parent's FcbReference/FileInfo->RefCount
+    4. If parent's FcbReference goes to 0, recursively tear down parent
+    5. Delete the FCB when all LCBs are processed
+ */
+_Requires_lock_held_(_Global_critical_region_)
+VOID
+UDFTeardownStructures(
+    _In_ PIRP_CONTEXT IrpContext,
+    _Inout_ PFCB StartingFcb,
+    _In_ BOOLEAN Recursive,      // TRUE if this is a recursive call (for hard links)
+    _Out_ PBOOLEAN RemovedStartingFcb
+    )
+{
+    PVCB Vcb = StartingFcb->Vcb;
+    PFCB CurrentFcb = StartingFcb;
+    PFCB ParentFcb = NULL;
+    PLCB Lcb;
+    PLIST_ENTRY ListLinks;
+
+    BOOLEAN Delete = FALSE;
+    BOOLEAN AcquiredCurrentFcb = FALSE;
+    BOOLEAN Abort = FALSE;
+    BOOLEAN Removed;
+
+    AdPrint(("UDFTeardownStructures, StartingFcb %p %s\n",
+             StartingFcb, Recursive ? "Recursive" : "Flat"));
+
+    ASSERT_EXCLUSIVE_FCB(StartingFcb);
+
+    *RemovedStartingFcb = FALSE;
+
+    //
+    // If this is not an intentionally recursive call we need to check if this
+    // is a layered close and we're already in another instance of teardown.
+    //
+    if (!Recursive) {
+        if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_IN_TEARDOWN)) {
+            return;
+        }
+        SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_IN_TEARDOWN);
+    }
+
+    _SEH2_TRY {
+
+        //
+        // Loop until we find an Fcb we can't remove.
+        //
+        do {
+
+            //
+            // If the reference count is non-zero then break.
+            //
+            if (CurrentFcb->FcbReference != 0) {
+                break;
+            }
+
+            //
+            // It looks like we have a candidate for removal here.  We
+            // will need to walk the list of prefixes (LCBs) and delete them
+            // from their parents.  If it turns out that we have multiple
+            // parents of this Fcb (hard links), we are going to recursively
+            // teardown on each of these.
+            //
+            for (ListLinks = CurrentFcb->ParentLcbQueue.Flink;
+                 ListLinks != &CurrentFcb->ParentLcbQueue; ) {
+
+                Lcb = CONTAINING_RECORD(ListLinks, LCB, ChildFcbLinks);
+
+                ASSERT(Lcb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_LCB);
+
+                //
+                // We advance the pointer now because we will be toasting this guy,
+                // invalidating whatever is here.
+                //
+                ListLinks = ListLinks->Flink;
+
+                //
+                // We may have multiple parents through hard links.  If the previous parent we
+                // dealt with is not the parent of this new Lcb, lets do some work.
+                //
+                if (ParentFcb != Lcb->ParentFcb) {
+
+                    //
+                    // We need to deal with the previous parent.  It may now be the case that
+                    // we deleted the last child reference and it wants to go away at this point.
+                    //
+                    if (ParentFcb) {
+                        //
+                        // It should never be the case that we have to recurse more than one level on
+                        // any teardown since no cross-linkage of directories is possible.
+                        //
+                        ASSERT(!Recursive);
+
+                        UDFTeardownStructures(IrpContext, ParentFcb, TRUE, &Removed);
+
+                        if (!Removed) {
+                            UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+                        }
+                    }
+
+                    //
+                    // Get this new parent Fcb to work on.
+                    //
+                    ParentFcb = Lcb->ParentFcb;
+                    UDFAcquireResourceExclusive(&ParentFcb->FcbNonpaged->FcbResource, TRUE);
+                }
+
+                //
+                // Lock the Vcb so we can look at references.
+                //
+                UDFLockVcb(IrpContext, Vcb);
+
+                //
+                // Now check that the reference counts on the Lcb are zero.
+                //
+                if (Lcb->Reference != 0) {
+                    //
+                    // A create is interested in getting in here, so we should
+                    // stop right now.
+                    //
+                    UDFUnlockVcb(IrpContext, Vcb);
+                    UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+                    ParentFcb = NULL;
+                    Abort = TRUE;
+                    break;
+                }
+
+                //
+                // Now remove this prefix and drop the references to the parent.
+                //
+                ASSERT(Lcb->ChildFcb == CurrentFcb);
+                ASSERT(Lcb->ParentFcb == ParentFcb);
+
+                AdPrint(("UDFTeardownStructures, removing Lcb %p P %p <-> C %p\n",
+                         Lcb, ParentFcb, CurrentFcb));
+
+                //
+                // Remove LCB from queues
+                //
+                UDFRemovePrefix(IrpContext, Lcb);
+
+                //
+                // Decrement parent's references
+                // (UDFAcquirePrefix incremented both when LCB was created)
+                //
+                if (ParentFcb->FileInfo) {
+                    UDFCloseFile__(IrpContext, Vcb, ParentFcb->FileInfo);
+                }
+                InterlockedDecrement((PLONG)&ParentFcb->FcbReference);
+
+                UDFUnlockVcb(IrpContext, Vcb);
+            }
+
+            //
+            // Now really leave if we have to.
+            //
+            if (Abort) {
+                break;
+            }
+
+            //
+            // Now that we have removed all of the prefixes of this Fcb we can make the final check.
+            // Lock the Vcb again so we can inspect the child's references.
+            //
+            UDFLockVcb(IrpContext, Vcb);
+
+            if (CurrentFcb->FcbReference != 0) {
+                //
+                // Nope, nothing more to do.  Stop right now.
+                //
+                UDFUnlockVcb(IrpContext, Vcb);
+
+                if (ParentFcb != NULL) {
+                    UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+                }
+                break;
+            }
+
+            //
+            // This Fcb is toast.  Remove it from the Fcb Table as appropriate and delete.
+            //
+            if (FlagOn(CurrentFcb->FcbState, FCB_STATE_IN_FCB_TABLE)) {
+                UDFDeleteFcbTable(IrpContext, CurrentFcb);
+                ClearFlag(CurrentFcb->FcbState, FCB_STATE_IN_FCB_TABLE);
+            }
+
+            //
+            // Check FcbCleanup while still holding VcbMutex
+            //
+            BOOLEAN ShouldDelete = !CurrentFcb->FcbCleanup;
+            UDFUnlockVcb(IrpContext, Vcb);
+
+            if (ShouldDelete && CurrentFcb->FileInfo) {
+
+                // no more references... current file/dir MUST DIE!!!
+                if (Delete) {
+                    UDFReferenceFile__(CurrentFcb->FileInfo);
+                    UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
+                    UDFUnlinkFile__(IrpContext, Vcb, CurrentFcb->FileInfo, TRUE);
+                    UDFCloseFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
+                    CurrentFcb->FcbState |= UDF_FCB_DELETED;
+                    Delete = FALSE;
+                }
+                else if (!(CurrentFcb->FcbState & UDF_FCB_DELETED)) {
+                    UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
+                }
+
+                // check if we should try to delete Parent for the next time
+                if (CurrentFcb->FcbState & UDF_FCB_DELETE_PARENT) {
+                    Delete = TRUE;
+                }
+
+                // remove references to OS-specific structures
+                // to let UDF_INFO release FI & Co
+                CurrentFcb->FileInfo->Fcb = NULL;
+                if (CurrentFcb->FileInfo->Dloc) {
+                    CurrentFcb->FileInfo->Dloc->CommonFcb = NULL;
+                }
+
+                if (UDFCleanUpFile__(Vcb, CurrentFcb->FileInfo) == (UDF_FREE_FILEINFO | UDF_FREE_DLOC)) {
+
+                    AdPrint(("UDFTeardownStructures, deleting Fcb %p\n", CurrentFcb));
+
+                    // Release the exclusive FCB lock before deleting the FCB.
+                    UDF_CHECK_PAGING_IO_RESOURCE(CurrentFcb);
+                    UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+
+                    // Save FileInfo before freeing FCB (avoid use-after-free)
+                    PUDF_FILE_INFO FileInfoToFree = CurrentFcb->FileInfo;
+                    CurrentFcb->ParentFcb = NULL;
+                    UDFDeleteFcb(IrpContext, CurrentFcb);
+                    MyFreePool__(FileInfoToFree);
+
+                    // Move to the parent Fcb.
+                    CurrentFcb = ParentFcb;
+                    ParentFcb = NULL;
+                    AcquiredCurrentFcb = TRUE;
+
+                } else {
+                    // Stop cleaning up - restore pointers
+                    CurrentFcb->FileInfo->Fcb = CurrentFcb;
+                    if (CurrentFcb->FileInfo->Dloc) {
+                        CurrentFcb->FileInfo->Dloc->CommonFcb = CurrentFcb;
+                    }
+
+                    UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+                    CurrentFcb = ParentFcb;
+                    ParentFcb = NULL;
+                    AcquiredCurrentFcb = TRUE;
+                }
+            } else {
+                // Cannot delete - release and move to parent
+                if (CurrentFcb != StartingFcb || AcquiredCurrentFcb) {
+                    UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+                }
+                CurrentFcb = ParentFcb;
+                ParentFcb = NULL;
+                AcquiredCurrentFcb = TRUE;
+            }
+
+        } while (CurrentFcb != NULL);
+
+    } _SEH2_FINALLY {
+
+        //
+        // Release the current Fcb if we have acquired it.
+        //
+        if (AcquiredCurrentFcb && (CurrentFcb != NULL)) {
+            UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+        }
+
+        //
+        // Clear the teardown flag.
+        //
+        if (!Recursive) {
+            ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_IN_TEARDOWN);
+        }
+
+    } _SEH2_END;
+
+    *RemovedStartingFcb = (CurrentFcb != StartingFcb);
+
+    AdPrint(("UDFTeardownStructures, RemovedStartingFcb -> %c\n",
+             *RemovedStartingFcb ? 'T' : 'F'));
+
+} // end UDFTeardownStructures()
 
 PFCB
 UDFLookupFcbTable (
@@ -558,11 +872,15 @@ UDFInitializeFCB(
 
     Fcb->FcbState = Flags;
 
-    UDFInsertFcbTable(IrpContext, Fcb);
-    SetFlag(Fcb->FcbState, FCB_STATE_IN_FCB_TABLE);
+    // NOTE: FCB is NOT added to FcbTable here.
+    // Caller is responsible for calling UDFInsertFcbTable after
+    // FCB is fully initialized (matching MS pattern where
+    // UdfInsertFcbTable is called at the END of initialization).
 
     // initialize the various list heads
     InitializeListHead(&Fcb->NextCCB);
+    InitializeListHead(&Fcb->ParentLcbQueue);
+    InitializeListHead(&Fcb->ChildLcbQueue);
 
     Fcb->FcbReference = 0;
     Fcb->FcbCleanup = 0;
@@ -837,65 +1155,6 @@ UDFInitializeVCB(
     } _SEH2_END;
 } // end UDFInitializeVCB()
 
-VOID
-UDFCleanUpFCB(
-    PFCB Fcb
-    )
-{
-    UDFPrint(("UDFCleanUpFCB: %x\n", Fcb));
-    if (!Fcb) return;
-
-    ASSERT_FCB(Fcb);
-
-    _SEH2_TRY {
-        // Deinitialize FCBName field
-        if (Fcb->FCBName) {
-            if (Fcb->FCBName->ObjectName.Buffer) {
-                MyFreePool__(Fcb->FCBName->ObjectName.Buffer);
-                Fcb->FCBName->ObjectName.Buffer = NULL;
-#ifdef UDF_DBG
-                Fcb->FCBName->ObjectName.Length =
-                Fcb->FCBName->ObjectName.MaximumLength = 0;
-#endif
-            }
-#ifdef UDF_DBG
-            else {
-                UDFPrint(("UDF: Fcb has invalid FCBName Buffer\n"));
-                BrutePoint();
-            }
-#endif
-            UDFReleaseObjectName(Fcb->FCBName);
-            Fcb->FCBName = NULL;
-        }
-#ifdef UDF_DBG
-        else {
-            UDFPrint(("UDF: Fcb has invalid FCBName field\n"));
-            BrutePoint();
-        }
-#endif
-
-
-        // begin transaction {
-
-        UDFLockVcb(IrpContext, Fcb->Vcb);
-
-        if (FlagOn(Fcb->FcbState, FCB_STATE_IN_FCB_TABLE)) {
-
-            UDFDeleteFcbTable(IrpContext, Fcb);
-            ClearFlag(Fcb->FcbState, FCB_STATE_IN_FCB_TABLE);
-        }
-
-        UDFUnlockVcb(IrpContext, Fcb->Vcb);
-
-        // } end transaction
-
-        // Free memory
-        UDFDeleteFcb(0, Fcb);
-    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-        BrutePoint();
-    } _SEH2_END;
-} // end UDFCleanUpFCB()
-
 NTSTATUS
 UDFCompleteMount(
     IN PIRP_CONTEXT IrpContext,
@@ -945,7 +1204,7 @@ UDFCompleteMount(
 
         if (!RootName) {
 
-            UDFCleanUpFCB(Vcb->RootIndexFcb);
+            UDFDeleteFcb(IrpContext, Vcb->RootIndexFcb);
             Vcb->RootIndexFcb = NULL;
             try_return(Status = STATUS_INSUFFICIENT_RESOURCES);
         }
@@ -961,7 +1220,7 @@ UDFCompleteMount(
     insuf_res_1:
             MyFreePool__(RootName->ObjectName.Buffer);
             UDFReleaseObjectName(RootName);
-            UDFCleanUpFCB(Vcb->RootIndexFcb);
+            UDFDeleteFcb(IrpContext, Vcb->RootIndexFcb);
             Vcb->RootIndexFcb = NULL;
             try_return(Status);
         }
@@ -996,10 +1255,19 @@ UDFCompleteMount(
 
             UDFCleanUpFile__(Vcb, Vcb->RootIndexFcb->FileInfo);
             MyFreePool__(Vcb->RootIndexFcb->FileInfo);
-            UDFCleanUpFCB(Vcb->RootIndexFcb);
+
+            // FCB was not inserted into table (UDFInitializeFCB failed
+            // before UDFInsertFcbIntoTable was called)
+            UDFUnlockVcb(IrpContext, Vcb);
+            UnlockVcb = FALSE;
+
+            UDFDeleteFcb(IrpContext, Vcb->RootIndexFcb);
             Vcb->RootIndexFcb = NULL;
             try_return(Status);
         }
+
+        // Insert into FcbTable after successful initialization
+        UDFInsertFcbIntoTable(IrpContext, Vcb->RootIndexFcb);
 
         // this is a part of UDF_RESIDUAL_REFERENCE
         InterlockedIncrement((PLONG)&Vcb->VcbReference);

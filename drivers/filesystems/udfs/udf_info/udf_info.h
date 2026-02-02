@@ -131,6 +131,23 @@ __inline NTSTATUS UDFFindFile__(IN PVCB Vcb,
     return UDFFindFile(Vcb, IgnoreCase, TRUE, Name, DirInfo, &i);
 }
 
+// Find file in directory and fill enumeration context
+NTSTATUS UDFFindDirEntry(
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO DirInfo,
+    IN PUNICODE_STRING FileName,
+    IN BOOLEAN IgnoreCase,
+    IN BOOLEAN NotDeleted,
+    OUT PDIR_ENUM_CONTEXT DirContext);
+
+// Open file from directory context (after UDFFindDirEntry)
+NTSTATUS UDFOpenObjectFromDirContext(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PDIR_ENUM_CONTEXT DirContext,
+    IN BOOLEAN NotDeleted,
+    OUT PUDF_FILE_INFO* FileInfo);
+
 // calculate file mapping length (in bytes) including ZERO-terminator
 uint32   UDFGetMappingLength(IN PEXTENT_MAP Extent);
 // merge 2 sequencial file mappings

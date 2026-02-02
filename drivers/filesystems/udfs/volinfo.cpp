@@ -415,11 +415,7 @@ UDFQueryFsAttributeInfo(
     Buffer->FileSystemAttributes = FILE_CASE_SENSITIVE_SEARCH |
                                    FILE_CASE_PRESERVED_NAMES |
                                    (UDFIsStreamsSupported(Vcb) ? FILE_NAMED_STREAMS : 0) |
-#ifdef ALLOW_SPARSE
-                                   FILE_SUPPORTS_SPARSE_FILES |
-#endif //ALLOW_SPARSE
                                    ((Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) ? FILE_READ_ONLY_VOLUME : 0) |
-
                                    FILE_UNICODE_ON_DISK;
 
     Buffer->MaximumComponentNameLength = UDF_X_NAME_LEN-1;

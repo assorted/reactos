@@ -311,7 +311,15 @@ UDFCommonSetInfo(
         if ((FunctionalityRequested != FilePositionInformation) &&
             (FunctionalityRequested != FileRenameInformation) &&
             (FunctionalityRequested != FileLinkInformation)) {
-            // Acquire the Parent & Main Resources exclusive.
+            // Child-first lock ordering
+            // Acquire Main (child) resource first
+            if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, CanWait)) {
+                PostRequest = TRUE;
+                try_return(Status = STATUS_PENDING);
+            }
+            MainResourceAcquired = TRUE;
+
+            // Acquire Parent resource second
             if (Fcb->FileInfo->ParentFile) {
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
                 if (!UDFAcquireResourceExclusive(&Fcb->ParentFcb->FcbNonpaged->FcbResource, CanWait)) {
@@ -320,12 +328,6 @@ UDFCommonSetInfo(
                 }
                 ParentResourceAcquired = TRUE;
             }
-
-            if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, CanWait)) {
-                PostRequest = TRUE;
-                try_return(Status = STATUS_PENDING);
-            }
-            MainResourceAcquired = TRUE;
 
             if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbPagingIoResource, CanWait)) {
                 PostRequest = TRUE;
@@ -426,20 +428,21 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
+        // Release in reverse order of acquisition
         if (PagingIoResourceAcquired) {
             UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
             PagingIoResourceAcquired = FALSE;
-        }
-
-        if (MainResourceAcquired) {
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
-            MainResourceAcquired = FALSE;
         }
 
         if (ParentResourceAcquired) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
             UDFReleaseResource(&(Fcb->ParentFcb->FcbNonpaged->FcbResource));
             ParentResourceAcquired = FALSE;
+        }
+
+        if (MainResourceAcquired) {
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
+            MainResourceAcquired = FALSE;
         }
 
         if (VcbAcquired) {
@@ -1908,7 +1911,7 @@ UDFPrepareForRenameMoveLink(
     // There is a pair of objects among input dirs &
     // one of them is a parent of another. Sequential resource
     // acquisition may lead to deadlock due to concurrent
-    // CleanUpFcbChain() or UDFCloseFileInfoChain()
+    // cleanup operations or UDFTeardownStructures()
     InterlockedIncrement((PLONG)&Vcb->VcbReference);
 
 
@@ -1920,13 +1923,15 @@ UDFPrepareForRenameMoveLink(
     } else {
         InterlockedDecrement((PLONG)&Vcb->VcbReference);
 
-        UDF_CHECK_PAGING_IO_RESOURCE(Dir1->Fcb);
-        UDFAcquireResourceExclusive(&Dir1->Fcb->FcbNonpaged->FcbResource, TRUE);
-        (*AcquiredDir1) = TRUE;
-
+        // Child-first lock ordering
+        // File1 (child) first, Dir1 (parent) second
         UDF_CHECK_PAGING_IO_RESOURCE(File1->Fcb);
         UDFAcquireResourceExclusive(&File1->Fcb->FcbNonpaged->FcbResource, TRUE);
         (*AcquiredFcb1) = TRUE;
+
+        UDF_CHECK_PAGING_IO_RESOURCE(Dir1->Fcb);
+        UDFAcquireResourceExclusive(&Dir1->Fcb->FcbNonpaged->FcbResource, TRUE);
+        (*AcquiredDir1) = TRUE;
     }
     return STATUS_SUCCESS;
 } // end UDFPrepareForRenameMoveLink()
@@ -1958,19 +1963,16 @@ UDFSetRenameInfo(
     BOOLEAN TargetParentFcbAcquired = FALSE;
     BOOLEAN SingleDir = TRUE;
     BOOLEAN UseClose;
+    BOOLEAN IsStreamRename;
 
     PUDF_FILE_INFO FileInfo;
     PUDF_FILE_INFO DirInfo;
     PUDF_FILE_INFO TargetDirInfo;
-    PUDF_FILE_INFO NextFileInfo, fi;
 
     UNICODE_STRING NewName;
     UNICODE_STRING LocalPath;
     PCCB CurCcb = NULL;
     PLIST_ENTRY Link;
-    ULONG i;
-    ULONG DirRefCount;
-    ULONG FileInfoRefCount;
     ULONG Attr;
     PDIR_INDEX_ITEM DirNdx;
 
@@ -2005,6 +2007,8 @@ UDFSetRenameInfo(
         if (!TargetFileObject) {
 
             TargetDirInfo = FileInfo->ParentFile;
+            // For streams or same-dir rename, target FCB is the parent
+            TargetFcb = TargetDirInfo->Fcb;
 
         } else {
 
@@ -2087,6 +2091,13 @@ post_rename:
 
         IgnoreCase = FlagOn(Ccb->Flags, CCB_FLAG_IGNORE_CASE);
 
+        // Check if renaming to stream name - only allowed for streams
+        if (!TargetFileObject && NewName.Length >= sizeof(WCHAR) && NewName.Buffer[0] == L':') {
+            if (!UDFIsAStream(FileInfo)) {
+                try_return(RC = STATUS_OBJECT_NAME_INVALID);
+            }
+        }
+
         if (UDFIsDirOpened__(FileInfo)) {
             // We can't rename file because of unclean references.
             // UDF_INFO package can safely do it, but NT side cannot.
@@ -2106,9 +2117,8 @@ post_rename:
                 }
             }
 
-            ASSERT(Fcb->FcbReference >= FileInfo->RefCount);
-            ASSERT(DirInfo->Fcb->FcbReference >= DirInfo->RefCount);
-            ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
+            // Note: With LCB model, FcbReference may not always be >= RefCount
+            // for directories opened internally during path traversal
 
             RC = UDFRenameMoveFile__(IrpContext, Vcb, IgnoreCase, &ReplaceIfExists, &NewName, DirInfo, TargetDirInfo, FileInfo);
         }
@@ -2123,7 +2133,9 @@ post_rename:
         if (!NT_SUCCESS(RC)) try_return (RC);
 //        RC = MyAppendUnicodeStringToString(&LocalPath, (Dir2->Fcb->FCBFlags & UDF_FCB_ROOT_DIRECTORY) ? &(UDFGlobalData.UnicodeStrRoot) : &(Dir2->Fcb->FCBName->ObjectName));
 //        if (!NT_SUCCESS(RC)) try_return (RC);
-        if (TargetDirInfo->ParentFile) {
+        // Don't append '\\' for streams (names starting with ':')
+        IsStreamRename = (NewName.Length >= sizeof(WCHAR) && NewName.Buffer[0] == L':');
+        if (TargetDirInfo->ParentFile && !IsStreamRename) {
             RC = MyAppendUnicodeToString(&LocalPath, L"\\");
             if (!NT_SUCCESS(RC)) try_return (RC);
         }
@@ -2203,71 +2215,51 @@ post_rename:
             }
         }
 
-        // this will prevent structutre release before call to
-        // UDFCleanUpFcbChain()
+        // this will prevent structure release before cleanup
         InterlockedIncrement((PLONG)&DirInfo->Fcb->FcbReference);
-        ASSERT(DirInfo->Fcb->FcbReference >= DirInfo->RefCount);
 
-        // Look through Ccb list & decrement OpenHandleCounter(s)
-        // acquire CcbList
+        // Switch LCBs from old parent to new parent for each CCB
+        // With LCB model, each CCB has one LCB linking to its immediate parent.
+        // When renaming across directories, we release the old LCB and acquire
+        // a new one from the target directory.
         if (!SingleDir) {
             UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->CcbListResource, TRUE);
             Link = Fcb->NextCCB.Flink;
-            DirRefCount = 0;
-            FileInfoRefCount = 0;
             ASSERT(Link != &Fcb->NextCCB);
             while (Link != &Fcb->NextCCB) {
-                NextFileInfo = DirInfo;
                 CurCcb = CONTAINING_RECORD(Link, CCB, NextCCB);
-                ASSERT(CurCcb->TreeLength);
-                i = (CurCcb->TreeLength) ? (CurCcb->TreeLength - 1) : 0;
                 Link = Link->Flink;
                 UseClose = (CurCcb->Flags & UDF_CCB_CLEANED) ? FALSE : TRUE;
 
-                AdPrint(("  Ccb:%x:%s:i:%x\n", CurCcb, UseClose ? "Close" : "",i));
-                // cleanup old parent chain
-                for(; i && NextFileInfo; i--) {
-                    // remember parent file now
-                    // it will prevent us from data losses
-                    // due to eventual structure release
-                    fi = NextFileInfo->ParentFile;
-                    if (UseClose) {
-                        ASSERT(NextFileInfo->Fcb->FcbReference >= NextFileInfo->RefCount);
-                        UDFCloseFile__(IrpContext, Vcb, NextFileInfo);
-                    }
-                    ASSERT(NextFileInfo->Fcb->FcbReference > NextFileInfo->RefCount);
-                    ASSERT(NextFileInfo->Fcb->FcbReference);
-                    InterlockedDecrement((PLONG)&NextFileInfo->Fcb->FcbReference);
-                    ASSERT(NextFileInfo->Fcb->FcbReference >= NextFileInfo->RefCount);
-                    NextFileInfo = fi;
+                AdPrint(("  Ccb:%x:%s\n", CurCcb, UseClose ? "Close" : ""));
+
+                //
+                // Release old LCB and acquire new one from TargetDir
+                // UDFReleasePrefixImmediate will decrement old parent's refs
+                // when the last CCB releases (LCB->Reference becomes 0).
+                // UDFAcquirePrefix will increment new parent's refs when
+                // creating a new LCB (or just increment LCB->Reference if exists).
+                //
+                if (CurCcb->Lcb) {
+                    UDFReleasePrefixImmediate(IrpContext, CurCcb->Lcb, UseClose);
+                    CurCcb->Lcb = NULL;
                 }
 
-                if (CurCcb->TreeLength > 1) {
-                    DirRefCount++;
-                    if (UseClose)
-                        FileInfoRefCount++;
-                    CurCcb->TreeLength = 2;
-#ifdef UDF_DBG
-                } else {
-                    BrutePoint();
-#endif // UDF_DBG
+                // Acquire new LCB from TargetDir
+                CurCcb->Lcb = UDFAcquirePrefix(IrpContext, TargetDirInfo->Fcb, Fcb,
+                                                FileInfo->Index);
+                if (!CurCcb->Lcb) {
+                    // Allocation failure - continue, but log error
+                    AdPrint(("  Failed to allocate LCB for CCB %x\n", CurCcb));
                 }
             }
             UDFReleaseResource(&Fcb->FcbNonpaged->CcbListResource);
 
-            ASSERT(DirRefCount >= FileInfoRefCount);
-            // update counters & pointers
+            // Update parent pointer
             Fcb->ParentFcb = TargetDirInfo->Fcb;
-            // move references to TargetDir
-            InterlockedExchangeAdd((PLONG)&TargetDirInfo->Fcb->FcbReference, DirRefCount);
-            ASSERT(TargetDirInfo->Fcb->FcbReference > TargetDirInfo->RefCount);
-            UDFReferenceFileEx__(TargetDirInfo, FileInfoRefCount);
-            ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
         }
-        ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
         ASSERT(TargetDirInfo->RefCount);
 
-        ASSERT(DirInfo->Fcb->FcbReference >= DirInfo->RefCount);
         // Modify name in Fcb1
         if (Fcb->FCBName) {
             if (Fcb->FCBName->ObjectName.Buffer) {
@@ -2290,7 +2282,15 @@ insuf_res:
                 UDFReleaseResource(&DirInfo->Fcb->FcbNonpaged->FcbResource);
                 ParentFcbAcquired = FALSE;
             }
-            UDFTeardownStructures(IrpContext, DirInfo->Fcb, 1, NULL);
+            {
+                BOOLEAN RemovedFcb = FALSE;
+                UDFAcquireFcbExclusive(IrpContext, DirInfo->Fcb, FALSE);
+                // LCB-based teardown: walks ParentLcbQueue to find and remove LCBs
+                UDFTeardownStructures(IrpContext, DirInfo->Fcb, FALSE, &RemovedFcb);
+                if (!RemovedFcb) {
+                    UDFReleaseFcb(IrpContext, DirInfo->Fcb);
+                }
+            }
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
 
@@ -2302,7 +2302,9 @@ insuf_res:
             goto insuf_res;*/
         // if Dir2 is a RootDir, we shoud not append '\\' because
         // uit will be the 2nd '\\' character (RootDir's name is also '\\')
-        if (TargetDirInfo->ParentFile) {
+        // Also don't append '\\' for streams (names starting with ':')
+        // IsStreamRename already set above
+        if (TargetDirInfo->ParentFile && !IsStreamRename) {
             RC = MyAppendUnicodeToString(&Fcb->FCBName->ObjectName, L"\\");
             if (!NT_SUCCESS(RC))
                 goto insuf_res;
@@ -2310,10 +2312,6 @@ insuf_res:
         RC = MyAppendUnicodeStringToStringTag(&Fcb->FCBName->ObjectName, &NewName, MEM_USREN2_TAG);
         if (!NT_SUCCESS(RC))
             goto insuf_res;
-
-        ASSERT(Fcb->FcbReference >= FileInfo->RefCount);
-        ASSERT(DirInfo->Fcb->FcbReference >= DirInfo->RefCount);
-        ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
 
         RC = STATUS_SUCCESS;
 
@@ -2332,10 +2330,13 @@ try_exit:    NOTHING;
         // perform protected structure release
         if (NT_SUCCESS(RC) &&
            (RC != STATUS_PENDING)) {
-
-            UDFTeardownStructures(IrpContext, DirInfo->Fcb, 1, NULL);
-            ASSERT(Fcb->FcbReference >= FileInfo->RefCount);
-            ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
+            BOOLEAN RemovedFcb = FALSE;
+            UDFAcquireFcbExclusive(IrpContext, DirInfo->Fcb, FALSE);
+            // LCB-based teardown: walks ParentLcbQueue to find and remove LCBs
+            UDFTeardownStructures(IrpContext, DirInfo->Fcb, FALSE, &RemovedFcb);
+            if (!RemovedFcb) {
+                UDFReleaseFcb(IrpContext, DirInfo->Fcb);
+            }
         }
 
         if (LocalPath.Buffer) {
@@ -2641,13 +2642,14 @@ try_exit:    NOTHING;
 
     } _SEH2_FINALLY {
 
-        if (AcquiredFcb1) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb1);
-            UDFReleaseResource(&Fcb1->FcbNonpaged->FcbResource);
-        }
+        // Release in reverse order of acquisition (parent first, then child)
         if (AcquiredDir1) {
             UDF_CHECK_PAGING_IO_RESOURCE(Dir1->Fcb);
             UDFReleaseResource(&Dir1->Fcb->FcbNonpaged->FcbResource);
+        }
+        if (AcquiredFcb1) {
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb1);
+            UDFReleaseResource(&Fcb1->FcbNonpaged->FcbResource);
         }
 
         if (LocalPath.Buffer) {

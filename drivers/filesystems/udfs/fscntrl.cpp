@@ -184,7 +184,7 @@ UDFUserFsCtrlRequest(
     case FSCTL_GET_RETRIEVAL_POINTERS:
 
         UDFPrint(("UDFUserFsCtrlRequest: FSCTL_GET_RETRIEVAL_POINTERS\n"));
-        RC = UDFGetRetrievalPointers(IrpContext, Irp, 0);
+        RC = UDFGetRetrievalPointers(IrpContext, Irp);
         break;
 
     case FSCTL_MOVE_FILE:
@@ -639,7 +639,15 @@ UDFCloseResidual(
         UDFCloseFile__(IrpContext, Vcb, Vcb->RootIndexFcb->FileInfo);
         if (Vcb->RootIndexFcb->FcbCleanup)
             Vcb->RootIndexFcb->FcbCleanup--;
-        UDFTeardownStructures(IrpContext, Vcb->RootIndexFcb, 1, NULL);
+        {
+            BOOLEAN RemovedFcb = FALSE;
+            UDFAcquireFcbExclusive(IrpContext, Vcb->RootIndexFcb, FALSE);
+            // LCB-based teardown: walks ParentLcbQueue to find and remove LCBs
+            UDFTeardownStructures(IrpContext, Vcb->RootIndexFcb, FALSE, &RemovedFcb);
+            if (!RemovedFcb) {
+                UDFReleaseFcb(IrpContext, Vcb->RootIndexFcb);
+            }
+        }
         // Remove root FCB reference in vcb
         if (Vcb->VcbReference)
             InterlockedDecrement((PLONG)&Vcb->VcbReference);
@@ -1247,104 +1255,122 @@ UDFGetVolumeBitmap(
     IN PIRP Irp
     )
 {
-//    NTSTATUS RC;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
-    UDFPrint(("UDFGetVolumeBitmap\n"));
-
-    TYPE_OF_OPEN TypeOfOpen;
     PFCB Fcb;
     PCCB Ccb;
-    PVCB Vcb;
+    PVCB Vcb = IrpContext->Vcb;
     ULONG BytesToCopy;
     ULONG TotalClusters;
-    ULONG DesiredClusters;
     ULONG StartingCluster;
+    ULONG DesiredClusters;
     ULONG InputBufferLength;
     ULONG OutputBufferLength;
     LARGE_INTEGER StartingLcn;
     PVOLUME_BITMAP_BUFFER OutputBuffer;
     ULONG i, lim;
     PULONG FSBM;
-//    PULONG Dest;
+    BOOLEAN VcbAcquired = FALSE;
 
-    // Decode the file object, the only type of opens we accept are
-    // user volume opens.
+    ASSERT_VCB(Vcb);
 
-    TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
+    // Make this a synchronous IRP because we need access to the input buffer and
+    // this Irp is marked METHOD_NEITHER.
 
-    ASSERT_CCB(Ccb);
-    ASSERT_FCB(Fcb);
-
-    if (!Ccb) {
-
-        UDFPrintErr(("  !Ccb\n"));
-        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    Vcb = Fcb->Vcb;
-    ASSERT_FCB(Fcb);
+    SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
 
     InputBufferLength = IrpSp->Parameters.FileSystemControl.InputBufferLength;
     OutputBufferLength = IrpSp->Parameters.FileSystemControl.OutputBufferLength;
 
-    OutputBuffer = (PVOLUME_BITMAP_BUFFER)UDFMapUserBuffer(Irp);
-
-    if (!OutputBuffer) {
-
-        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_USER_BUFFER);
-        return STATUS_INVALID_USER_BUFFER;
-    }
-
-    // Check for a minimum length on the input and output buffers.
-    if ((InputBufferLength < sizeof(STARTING_LCN_INPUT_BUFFER)) ||
-        (OutputBufferLength < sizeof(VOLUME_BITMAP_BUFFER))) {
-
-        UDFUnlockCallersBuffer(IrpContext, Irp, OutputBuffer);
-
-        UDFCompleteRequest(IrpContext, Irp, STATUS_BUFFER_TOO_SMALL);
-        return STATUS_BUFFER_TOO_SMALL;
-    }
-
-    //  Check if a starting cluster was specified.
     TotalClusters = Vcb->FSBM_BitCount;
-    StartingLcn = ((PSTARTING_LCN_INPUT_BUFFER)IrpSp->Parameters.FileSystemControl.Type3InputBuffer)->StartingLcn;
-
-    if (StartingLcn.HighPart || StartingLcn.LowPart >= TotalClusters) {
-
-        UDFUnlockCallersBuffer(IrpContext, Irp, OutputBuffer);
-
-        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
-        return STATUS_INVALID_PARAMETER;
-
-    } else {
-
-        StartingCluster = StartingLcn.LowPart & ~7;
-    }
-
-    OutputBufferLength -= FIELD_OFFSET(VOLUME_BITMAP_BUFFER, Buffer);
-    DesiredClusters = TotalClusters - StartingCluster;
-
-    if (OutputBufferLength < (DesiredClusters + 7) / 8) {
-
-        BytesToCopy = OutputBufferLength;
-//        RC = STATUS_BUFFER_OVERFLOW;
-
-    } else {
-
-        BytesToCopy = (DesiredClusters + 7) / 8;
-//        RC = STATUS_SUCCESS;
-    }
-
-    UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE );
 
     _SEH2_TRY {
 
-        //  Fill in the fixed part of the output buffer
-        OutputBuffer->StartingLcn.QuadPart = StartingCluster;
-        OutputBuffer->BitmapSize.QuadPart = DesiredClusters;
+        // Decode the file object, the only type of opens we accept are
+        // user volume opens.
+
+        if (UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb) != UserVolumeOpen) {
+
+            try_return(Status = STATUS_INVALID_USER_BUFFER);
+        }
+
+        ASSERT_CCB(Ccb);
+        ASSERT_FCB(Fcb);
+
+        // Check for a minimum length on the input and output buffers.
+
+        if ((InputBufferLength < sizeof(STARTING_LCN_INPUT_BUFFER)) ||
+            (OutputBufferLength < sizeof(VOLUME_BITMAP_BUFFER))) {
+
+            try_return(Status = STATUS_BUFFER_TOO_SMALL);
+        }
+
+        OutputBuffer = (PVOLUME_BITMAP_BUFFER)UDFMapUserBuffer(Irp);
+
+        _SEH2_TRY {
+
+            if (Irp->RequestorMode != KernelMode) {
+
+                ProbeForRead(IrpSp->Parameters.FileSystemControl.Type3InputBuffer,
+                    InputBufferLength,
+                    sizeof(UCHAR));
+
+                ProbeForWrite(OutputBuffer, OutputBufferLength, sizeof(UCHAR));
+            }
+
+            StartingLcn = ((PSTARTING_LCN_INPUT_BUFFER)IrpSp->Parameters.FileSystemControl.Type3InputBuffer)->StartingLcn;
+
+        } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+
+            try_return(Status = STATUS_INVALID_USER_BUFFER);
+        } _SEH2_END
+
+        if (StartingLcn.HighPart || StartingLcn.LowPart >= TotalClusters) {
+
+            try_return(Status = STATUS_INVALID_PARAMETER);
+        }
+
+        // Align starting block to 8-bit boundary
+
+        StartingCluster = StartingLcn.LowPart & ~7;
+
+        DesiredClusters = TotalClusters - StartingCluster;
+
+        // Fill in the fixed part of the output buffer
+
+        __try {
+
+            // StartingLcn in output = aligned starting block
+
+            OutputBuffer->StartingLcn.QuadPart = StartingCluster;
+
+            // BitmapSize = remaining blocks from starting position
+
+            OutputBuffer->BitmapSize.QuadPart = DesiredClusters;
+
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+
+            try_return(Status = STATUS_INVALID_USER_BUFFER);
+        }
+
+        OutputBufferLength -= FIELD_OFFSET(VOLUME_BITMAP_BUFFER, Buffer);
+
+
+        if (OutputBufferLength < (DesiredClusters + 7) / 8) {
+
+            BytesToCopy = OutputBufferLength;
+            Status = STATUS_BUFFER_OVERFLOW;
+
+        } else {
+
+            BytesToCopy = (DesiredClusters + 7) / 8;
+            Status = STATUS_SUCCESS;
+        }
+
+        UDFAcquireVcbShared(IrpContext, Vcb, FALSE);
+        VcbAcquired = TRUE;
 
         RtlZeroMemory( &OutputBuffer->Buffer[0], BytesToCopy );
         lim = BytesToCopy * 8;
@@ -1357,30 +1383,24 @@ UDFGetVolumeBitmap(
                 UDFSetFreeBit(FSBM, i);
         }
 
-    } _SEH2_EXCEPT(UDFExceptionFilter(IrpContext, _SEH2_GetExceptionInformation())) {
+        Irp->IoStatus.Information = FIELD_OFFSET(VOLUME_BITMAP_BUFFER, Buffer) + BytesToCopy;
 
-        BrutePoint();
-        UDFPrintErr(("UDFGetVolumeBitmap: Exception\n"));
-//        UDFUnlockCallersBuffer(IrpContext, Irp, OutputBuffer);
-        BrutePoint();
-//        RC = UDFExceptionHandler(IrpContext, Irp);
-        UDFReleaseResource(&(Vcb->VcbResource));
-        UDFUnlockCallersBuffer(IrpContext, Irp, OutputBuffer);
+try_exit:    NOTHING;
 
-        Irp->IoStatus.Information = 0;
-        Irp->IoStatus.Status = STATUS_INVALID_USER_BUFFER;
-        return STATUS_INVALID_USER_BUFFER;
+    } _SEH2_FINALLY {
+
+        if (VcbAcquired) {
+
+            UDFReleaseVcb(IrpContext, Vcb);
+        }
+            
     } _SEH2_END;
 
-    UDFReleaseResource(&(Vcb->VcbResource));
+    // Complete the request
 
-    UDFUnlockCallersBuffer(IrpContext, Irp, OutputBuffer);
-    Irp->IoStatus.Information = FIELD_OFFSET(VOLUME_BITMAP_BUFFER, Buffer) +
-                                BytesToCopy;
+    UDFCompleteRequest(IrpContext, Irp, Status);
 
-    UDFCompleteRequest(IrpContext, Irp, STATUS_SUCCESS);
-
-    return STATUS_SUCCESS;
+    return Status;
 
 
 } // end UDFGetVolumeBitmap()
@@ -1389,8 +1409,7 @@ UDFGetVolumeBitmap(
 NTSTATUS
 UDFGetRetrievalPointers(
     IN PIRP_CONTEXT IrpContext,
-    IN PIRP  Irp,
-    IN ULONG Special
+    IN PIRP  Irp
     )
 {
     NTSTATUS RC;
@@ -1410,6 +1429,7 @@ UDFGetRetrievalPointers(
     PCCB Ccb;
     PFCB Fcb;
     PVCB Vcb;
+    TYPE_OF_OPEN TypeOfOpen;
 
     PEXTENT_MAP SubMapping = NULL;
     ULONG SubExtInfoSz;
@@ -1419,7 +1439,18 @@ UDFGetRetrievalPointers(
 
     UDFPrint(("UDFGetRetrievalPointers\n"));
 
-    UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
+    // Make this a synchronous IRP because we need access to the input buffer and
+    // this Irp is marked METHOD_NEITHER.
+
+    SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
+
+    TypeOfOpen = UDFDecodeFileObject(IrpSp->FileObject, &Fcb, &Ccb);
+
+    if ((TypeOfOpen != UserFileOpen) && (TypeOfOpen != UserDirectoryOpen)) {
+
+        UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
 
     Vcb = Fcb->Vcb;
 
@@ -1439,12 +1470,8 @@ UDFGetRetrievalPointers(
     InputBufferLength = IrpSp->Parameters.FileSystemControl.InputBufferLength;
     OutputBufferLength = IrpSp->Parameters.FileSystemControl.OutputBufferLength;
 
-    //OutputBuffer = (PRETRIEVAL_POINTERS_BUFFER)UDFGetCallersBuffer( IrpContext, Irp );
-    if (Special) {
-        OutputBuffer = (PRETRIEVAL_POINTERS_BUFFER)Irp->AssociatedIrp.SystemBuffer;
-    } else {
-        OutputBuffer = (PRETRIEVAL_POINTERS_BUFFER)Irp->UserBuffer;
-    }
+    OutputBuffer = (PRETRIEVAL_POINTERS_BUFFER)UDFMapUserBuffer(Irp);
+
     InputBuffer = (PSTARTING_VCN_INPUT_BUFFER)IrpSp->Parameters.FileSystemControl.Type3InputBuffer;
     if (!InputBuffer) {
         InputBuffer = (PSTARTING_VCN_INPUT_BUFFER)OutputBuffer;
@@ -1478,16 +1505,7 @@ UDFGetRetrievalPointers(
             try_return(RC);
         } _SEH2_END;
 
-        switch(Special) {
-        case 0:
-            FileInfo = Fcb->FileInfo;
-            break;
-        case 1:
-            FileInfo = Vcb->NonAllocFileInfo;
-            break;
-        default:
-            try_return( RC = STATUS_INVALID_PARAMETER );
-        }
+        FileInfo = Fcb->FileInfo;
 
         if (!FileInfo) {
             try_return( RC = STATUS_OBJECT_NAME_NOT_FOUND );

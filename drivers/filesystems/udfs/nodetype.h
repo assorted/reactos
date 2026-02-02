@@ -19,6 +19,7 @@ typedef CSHORT NODE_BYTE_SIZE;
 #define UDF_NODE_TYPE_UDFFS_DEVOBJ          ((NODE_TYPE_CODE)0x0908)
 #define UDF_NODE_TYPE_IRP_CONTEXT_LITE      ((NODE_TYPE_CODE)0x0909)
 #define UDF_NODE_TYPE_UDFFS_DRVOBJ          ((NODE_TYPE_CODE)0x090a)
+#define UDF_NODE_TYPE_LCB                   ((NODE_TYPE_CODE)0x090b)
 
 //  So all records start with
 //

@@ -111,6 +111,17 @@ UDFCompleteFcbOpen(
     );
 
 NTSTATUS
+UDFOpenExistingFcb(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PIO_STACK_LOCATION IrpSp,
+    _In_ PVCB Vcb,
+    _Inout_ PFCB *CurrentFcb,
+    _In_ BOOLEAN IgnoreCase,
+    _In_ BOOLEAN OpenByFileId,
+    _In_ ULONG CreateDisposition
+    );
+
+NTSTATUS
 UDFInitializeFCB(
     IN PFCB                    PtrNewFcb,          // FCB structure to be initialized
     IN PVCB                    Vcb,                // logical volume (VCB) pointer
@@ -129,15 +140,6 @@ PIRP                        Irp);               // I/O Request Packet
 extern NTSTATUS UDFCommonCleanup(
 PIRP_CONTEXT IrpContext,
 PIRP                        Irp);
-
-NTSTATUS
-UDFCloseFileInfoChain(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN PUDF_FILE_INFO fi,
-    IN ULONG TreeLength,
-    IN BOOLEAN VcbAcquired
-    );
 
 /*************************************************************************
 * Prototypes for the file close.cpp
@@ -158,7 +160,7 @@ VOID
 UDFTeardownStructures(
     _In_ PIRP_CONTEXT IrpContext,
     _Inout_ PFCB StartingFcb,
-    _In_ ULONG TreeLength,
+    _In_ BOOLEAN Recursive,      // TRUE if this is a recursive call (for hard links)
     _Out_ PBOOLEAN RemovedStartingFcb
     );
 
@@ -312,11 +314,13 @@ IN PLARGE_INTEGER           FileOffset,
 OUT PMDL                    MdlChain,
 IN PDEVICE_OBJECT           DeviceObject);
 
-extern NTSTATUS NTAPI UDFFastIoAcqModWrite(
-IN PFILE_OBJECT             FileObject,
-IN PLARGE_INTEGER           EndingOffset,
-OUT PERESOURCE*             ResourceToRelease,
-IN PDEVICE_OBJECT           DeviceObject);
+NTSTATUS
+NTAPI
+UDFFastIoAcqModWrite(
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER EndingOffset,
+    OUT PERESOURCE* ResourceToRelease,
+    IN PDEVICE_OBJECT DeviceObject);
 
 extern NTSTATUS NTAPI UDFFastIoRelModWrite(
 IN PFILE_OBJECT             FileObject,
@@ -645,8 +649,7 @@ extern NTSTATUS UDFGetVolumeBitmap(IN PIRP_CONTEXT IrpContext,
                                    IN PIRP Irp);
 
 extern NTSTATUS UDFGetRetrievalPointers(IN PIRP_CONTEXT IrpContext,
-                                        IN PIRP  Irp,
-                                        IN ULONG Special);
+                                        IN PIRP Irp);
 
 extern NTSTATUS UDFInvalidateVolumes(IN PIRP_CONTEXT IrpContext,
                                      IN PIRP Irp);
@@ -669,7 +672,9 @@ extern NTSTATUS NTAPI UDFCommonLockControl(
     IN PIRP_CONTEXT IrpContext,
     IN PIRP             Irp);
 
-extern BOOLEAN NTAPI UDFFastLock(
+BOOLEAN
+NTAPI
+UDFFastLock(
     IN PFILE_OBJECT           FileObject,
     IN PLARGE_INTEGER         FileOffset,
     IN PLARGE_INTEGER         Length,
@@ -768,6 +773,49 @@ UDFDeleteCcb(
     PCCB Ccb
     );
 
+// prefxsup.cpp - LCB functions
+PLCB
+UDFInsertPrefix(
+    IN PIRP_CONTEXT IrpContext,
+    IN PFCB ParentFcb,
+    IN PFCB ChildFcb,
+    IN ULONG Index
+    );
+
+VOID
+UDFRemovePrefix(
+    IN PIRP_CONTEXT IrpContext,
+    IN PLCB Lcb
+    );
+
+PLCB
+UDFFindPrefix(
+    IN PIRP_CONTEXT IrpContext,
+    IN PFCB ParentFcb,
+    IN PFCB ChildFcb
+    );
+
+PLCB
+UDFAcquirePrefix(
+    IN PIRP_CONTEXT IrpContext,
+    IN PFCB ParentFcb,
+    IN PFCB ChildFcb,
+    IN ULONG Index
+    );
+
+VOID
+UDFReleasePrefix(
+    IN PIRP_CONTEXT IrpContext,
+    IN PLCB Lcb
+    );
+
+BOOLEAN
+UDFReleasePrefixImmediate(
+    IN PIRP_CONTEXT IrpContext,
+    IN PLCB Lcb,
+    IN BOOLEAN CloseParentFileInfo
+    );
+
 PFCB
 UDFCreateFcb (
     _In_ PIRP_CONTEXT IrpContext,
@@ -778,11 +826,15 @@ UDFCreateFcb (
 
 VOID
 UDFDeleteFcb(
-    _In_ PIRP_CONTEXT IrpContext,
+    _In_opt_ PIRP_CONTEXT IrpContext,
     _In_ PFCB Fcb
     );
 
-VOID UDFCleanUpFCB(PFCB Fcb);
+VOID
+UDFInsertFcbIntoTable(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PFCB Fcb
+    );
 
 _Ret_valid_ PIRP_CONTEXT
 UDFCreateIrpContext(
@@ -1304,6 +1356,16 @@ SectorAlign(
     return (Length + (Vcb->SectorSize - 1)) & ~(Vcb->SectorSize - 1);
 }
 
+inline
+ULONGLONG
+LlSectorAlign( 
+    PVCB Vcb, 
+    ULONGLONG Length
+) {
+
+    return (Length + (Vcb->SectorSize - 1)) & ~(ULONGLONG)(Vcb->SectorSize - 1);
+}
+
 VOID
 UDFSetThreadContext(
     _Inout_ PIRP_CONTEXT IrpContext,
@@ -1342,6 +1404,12 @@ UDFWaitForIoAtEof(
     IN PFCB Fcb,
     IN LONGLONG FileOffset,
     IN ULONG Length
+    );
+
+VOID
+UDFPrePostIrp(
+    _Inout_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp
     );
 
 #endif  // _UDF_PROTOS_H_

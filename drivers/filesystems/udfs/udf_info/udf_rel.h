@@ -441,6 +441,18 @@ typedef struct _UDF_DIR_SCAN_CONTEXT {
     uint_di i;
 } UDF_DIR_SCAN_CONTEXT, *PUDF_DIR_SCAN_CONTEXT;
 
+/**
+    Directory enumeration context for find/open operations.
+    Separates directory search from file open operations.
+*/
+typedef struct _DIR_ENUM_CONTEXT {
+    PUDF_FILE_INFO ParentInfo;        // Parent directory FileInfo
+    PDIR_INDEX_HDR DirIndex;          // Directory index header
+    PDIR_INDEX_ITEM DirNdx;           // Found directory entry (or NULL)
+    uint_di Index;                    // Index of found entry
+    BOOLEAN ShortNameMatch;           // TRUE if matched by 8.3 short name
+} DIR_ENUM_CONTEXT, *PDIR_ENUM_CONTEXT;
+
 typedef EXT_RELOCATION_ENTRY  EXT_RELOC_MAP;
 typedef PEXT_RELOCATION_ENTRY PEXT_RELOC_MAP;
 

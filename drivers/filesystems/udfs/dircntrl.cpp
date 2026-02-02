@@ -413,16 +413,21 @@ UDFQueryDirectory(
             DirInformation->FileIndex = NextMatch;
             FileNameBytes = DirInformation->FileNameLength;
 
+            // If this won't fit and we have returned a previous entry then just
+            // return STATUS_SUCCESS.
+
             if ((BaseLength + FileNameBytes) > BytesRemainingInBuffer) {
-                // If this won't fit and we have returned a previous entry then just
-                // return STATUS_SUCCESS. Otherwise
-                // use a status code of STATUS_BUFFER_OVERFLOW.
-                if (CurrentOffset) {
+
+                // If we already found an entry then just exit.
+
+                if (CurrentOffset != 0) {
                     try_return(RC = STATUS_SUCCESS);
                 }
-                // strange policy...
+
+                // Reduce the FileNameBytes to just fit in the buffer.
+
+                FileNameBytes = BytesRemainingInBuffer - BaseLength;
                 ReturnSingleEntry = TRUE;
-                FileNameBytes = BaseLength + FileNameBytes - BytesRemainingInBuffer;
                 RC = STATUS_BUFFER_OVERFLOW;
             }
             //  Now we have an entry to return to our caller.

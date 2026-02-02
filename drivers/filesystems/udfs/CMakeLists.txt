@@ -24,6 +24,7 @@ list(APPEND SOURCE
     mem.cpp
     misc.cpp
     namesup.cpp
+    prefxsup.cpp
     pnp.cpp
     read.cpp
     secursup.cpp

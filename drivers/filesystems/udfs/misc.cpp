@@ -125,6 +125,14 @@ UDFInitializeZones(VOID)
                                         TAG_CCB,
                                         0);
 
+        ExInitializePagedLookasideList(&UdfData.LcbLookasideList,
+                                        NULL,
+                                        NULL,
+                                        POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                        SIZEOF_LOOKASIDE_LCB,
+                                        TAG_LCB,
+                                        0);
+
         try_return(RC = STATUS_SUCCESS);
 
 try_exit:   NOTHING;
@@ -165,6 +173,7 @@ VOID UDFDestroyZones(VOID)
     ExDeleteNPagedLookasideList(&UdfData.NonPagedFcbLookasideList);
 
     ExDeletePagedLookasideList(&UdfData.CcbLookasideList);
+    ExDeletePagedLookasideList(&UdfData.LcbLookasideList);
 }
 
 /*************************************************************************
@@ -624,6 +633,14 @@ UDFDeleteCcb(
 
             MyFreePool__(Ccb->DirectorySearchPattern);
             Ccb->DirectorySearchPattern = NULL;
+        }
+
+        // Release LCB reference
+        // The LCB will be removed and parent references decremented
+        // by UDFTeardownStructures when the child FCB is torn down
+        if (Ccb->Lcb) {
+            UDFReleasePrefix(NULL, Ccb->Lcb);
+            Ccb->Lcb = NULL;
         }
 
         UDFReleaseCCB(Ccb);
@@ -1644,7 +1661,6 @@ UDFInitializeStackIrpContextFromLite(
     IrpContext->MajorFunction = IRP_MJ_CLOSE;
     IrpContext->Vcb = IrpContextLite->Fcb->Vcb;
     IrpContext->Fcb = IrpContextLite->Fcb;
-    IrpContext->TreeLength = IrpContextLite->TreeLength;
     IrpContext->RealDevice = IrpContextLite->RealDevice;
 
     // Note that this is from the stack.

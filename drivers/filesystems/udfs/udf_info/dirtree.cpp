@@ -1049,6 +1049,51 @@ UDFFindFile(
 } // end UDFFindFile()
 
 /*
+    Find file in directory and fill enumeration context.
+    This separates search from open, allowing caller to inspect
+    the found entry before opening.
+*/
+NTSTATUS
+UDFFindDirEntry(
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO DirInfo,
+    IN PUNICODE_STRING FileName,
+    IN BOOLEAN IgnoreCase,
+    IN BOOLEAN NotDeleted,
+    OUT PDIR_ENUM_CONTEXT DirContext
+    )
+{
+    NTSTATUS status;
+    uint_di Index = 0;
+
+    // Initialize context
+    RtlZeroMemory(DirContext, sizeof(DIR_ENUM_CONTEXT));
+    DirContext->ParentInfo = DirInfo;
+
+    if (!DirInfo->Dloc->DirIndex) {
+        return STATUS_NOT_A_DIRECTORY;
+    }
+
+    DirContext->DirIndex = DirInfo->Dloc->DirIndex;
+
+    // Find the file
+    status = UDFFindFile(Vcb, IgnoreCase, NotDeleted, FileName, DirInfo, &Index);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    // Get the directory entry
+    DirContext->DirNdx = UDFDirIndex(DirContext->DirIndex, Index);
+    if (!DirContext->DirNdx) {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+
+    DirContext->Index = Index;
+    return STATUS_SUCCESS;
+
+} // end UDFFindDirEntry()
+
+/*
     This routine returns pointer to parent DirIndex
 */
 PDIR_INDEX_HDR

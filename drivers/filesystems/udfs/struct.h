@@ -36,6 +36,8 @@
 struct IRP_CONTEXT_LITE;
 struct IO_CONTEXT;
 struct IRP_CONTEXT;
+struct LCB;
+typedef struct LCB *PLCB;
 
 /**************************************************************************
     every structure has a node type, and a node size associated with it.
@@ -82,6 +84,8 @@ struct CCB {
     UDFIdentifier                       NodeIdentifier;
     // ptr to the associated FCB
     FCB*                                Fcb;
+    // ptr to the LCB used to open this file
+    PLCB                                Lcb;
     // all CCB structures for a FCB are linked together
     LIST_ENTRY                          NextCCB;
     // each CCB is associated with a file object
@@ -94,7 +98,6 @@ struct CCB {
     //  need to maintain a search pattern
     PUNICODE_STRING                     DirectorySearchPattern;
     HASH_ENTRY                          hashes;
-    ULONG                               TreeLength;
 };
 using PCCB = CCB*;
 
@@ -267,6 +270,13 @@ struct FCB {
     PVOID LazyWriteThread;
 
     FCB* ParentFcb;
+
+    // LCB queues for parent-child relationships
+    // ParentLcbQueue - LCBs linking this FCB to parent directories (for hardlinks, usually 1)
+    LIST_ENTRY ParentLcbQueue;
+    // ChildLcbQueue - LCBs linking child files to this directory FCB
+    LIST_ENTRY ChildLcbQueue;
+
     // Pointer to IrpContextLite in delayed queue.
     IRP_CONTEXT_LITE* IrpContextLite;
     uint32                              CcbCount;
@@ -297,6 +307,9 @@ using PFCB = FCB*;
     values are bit fields; therefore we can test whether
     a bit position is set (1) or not set (0).
 **************************************************************************/
+// File data is embedded in ICB (IN_ICB allocation mode)
+// Requires exclusive lock for writes since data shares sector with metadata
+#define     UDF_FCB_EMBEDDED_DATA                       (0x00000001)
 #define     UDF_FCB_VALID                               (0x00000002)
 #define     UDF_FCB_DIRECTORY                           (0x00000008)
 #define     UDF_FCB_ROOT_DIRECTORY                      (0x00000010)
@@ -333,6 +346,53 @@ enum UDFFSD_MEDIA_TYPE {
     MediaDvdr,
     MediaDvdrw
 };
+
+//***************************************************************************
+//                      LCB (Link Control Block)
+//***************************************************************************
+
+/**
+    Link Control Block (LCB) - links parent directory to child file.
+    Similar to MS UDF driver's LCB structure.
+
+    Used to defer directory linkage until create operation completes successfully.
+    This prevents partial creates from being visible in directory lookups.
+*/
+struct LCB {
+    UDFIdentifier NodeIdentifier;      // Node type = UDFS_NTC_LCB
+
+    // Links in parent FCB's ChildLcbQueue
+    LIST_ENTRY ParentFcbLinks;
+    // Links in child FCB's ParentLcbQueue
+    LIST_ENTRY ChildFcbLinks;
+
+    // Parent directory FCB
+    PFCB ParentFcb;
+    // Child file FCB
+    PFCB ChildFcb;
+
+    // Reference count (incremented by CCB, decremented on cleanup)
+    ULONG Reference;
+    // LCB flags
+    ULONG Flags;
+    // Index in parent's DirIndex (for quick lookup)
+    ULONG Index;
+};
+
+// LCB Flags
+#define UDF_LCB_FLAG_DELETE_ON_CLEANUP  0x00000001  // Delete file on cleanup
+#define UDF_LCB_FLAG_LINK_DELETED       0x00000002  // Link has been deleted
+#define UDF_LCB_FLAG_PENDING_CREATE     0x00000004  // Create not yet complete
+#define UDF_LCB_FLAG_POOL_ALLOCATED     0x00000008  // Allocated from pool (not lookaside)
+#define UDF_LCB_FLAG_IGNORE_CASE        0x00000010  // Case-insensitive name
+#define UDF_LCB_FLAG_SHORT_NAME         0x00000020  // Short name match
+
+// LCB lookaside size - fits LCB + 16 WCHARs for short names
+#define SIZEOF_LOOKASIDE_LCB            (sizeof(LCB) + (sizeof(WCHAR) * 16))
+
+//***************************************************************************
+//                      VCB (Volume Control Block)
+//***************************************************************************
 
 enum VCB_CONDITION {
 
@@ -704,7 +764,6 @@ struct IRP_CONTEXT {
     NTSTATUS                        ExceptionStatus;
     // For queued close operation we save Fcb
     FCB*                            Fcb;
-    ULONG                           TreeLength;
 
     // Io context for a read request.
     // Address of Fcb for teardown oplock in create case.
@@ -789,7 +848,6 @@ struct IRP_CONTEXT_LITE {
     ULONG                           UserReference;
     //  Real device object.  This represents the physical device closest to the media.
     PDEVICE_OBJECT                  RealDevice;
-    ULONG                           TreeLength;
 };
 using PIRP_CONTEXT_LITE = IRP_CONTEXT_LITE*;
 
@@ -834,6 +892,7 @@ typedef struct _UDFData {
     PAGED_LOOKASIDE_LIST UDFFcbDataLookasideList;
 
     PAGED_LOOKASIDE_LIST CcbLookasideList;
+    PAGED_LOOKASIDE_LIST LcbLookasideList;
 
     LIST_ENTRY AsyncCloseQueue;
     ULONG AsyncCloseCount;
@@ -874,6 +933,7 @@ typedef struct _UDFData {
 #define TAG_FCB_NONPAGED        'nfdU'
 #define TAG_FCB                 'pfdU'
 #define TAG_CCB                 'ccdU'
+#define TAG_LCB                 'lcdU'
 #define TAG_VPB                 'pvdU'
 #define TAG_FCB_TABLE           'tfdU'
 #define TAG_FILE_NAME           'nFdU'

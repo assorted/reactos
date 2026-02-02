@@ -845,7 +845,8 @@ UDFGetBlockSize(
                 ASSERT(FALSE);
             }
         } else {
-            ASSERT(FALSE);
+
+            try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
         }
         Vcb->LastPossibleLBA = Vcb->LastLBA;
     }
