@@ -311,7 +311,15 @@ UDFCommonSetInfo(
         if ((FunctionalityRequested != FilePositionInformation) &&
             (FunctionalityRequested != FileRenameInformation) &&
             (FunctionalityRequested != FileLinkInformation)) {
-            // Acquire the Parent & Main Resources exclusive.
+            // Child-first lock ordering
+            // Acquire Main (child) resource first
+            if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, CanWait)) {
+                PostRequest = TRUE;
+                try_return(Status = STATUS_PENDING);
+            }
+            MainResourceAcquired = TRUE;
+
+            // Acquire Parent resource second
             if (Fcb->FileInfo->ParentFile) {
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
                 if (!UDFAcquireResourceExclusive(&Fcb->ParentFcb->FcbNonpaged->FcbResource, CanWait)) {
@@ -320,12 +328,6 @@ UDFCommonSetInfo(
                 }
                 ParentResourceAcquired = TRUE;
             }
-
-            if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, CanWait)) {
-                PostRequest = TRUE;
-                try_return(Status = STATUS_PENDING);
-            }
-            MainResourceAcquired = TRUE;
 
             if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbPagingIoResource, CanWait)) {
                 PostRequest = TRUE;
@@ -426,20 +428,21 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
+        // Release in reverse order of acquisition
         if (PagingIoResourceAcquired) {
             UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
             PagingIoResourceAcquired = FALSE;
-        }
-
-        if (MainResourceAcquired) {
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
-            MainResourceAcquired = FALSE;
         }
 
         if (ParentResourceAcquired) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
             UDFReleaseResource(&(Fcb->ParentFcb->FcbNonpaged->FcbResource));
             ParentResourceAcquired = FALSE;
+        }
+
+        if (MainResourceAcquired) {
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
+            MainResourceAcquired = FALSE;
         }
 
         if (VcbAcquired) {
@@ -1920,13 +1923,15 @@ UDFPrepareForRenameMoveLink(
     } else {
         InterlockedDecrement((PLONG)&Vcb->VcbReference);
 
-        UDF_CHECK_PAGING_IO_RESOURCE(Dir1->Fcb);
-        UDFAcquireResourceExclusive(&Dir1->Fcb->FcbNonpaged->FcbResource, TRUE);
-        (*AcquiredDir1) = TRUE;
-
+        // Child-first lock ordering
+        // File1 (child) first, Dir1 (parent) second
         UDF_CHECK_PAGING_IO_RESOURCE(File1->Fcb);
         UDFAcquireResourceExclusive(&File1->Fcb->FcbNonpaged->FcbResource, TRUE);
         (*AcquiredFcb1) = TRUE;
+
+        UDF_CHECK_PAGING_IO_RESOURCE(Dir1->Fcb);
+        UDFAcquireResourceExclusive(&Dir1->Fcb->FcbNonpaged->FcbResource, TRUE);
+        (*AcquiredDir1) = TRUE;
     }
     return STATUS_SUCCESS;
 } // end UDFPrepareForRenameMoveLink()
@@ -2290,7 +2295,15 @@ insuf_res:
                 UDFReleaseResource(&DirInfo->Fcb->FcbNonpaged->FcbResource);
                 ParentFcbAcquired = FALSE;
             }
-            UDFTeardownStructures(IrpContext, DirInfo->Fcb, 1, NULL);
+            {
+                BOOLEAN RemovedFcb = FALSE;
+                UDFAcquireFcbExclusive(IrpContext, DirInfo->Fcb, FALSE);
+                // CallCloseFile = TRUE: CloseFileInfoChain was NOT called (error path)
+                UDFTeardownStructures(IrpContext, DirInfo->Fcb, 1, TRUE, &RemovedFcb);
+                if (!RemovedFcb) {
+                    UDFReleaseFcb(IrpContext, DirInfo->Fcb);
+                }
+            }
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
 
@@ -2332,8 +2345,13 @@ try_exit:    NOTHING;
         // perform protected structure release
         if (NT_SUCCESS(RC) &&
            (RC != STATUS_PENDING)) {
-
-            UDFTeardownStructures(IrpContext, DirInfo->Fcb, 1, NULL);
+            BOOLEAN RemovedFcb = FALSE;
+            UDFAcquireFcbExclusive(IrpContext, DirInfo->Fcb, FALSE);
+            // CallCloseFile = TRUE: CloseFileInfoChain was NOT called
+            UDFTeardownStructures(IrpContext, DirInfo->Fcb, 1, TRUE, &RemovedFcb);
+            if (!RemovedFcb) {
+                UDFReleaseFcb(IrpContext, DirInfo->Fcb);
+            }
             ASSERT(Fcb->FcbReference >= FileInfo->RefCount);
             ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
         }
@@ -2641,13 +2659,14 @@ try_exit:    NOTHING;
 
     } _SEH2_FINALLY {
 
-        if (AcquiredFcb1) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb1);
-            UDFReleaseResource(&Fcb1->FcbNonpaged->FcbResource);
-        }
+        // Release in reverse order of acquisition (parent first, then child)
         if (AcquiredDir1) {
             UDF_CHECK_PAGING_IO_RESOURCE(Dir1->Fcb);
             UDFReleaseResource(&Dir1->Fcb->FcbNonpaged->FcbResource);
+        }
+        if (AcquiredFcb1) {
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb1);
+            UDFReleaseResource(&Fcb1->FcbNonpaged->FcbResource);
         }
 
         if (LocalPath.Buffer) {

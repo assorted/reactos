@@ -480,7 +480,14 @@ UDFMapUserBuffer(
 
     } else {
 
-        return MmGetSystemAddressForMdlSafe(Irp->MdlAddress, NormalPagePriority | MdlMappingNoExecute);
+        PVOID Address = MmGetSystemAddressForMdlSafe(Irp->MdlAddress, NormalPagePriority | MdlMappingNoExecute);
+
+        if (Address == NULL) {
+
+            ExRaiseStatus(STATUS_INSUFFICIENT_RESOURCES);
+        }
+
+        return Address;
     }
 
 } // end UDFMapUserBuffer()
@@ -608,27 +615,82 @@ UDFCompleteMdl(
     )
 {
     PFILE_OBJECT FileObject;
-    PIO_STACK_LOCATION IrpSp;
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    PFCB Fcb;
 
-    UDFPrint(("UDFCompleteMdl: \n"));
-
-    IrpSp = IoGetCurrentIrpStackLocation(Irp);
+    // Do completion processing.
 
     FileObject = IrpSp->FileObject;
-    ASSERT(FileObject);
 
-    // Not much to do here.
-    if (IrpContext->MajorFunction == IRP_MJ_READ) {
+    switch(IrpContext->MajorFunction) {
 
-        MmPrint(("    CcMdlReadComplete() MDL=%x\n", Irp->MdlAddress));
+    case IRP_MJ_READ:
+
         CcMdlReadComplete(FileObject, Irp->MdlAddress);
+        break;
 
-    } else {
+    case IRP_MJ_WRITE:
 
-        ASSERT(IrpContext->MajorFunction == IRP_MJ_WRITE);
-        // The Cache Manager needs the byte offset in the I/O stack location.
-        MmPrint(("    CcMdlWriteComplete() MDL=%x\n", Irp->MdlAddress));
+        UDFFastDecodeFileObject(FileObject, &Fcb);
+
+        ASSERT(FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT));
+
+        // Check if EOF advance is active. 
+
+        if (FlagOn(Fcb->Header.Flags, FSRTL_FLAG_EOF_ADVANCE_ACTIVE)) {
+
+            LONGLONG ByteRange = IrpSp->Parameters.Write.ByteOffset.QuadPart;
+
+            PMDL MdlChain = Irp->MdlAddress;
+            while (MdlChain != NULL)
+            {
+                ByteRange += MmGetMdlByteCount(MdlChain);
+                MdlChain = MdlChain->Next;
+            }
+
+            // Acquire the fast mutex and check if we extended valid data.
+
+            ExAcquireFastMutex(Fcb->Header.FastMutex);
+
+            if (ByteRange > Fcb->Header.ValidDataLength.QuadPart) {
+
+                // Extend valid data length to file size.
+
+                Fcb->Header.ValidDataLength.QuadPart = Fcb->Header.FileSize.QuadPart;
+
+                // Notify cache manager of new file sizes if caching is active.
+
+                if (CcIsFileCached(FileObject)) {
+
+                    _SEH2_TRY {
+
+                        CcSetFileSizes(FileObject, (PCC_FILE_SIZES)&Fcb->Header.AllocationSize);
+
+                    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+
+                        NOTHING;
+
+                    } _SEH2_END;
+                }
+
+                // Complete the EOF advance operation.
+
+                UDFFinishIoAtEof(Fcb);
+            }
+
+            ExReleaseFastMutex(Fcb->Header.FastMutex);
+
+        }
+
         CcMdlWriteComplete(FileObject, &IrpSp->Parameters.Write.ByteOffset, Irp->MdlAddress);
+
+        Irp->IoStatus.Status = STATUS_SUCCESS;
+
+        break;
+
+    default:
+
+        UDFBugCheck(IrpContext->MajorFunction, 0, 0);
     }
 
     // Mdl is now deallocated.

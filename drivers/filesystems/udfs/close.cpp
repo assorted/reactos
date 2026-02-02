@@ -209,7 +209,16 @@ UDFCommonClose(
             }
 
             // try to clean up as long chain as it is possible
-            UDFTeardownStructures(IrpContext, Fcb, i, NULL);
+            // TODO: refactor to use UDFCommonClosePrivate
+            {
+                BOOLEAN RemovedFcb = FALSE;
+                UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE);
+                // CallCloseFile = FALSE: UDFCloseFileInfoChain already called in Cleanup
+                UDFTeardownStructures(IrpContext, Fcb, i, FALSE, &RemovedFcb);
+                if (!RemovedFcb) {
+                    UDFReleaseFcb(IrpContext, Fcb);
+                }
+            }
         }
 
 try_exit: NOTHING;
@@ -234,8 +243,10 @@ try_exit: NOTHING;
 
 /*
     This routine walks through the tree to RootDir & kills all unreferenced
-    structures....
-    imho, Useful feature
+    structures.
+
+    StartingFcb must be acquired exclusively by caller.
+    This function will acquire locks for parent FCBs as needed.
  */
 _Requires_lock_held_(_Global_critical_region_)
 VOID
@@ -243,6 +254,7 @@ UDFTeardownStructures(
     _In_ PIRP_CONTEXT IrpContext,
     _Inout_ PFCB StartingFcb,
     _In_ ULONG TreeLength,
+    _In_ BOOLEAN CallCloseFile,  // TRUE if UDFCloseFile__ should be called (CloseFileInfoChain was NOT called before)
     _Out_ PBOOLEAN RemovedStartingFcb
     )
 {
@@ -250,15 +262,16 @@ UDFTeardownStructures(
     PFCB CurrentFcb = StartingFcb;
     PFCB ParentFcb = NULL;
 
-    LONG RefCount;
+    LONG RefCount = 0;
     BOOLEAN Delete = FALSE;
+    BOOLEAN FirstIteration = TRUE;
+    BOOLEAN StartingFcbLockReleased = FALSE;
 
     ValidateFileInfo(CurrentFcb->FileInfo);
     AdPrint(("UDFCleanUpFcbChain\n"));
 
     ASSERT(TreeLength);
-    //TODO:
-    //ASSERT_EXCLUSIVE_FCB(StartingFcb);
+    ASSERT_EXCLUSIVE_FCB(StartingFcb);
     //ASSERT_SHARED_VCB(Vcb);
 
     if (RemovedStartingFcb) {
@@ -266,69 +279,83 @@ UDFTeardownStructures(
     }
 
     // Use a try-finally to safely clear the top-level field.
- 
+
     _SEH2_TRY {
 
         //  Loop until we find an Fcb we can't remove.
         do {
 
-            // If the reference count is non-zero then break.
-
-            if (CurrentFcb->FcbReference != 0) {
-
-                break;
-            }
-
             ParentFcb = CurrentFcb->ParentFcb;
 
-            // acquire parent
-            if (ParentFcb != NULL) {
-
-                UDFAcquireFcbExclusive(IrpContext, ParentFcb, FALSE);
-            }
-
-            // acquire current file/dir
-            // we must assure that no more threads try to re-use this object
-    #ifdef UDF_DBG
-            _SEH2_TRY {
-    #endif // UDF_DBG
+            // First FCB is already acquired by caller,
+            // acquire only subsequent (parent) FCBs
+            if (!FirstIteration) {
                 UDFAcquireResourceExclusive(&CurrentFcb->FcbNonpaged->FcbResource,TRUE);
-    #ifdef UDF_DBG
-            } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
-                BrutePoint();
-                if (ParentFcb) {
-                    UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
-                }
-                break;
-            } _SEH2_END;
-    #endif // UDF_DBG
-            ASSERT((CurrentFcb->FcbReference > CurrentFcb->FileInfo->RefCount) || !TreeLength);
-            // If we haven't pass through all files opened
-            // in UDFCommonCreate before target file (TreeLength specfies
+            }
+            FirstIteration = FALSE;
+
+            // If we haven't passed through all files opened
+            // in UDFCommonCreate before target file (TreeLength specifies
             // the number of such files) dereference them.
             // Otherwise we'll just check if the file has no references.
-    #ifdef UDF_DBG
-            if (CurrentFcb) {
-                if (TreeLength) {
-                    ASSERT(CurrentFcb->FcbReference);
-                    RefCount = InterlockedDecrement((PLONG)&CurrentFcb->FcbReference);
-                }
-            } else {
-                BrutePoint();
-            }
-            if (TreeLength)
-                TreeLength--;
-            ASSERT(CurrentFcb->FcbCleanup <= CurrentFcb->FcbReference);
-    #else
+            //
+            // NOTE: We call UDFCloseFile__ here only if CallCloseFile is TRUE
+            // (meaning CloseFileInfoChain was NOT called before - e.g. from Create finally).
+            // If CallCloseFile is FALSE, CloseFileInfoChain already decremented RefCount in Cleanup.
+            //
+            // IMPORTANT: Decrement BEFORE checking FcbReference
             if (TreeLength) {
+                ASSERT(CurrentFcb->FcbReference > 0);
+
+                if (CallCloseFile) {
+                    // Decrement FileInfo->RefCount (normally done by UDFCloseFileInfoChain)
+                    ASSERT(CurrentFcb->FcbReference >= CurrentFcb->FileInfo->RefCount);
+                    UDFCloseFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
+                    ASSERT(CurrentFcb->FcbReference > CurrentFcb->FileInfo->RefCount);
+                }
+
+                // Decrement FcbReference
                 RefCount = InterlockedDecrement((PLONG)&CurrentFcb->FcbReference);
                 TreeLength--;
+                ASSERT(CurrentFcb->FcbCleanup <= CurrentFcb->FcbReference);
             }
-    #endif
+
+            // If the reference count is non-zero then break.
+            // Check AFTER decrement to properly handle TreeLength case.
+            // MUST hold VcbMutex when checking FcbReference/FcbCleanup
+            // to synchronize with Create's try-lock pattern
+            UDFLockVcb(IrpContext, Vcb);
+
+            if (CurrentFcb->FcbReference != 0) {
+                UDFUnlockVcb(IrpContext, Vcb);
+
+                // BUG FIX: If TreeLength > 0, we still need to decrement parent FCBs
+                // that were incremented during path traversal in Create.
+                // Breaking here was causing reference leaks on parent FCBs:
+                // Each failed Create would leave TreeLength-1 orphaned references.
+                if (TreeLength > 0 && ParentFcb) {
+                    // Release lock on current FCB (acquired at line 292 if not first iteration)
+                    if (CurrentFcb != StartingFcb) {
+                        UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+                    }
+                    // Move to parent and continue decrementing their references
+                    CurrentFcb = ParentFcb;
+                    continue;
+                }
+
+                // TreeLength == 0, all references decremented, we're done
+                if (CurrentFcb != StartingFcb) {
+                    UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+                }
+                break;
+            }
 
             // ...and delete if it has gone
+            // Check FcbCleanup while still holding VcbMutex
+            BOOLEAN ShouldDelete = !RefCount && !CurrentFcb->FcbCleanup;
+            UDFUnlockVcb(IrpContext, Vcb);
 
-            if (!RefCount && !CurrentFcb->FcbCleanup) {
+            if (ShouldDelete) {
 
                 // no more references... current file/dir MUST DIE!!!
                 if (Delete) {
@@ -379,6 +406,9 @@ UDFTeardownStructures(
 
                     // Remove resources
                     UDF_CHECK_PAGING_IO_RESOURCE(CurrentFcb);
+                    if (CurrentFcb == StartingFcb) {
+                        StartingFcbLockReleased = TRUE;
+                    }
                     UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
                     if (CurrentFcb->Header.Resource) {
                         UDFDeleteResource(&CurrentFcb->FcbNonpaged->FcbResource);
@@ -398,24 +428,19 @@ UDFTeardownStructures(
 
                     // get pointer to parent FCB
                     CurrentFcb = ParentFcb;
-                    // free old parent's resource...
-                    if (CurrentFcb) {
-                        UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
-                    }
                 } else {
                     // Stop cleaning up
 
                     // Restore pointers
                     CurrentFcb->FileInfo->Fcb = CurrentFcb;
                     CurrentFcb->FileInfo->Dloc->CommonFcb = CurrentFcb;
-                    // free all acquired resources
+                    // free acquired resource
                     UDF_CHECK_PAGING_IO_RESOURCE(CurrentFcb);
+                    if (CurrentFcb == StartingFcb) {
+                        StartingFcbLockReleased = TRUE;
+                    }
                     UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
                     CurrentFcb = ParentFcb;
-                    if (CurrentFcb) {
-                        UDF_CHECK_PAGING_IO_RESOURCE(ParentFcb);
-                        UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
-                    }
                     // If we have dereferenced all parents 'associated'
                     // with input file & current file is still in use
                     // then it isn't worth walking down the tree
@@ -427,11 +452,10 @@ UDFTeardownStructures(
             } else {
                 // we get to referenced file/dir. Stop search & release resource
 
-                UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
-                if (ParentFcb) {
-
-                    UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+                if (CurrentFcb == StartingFcb) {
+                    StartingFcbLockReleased = TRUE;
                 }
+                UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
                 Delete = FALSE;
                 if (!TreeLength)
                     break;
@@ -445,7 +469,10 @@ UDFTeardownStructures(
     } _SEH2_END;
 
     if (RemovedStartingFcb) {
-        *RemovedStartingFcb = (CurrentFcb != StartingFcb);
+        // Use explicit flag instead of (CurrentFcb != StartingFcb) because
+        // with the TreeLength fix, we may continue to parent FCBs without
+        // releasing StartingFcb's lock.
+        *RemovedStartingFcb = StartingFcbLockReleased;
     }
 
 } // end UDFCleanUpFcbChain()
@@ -722,8 +749,9 @@ Return Value:
 
     //  Call our teardown routine to see if this object can go away.
     //  If we don't remove the Fcb then release it.
+    // CallCloseFile = FALSE: UDFCloseFileInfoChain already called in Cleanup
 
-    UDFTeardownStructures(IrpContext, Fcb, IrpContext->TreeLength, &RemovedFcb);
+    UDFTeardownStructures(IrpContext, Fcb, IrpContext->TreeLength, FALSE, &RemovedFcb);
 
     if (!RemovedFcb) {
 

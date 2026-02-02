@@ -111,6 +111,17 @@ UDFCompleteFcbOpen(
     );
 
 NTSTATUS
+UDFOpenExistingFcb(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PIO_STACK_LOCATION IrpSp,
+    _In_ PVCB Vcb,
+    _Inout_ PFCB *CurrentFcb,
+    _In_ BOOLEAN IgnoreCase,
+    _In_ BOOLEAN OpenByFileId,
+    _In_ ULONG CreateDisposition
+    );
+
+NTSTATUS
 UDFInitializeFCB(
     IN PFCB                    PtrNewFcb,          // FCB structure to be initialized
     IN PVCB                    Vcb,                // logical volume (VCB) pointer
@@ -159,6 +170,7 @@ UDFTeardownStructures(
     _In_ PIRP_CONTEXT IrpContext,
     _Inout_ PFCB StartingFcb,
     _In_ ULONG TreeLength,
+    _In_ BOOLEAN CallCloseFile,  // TRUE if UDFCloseFile__ should be called (CloseFileInfoChain was NOT called before)
     _Out_ PBOOLEAN RemovedStartingFcb
     );
 
@@ -312,11 +324,13 @@ IN PLARGE_INTEGER           FileOffset,
 OUT PMDL                    MdlChain,
 IN PDEVICE_OBJECT           DeviceObject);
 
-extern NTSTATUS NTAPI UDFFastIoAcqModWrite(
-IN PFILE_OBJECT             FileObject,
-IN PLARGE_INTEGER           EndingOffset,
-OUT PERESOURCE*             ResourceToRelease,
-IN PDEVICE_OBJECT           DeviceObject);
+NTSTATUS
+NTAPI
+UDFFastIoAcqModWrite(
+    IN PFILE_OBJECT FileObject,
+    IN PLARGE_INTEGER EndingOffset,
+    OUT PERESOURCE* ResourceToRelease,
+    IN PDEVICE_OBJECT DeviceObject);
 
 extern NTSTATUS NTAPI UDFFastIoRelModWrite(
 IN PFILE_OBJECT             FileObject,
@@ -645,8 +659,7 @@ extern NTSTATUS UDFGetVolumeBitmap(IN PIRP_CONTEXT IrpContext,
                                    IN PIRP Irp);
 
 extern NTSTATUS UDFGetRetrievalPointers(IN PIRP_CONTEXT IrpContext,
-                                        IN PIRP  Irp,
-                                        IN ULONG Special);
+                                        IN PIRP Irp);
 
 extern NTSTATUS UDFInvalidateVolumes(IN PIRP_CONTEXT IrpContext,
                                      IN PIRP Irp);
@@ -669,7 +682,9 @@ extern NTSTATUS NTAPI UDFCommonLockControl(
     IN PIRP_CONTEXT IrpContext,
     IN PIRP             Irp);
 
-extern BOOLEAN NTAPI UDFFastLock(
+BOOLEAN
+NTAPI
+UDFFastLock(
     IN PFILE_OBJECT           FileObject,
     IN PLARGE_INTEGER         FileOffset,
     IN PLARGE_INTEGER         Length,
@@ -1304,6 +1319,16 @@ SectorAlign(
     return (Length + (Vcb->SectorSize - 1)) & ~(Vcb->SectorSize - 1);
 }
 
+inline
+ULONGLONG
+LlSectorAlign( 
+    PVCB Vcb, 
+    ULONGLONG Length
+) {
+
+    return (Length + (Vcb->SectorSize - 1)) & ~(ULONGLONG)(Vcb->SectorSize - 1);
+}
+
 VOID
 UDFSetThreadContext(
     _Inout_ PIRP_CONTEXT IrpContext,
@@ -1342,6 +1367,12 @@ UDFWaitForIoAtEof(
     IN PFCB Fcb,
     IN LONGLONG FileOffset,
     IN ULONG Length
+    );
+
+VOID
+UDFPrePostIrp(
+    _Inout_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp
     );
 
 #endif  // _UDF_PROTOS_H_

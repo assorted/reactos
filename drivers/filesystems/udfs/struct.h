@@ -297,6 +297,9 @@ using PFCB = FCB*;
     values are bit fields; therefore we can test whether
     a bit position is set (1) or not set (0).
 **************************************************************************/
+// File data is embedded in ICB (IN_ICB allocation mode)
+// Requires exclusive lock for writes since data shares sector with metadata
+#define     UDF_FCB_EMBEDDED_DATA                       (0x00000001)
 #define     UDF_FCB_VALID                               (0x00000002)
 #define     UDF_FCB_DIRECTORY                           (0x00000008)
 #define     UDF_FCB_ROOT_DIRECTORY                      (0x00000010)

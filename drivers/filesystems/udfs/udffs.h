@@ -17,6 +17,8 @@
 #ifndef _UDF_UDF_H_
 #define _UDF_UDF_H_
 
+#pragma warning(disable : 28172)
+
 /**************** OPTIONS *****************/
 
 //#define UDF_TRACK_UNICODE_STR
@@ -54,7 +56,7 @@
 
 #define UDF_DEFAULT_SPARSE_THRESHOLD (256*PACKETSIZE_UDF)
 
-#define ALLOW_SPARSE
+//#define ALLOW_SPARSE
 
 #define UDF_PACK_DIRS
 

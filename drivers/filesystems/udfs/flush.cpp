@@ -139,15 +139,17 @@ UDFCommonFlush(
             Vcb = Fcb->Vcb;
             ASSERT(Vcb);
 
+            // Child-first lock ordering
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
+            AcquiredFCB = TRUE;
+
+            // Parent second (needed for DirIndex modification in UDFSetFileSizeInDirNdx)
             if (Fcb->FileInfo->ParentFile && Fcb->FileInfo->ParentFile->Fcb) {
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
                 UDFAcquireResourceExclusive(&Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource, TRUE);
                 AcquiredParentFcb = TRUE;
             }
-
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
-            AcquiredFCB = TRUE;
 
             // Request the Cache Manager to perform a flush operation.
             // Further, instruct the Cache Manager that we wish to flush the
@@ -168,16 +170,17 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
-        if (AcquiredFCB) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
-            AcquiredFCB = FALSE;
-        }
-
+        // Release in reverse order of acquisition (parent first, then child)
         if (AcquiredParentFcb) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
             UDFReleaseResource(&Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource);
             AcquiredParentFcb = FALSE;
+        }
+
+        if (AcquiredFCB) {
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
+            AcquiredFCB = FALSE;
         }
 
         if (AcquiredVCB) {

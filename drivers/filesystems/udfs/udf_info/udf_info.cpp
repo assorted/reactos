@@ -1645,6 +1645,9 @@ UDFWriteFile__(
         ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags &= ~ICB_FLAG_ALLOC_MASK;
         ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags |= Vcb->DefaultAllocMode;
         WasInIcb = TRUE;
+        // Clear embedded data flag since file is no longer in ICB mode
+        ASSERT(FileInfo->Fcb);
+        FileInfo->Fcb->FcbState &= ~UDF_FCB_EMBEDDED_DATA;
     }
     // increase extent
     ExtPrint(("  %s %s %s\n",
@@ -3527,6 +3530,9 @@ mark_data_map_0:
             // switch to IN_ICB mode
             ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags &= ~ICB_FLAG_ALLOC_MASK;
             ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags |= ICB_FLAG_AD_IN_ICB;
+            // Set embedded data flag since file is now in ICB mode
+            ASSERT(FileInfo->Fcb);
+            FileInfo->Fcb->FcbState |= UDF_FCB_EMBEDDED_DATA;
             // init new data location descriptors
             FileInfo->Dloc->DataLoc.Mapping = NewMap;
             RtlZeroMemory((int8*)(FileInfo->Dloc->DataLoc.Mapping), 2*sizeof(EXTENT_MAP));
