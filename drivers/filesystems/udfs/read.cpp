@@ -66,6 +66,7 @@ UDFCommonRead(
     PVCB                    Vcb = NULL;
     BOOLEAN                 VcbAcquired = FALSE;
     BOOLEAN                 FcbAcquired = FALSE;
+    BOOLEAN                 PagingIoResourceAcquired = FALSE;
     PVOID                   SystemBuffer = NULL;
 
     BOOLEAN Wait;
@@ -157,6 +158,11 @@ UDFCommonRead(
 
             UDFAcquireFcbSharedStarveExclusive(IrpContext, Fcb, FALSE);
             FcbAcquired = TRUE;
+            // Acquire PagingIo resource shared to serialize with writes that hold
+            // it exclusively while modifying the extent mapping (UDFResizeExtent).
+            // This prevents a use-after-free when iterating DataLoc.Mapping.
+            UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
+            PagingIoResourceAcquired = TRUE;
 
         } else {
 
@@ -406,6 +412,9 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
+        if (PagingIoResourceAcquired) {
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
+        }
         if (FcbAcquired) {
 
             UDFReleaseFcb(IrpContext, Fcb);
