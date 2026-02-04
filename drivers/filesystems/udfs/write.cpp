@@ -330,6 +330,9 @@ UDFCommonWrite(
 
         // Acquire the appropriate FCB resource
         if (PagingIo) {
+			// Don't offload jobs when doing paging IO - otherwise this can lead to
+            // deadlocks in CcCopyWrite.
+            Wait = true;
 
             // For PagingIo: FcbResource already acquired by UDFAcqLazyWrite/UDFFastIoAcqModWrite
             // callback before this function is called
