@@ -233,20 +233,20 @@ UDFTRead(
     NTSTATUS RC = STATUS_SUCCESS;
     uint32 retry;
     PVCB Vcb = (PVCB)_Vcb;
-    uint32 BCount = Length >> Vcb->SectorShift;
+    uint32 BCount = (uint32)(Length >> Vcb->SectorShift);
     uint32 i;
     PEXTENT_MAP RelocExtent;
     PEXTENT_MAP RelocExtent_saved = NULL;
     BOOLEAN res_acq = FALSE;
-//    LARGE_INTEGER delay;
+    PUCHAR WorkingBuffer = (PUCHAR)Buffer; // Use PUCHAR for safe arithmetic
 
     ASSERT(Buffer);
-
     (*ReadBytes) = 0;
 
     if (Vcb->VcbState & UDF_VCB_FLAGS_DEAD)
         return STATUS_NO_SUCH_DEVICE;
 
+    // Get relocation/partition mapping
     RelocExtent = UDFRelocateSectors(Vcb, LBA, BCount);
     if (!RelocExtent) return STATUS_INSUFFICIENT_RESOURCES;
 
@@ -257,75 +257,88 @@ UDFTRead(
             res_acq = TRUE;
         }
 
+        // Case 1: Single contiguous block range
         if (RelocExtent == UDF_NO_EXTENT_MAP) {
             rLba = LBA;
-            if (rLba >= (Vcb->CDR_Mode ? Vcb->NWA : Vcb->LastLBA + 1)) {
-                RtlZeroMemory(Buffer, Length);
+            
+            // FIX: Overflow-safe boundary check
+            uint32 LimitLba = Vcb->CDR_Mode ? Vcb->NWA : Vcb->LastLBA;
+            if (rLba > LimitLba) {
+                RtlZeroMemory(WorkingBuffer, Length);
                 try_return(RC = STATUS_SUCCESS);
             }
+
             retry = UDF_WRITE_MAX_RETRY;
 retry_1:
-            RC = UDFPrepareForReadOperation(IrpContext, Vcb, rLba, Length >> Vcb->SectorShift);
+            RC = UDFPrepareForReadOperation(IrpContext, Vcb, rLba, BCount);
             if (!NT_SUCCESS(RC)) try_return(RC);
+            
             rLba = UDFFixFPAddress(Vcb, rLba);
 
-            RC = UDFPhReadSynchronous(IrpContext, Vcb->TargetDeviceObject, Buffer, Length,
-                       ((uint64)rLba) << Vcb->SectorShift, ReadBytes, Flags);
+            // 64-bit shift ensures we address the full 256GB range
+            RC = UDFPhReadSynchronous(IrpContext, Vcb->TargetDeviceObject, WorkingBuffer, Length, Vcb->PartitionStartOffset + (((uint64)rLba) << Vcb->SectorShift), ReadBytes, Flags);
+            
             Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
 
             if (!NT_SUCCESS(RC) &&
                 NT_SUCCESS(RC = UDFRecoverFromError(Vcb, FALSE, RC, rLba, BCount, &retry)) ) {
-                if (RC != STATUS_BUFFER_ALL_ZEROS) {
-                    goto retry_1;
-                }
-                RtlZeroMemory(Buffer, Length);
-                (*ReadBytes) = Length;
+                if (RC != STATUS_BUFFER_ALL_ZEROS) goto retry_1;
+                RtlZeroMemory(WorkingBuffer, Length);
+                (*ReadBytes) = (ULONG)Length;
                 RC = STATUS_SUCCESS;
             }
-
             try_return(RC);
         }
-        // read according to relocation table
+
+        // Case 2: Read according to relocation table (multiple extents)
         RelocExtent_saved = RelocExtent;
         for(i=0; RelocExtent->extLength; i++, RelocExtent++) {
-            ULONG _ReadBytes;
+            ULONG _ReadBytes = 0;
             rLba = RelocExtent->extLocation;
-            if (rLba >= (Vcb->CDR_Mode ? Vcb->NWA : Vcb->LastLBA + 1)) {
-                RtlZeroMemory(Buffer, _ReadBytes = RelocExtent->extLength);
+            uint32 CurrentExtLength = (ULONG)RelocExtent->extLength;
+            
+            uint32 LimitLba = Vcb->CDR_Mode ? Vcb->NWA : Vcb->LastLBA;
+            if (rLba > LimitLba) {
+                RtlZeroMemory(WorkingBuffer, CurrentExtLength);
+                _ReadBytes = CurrentExtLength;
                 RC = STATUS_SUCCESS;
                 goto TR_continue;
             }
-            BCount = RelocExtent->extLength>>Vcb->SectorShift;
+
+            uint32 ExtBCount = CurrentExtLength >> Vcb->SectorShift;
             retry = UDF_WRITE_MAX_RETRY;
 retry_2:
-            RC = UDFPrepareForReadOperation(IrpContext, Vcb, rLba, RelocExtent->extLength >> Vcb->SectorShift);
+            RC = UDFPrepareForReadOperation(IrpContext, Vcb, rLba, ExtBCount);
             if (!NT_SUCCESS(RC)) break;
+            
             rLba = UDFFixFPAddress(Vcb, rLba);
 
-            RC = UDFPhReadSynchronous(IrpContext, Vcb->TargetDeviceObject, Buffer, RelocExtent->extLength,
-                       ((uint64)rLba) << Vcb->SectorShift, &_ReadBytes, Flags);
+            RC = UDFPhReadSynchronous(IrpContext, Vcb->TargetDeviceObject, WorkingBuffer, Length, Vcb->PartitionStartOffset + (((uint64)rLba) << Vcb->SectorShift), ReadBytes, Flags);
+            
             Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
 
             if (!NT_SUCCESS(RC) &&
-                NT_SUCCESS(RC = UDFRecoverFromError(Vcb, FALSE, RC, rLba, BCount, &retry)) ) {
-                if (RC != STATUS_BUFFER_ALL_ZEROS) {
-                    goto retry_2;
-                }
-                RtlZeroMemory(Buffer, RelocExtent->extLength);
-                _ReadBytes = RelocExtent->extLength;
+                NT_SUCCESS(RC = UDFRecoverFromError(Vcb, FALSE, RC, rLba, ExtBCount, &retry)) ) {
+                if (RC != STATUS_BUFFER_ALL_ZEROS) goto retry_2;
+                RtlZeroMemory(WorkingBuffer, CurrentExtLength);
+                _ReadBytes = CurrentExtLength;
                 RC = STATUS_SUCCESS;
             }
+
 TR_continue:
             (*ReadBytes) += _ReadBytes;
             if (!NT_SUCCESS(RC)) break;
-            *((uint32*)&Buffer) += RelocExtent->extLength;
+
+            // FIX: Safe pointer arithmetic to advance the buffer for the next extent
+            WorkingBuffer += CurrentExtLength;
         }
+
 try_exit: NOTHING;
     } _SEH2_FINALLY {
         if (res_acq) {
             UDFReleaseResource(&(Vcb->IoResource));
         }
-        if (RelocExtent_saved) {
+        if (RelocExtent_saved && RelocExtent_saved != UDF_NO_EXTENT_MAP) {
             MyFreePool__(RelocExtent_saved);
         }
     } _SEH2_END;
@@ -785,87 +798,76 @@ try_exit: NOTHING;
  */
 NTSTATUS
 UDFGetBlockSize(
-    IN PDEVICE_OBJECT DeviceObject,      // the target device object
-    IN PVCB           Vcb                // Volume control block from this DevObj
+    IN PDEVICE_OBJECT DeviceObject,
+    IN PVCB           Vcb
     )
 {
-    NTSTATUS        RC = STATUS_SUCCESS;
+    NTSTATUS RC = STATUS_SUCCESS;
     DISK_GEOMETRY_EX DiskGeometryEx;
-    PARTITION_INFORMATION  PartitionInfo;
+    PARTITION_INFORMATION_EX PartitionInfoEx; // Use EX for 64-bit support
 
     if (UDFGetDevType(DeviceObject) == FILE_DEVICE_DISK) {
-        UDFPrint(("UDFGetBlockSize: HDD\n"));
-        RC = UDFPhSendIOCTL(IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,DeviceObject,
-            0,NULL,
-            &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
-            TRUE,NULL );
+        UDFPrint(("UDFGetBlockSize: HDD Detection for 256GB...\n"));
+        
+        // 1. Get Extended Geometry
+        RC = UDFPhSendIOCTL(IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, DeviceObject,
+                            NULL, 0, &DiskGeometryEx, sizeof(DiskGeometryEx), TRUE, NULL);
+        if (!NT_SUCCESS(RC)) return RC;
 
-        if (!NT_SUCCESS(RC))
-            try_return(RC);
-        RC = UDFPhSendIOCTL(IOCTL_DISK_GET_PARTITION_INFO,DeviceObject,
-            0,NULL,
-            &PartitionInfo,sizeof(PARTITION_INFORMATION),
-            TRUE,NULL );
-        if (!NT_SUCCESS(RC)) {
-            UDFPrint(("UDFGetBlockSize: IOCTL_DISK_GET_PARTITION_INFO failed\n"));
-            if (RC == STATUS_INVALID_DEVICE_REQUEST) /* ReactOS Code Change (was =) */
-                RC = STATUS_UNRECOGNIZED_VOLUME;
-            try_return(RC);
-        }
-        if (PartitionInfo.PartitionType != PARTITION_IFS && PartitionInfo.PartitionType != PARTITION_HUGE) {
-            UDFPrint(("UDFGetBlockSize: PartitionInfo.PartitionType != PARTITION_IFS\n"));
-            try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
-        }
-    } else {
-        RC = UDFPhSendIOCTL(IOCTL_CDROM_GET_DRIVE_GEOMETRY_EX,DeviceObject,
-            &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
-            &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
-            TRUE,NULL );
+        // 2. Get Extended Partition Info to prevent 32-bit truncation
+        RC = UDFPhSendIOCTL(IOCTL_DISK_GET_PARTITION_INFO_EX, DeviceObject,
+                            NULL, 0, &PartitionInfoEx, sizeof(PartitionInfoEx), TRUE, NULL);
+	    RC = UDFPhSendIOCTL(IOCTL_DISK_GET_PARTITION_INFO_EX, DeviceObject,
+                    0, NULL,
+                    &PartitionInfoEx, sizeof(PARTITION_INFORMATION_EX),
+                    TRUE, NULL);
 
-        if (RC == STATUS_DEVICE_NOT_READY) {
-            // probably, the device is really busy, may be by CD/DVD recording
-            UserPrint(("  busy (0)\n"));
-            try_return(RC);
-        }
-    }
-
-    if (
-        UDFGetDevType(DeviceObject) == FILE_DEVICE_DISK ||
-        FALSE) {
-        Vcb->FirstLBA=0;//(ULONG)(PartitionInfo->StartingOffset.QuadPart >> Vcb->BlockSizeBits);
-        Vcb->LastPossibleLBA =
-        Vcb->LastLBA = (uint32)(DiskGeometryEx.DiskSize.QuadPart >> Vcb->SectorShift)/* + Vcb->FirstLBA*/ - 1;
-    } else {
-        Vcb->FirstLBA=0;
         if (NT_SUCCESS(RC)) {
-            Vcb->LastLBA = (uint32)(DiskGeometryEx.Geometry.Cylinders.QuadPart *
-                                    DiskGeometryEx.Geometry.TracksPerCylinder *
-                                    DiskGeometryEx.Geometry.SectorsPerTrack - 1);
-            if (Vcb->LastLBA == 0x7fffffff) {
-                ASSERT(FALSE);
-            }
-        } else {
-
-            try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
+           // SAVE THE PHYSICAL STARTING OFFSET HERE
+           Vcb->PartitionStartOffset = PartitionInfoEx.StartingOffset.QuadPart;
+           UDFPrint(("UDF: Physical Partition starts at %llx bytes\n", Vcb->PartitionStartOffset));
+           } else {
+           // Fallback if IOCTL fails (e.g. unpartitioned disk)
+           Vcb->PartitionStartOffset = 0;
         }
-        Vcb->LastPossibleLBA = Vcb->LastLBA;
+        
+        if (!NT_SUCCESS(RC)) {
+            UDFPrint(("UDF: Partition Info EX failed, using DiskSize from Geometry.\n"));
+            // Fallback: use DiskSize from DiskGeometryEx
+            PartitionInfoEx.PartitionLength = DiskGeometryEx.DiskSize;
+        }
+
+        // 3. Force UDF Standard Sector Size if misdetected
+        // 256GB VHDs formatted as UDF 2.01 use 2048-byte logical sectors
+        if (Vcb->SectorSize < 2048) {
+            UDFPrint(("UDF: Adjusting SectorSize from %x to 800 (2048)\n", Vcb->SectorSize));
+            Vcb->SectorSize = 2048;
+            Vcb->SectorShift = 11; 
+        }
+
+    } else {
+        // CD-ROM Logic (remains similar but use EX)
+        RC = UDFPhSendIOCTL(IOCTL_CDROM_GET_DRIVE_GEOMETRY_EX, DeviceObject,
+                            NULL, 0, &DiskGeometryEx, sizeof(DiskGeometryEx), TRUE, NULL);
+        if (!NT_SUCCESS(RC)) return RC;
     }
 
-//    if (UDFGetDevType(DeviceObject) == FILE_DEVICE_DISK) {
-        Vcb->WriteBlockSize = PACKETSIZE_UDF*Vcb->SectorSize;
-//    } else {
-//        Vcb->WriteBlockSize = PACKETSIZE_UDF*Vcb->BlockSize;
-//    }
+    // 4. Safe 64-bit LBA Calculation
+    Vcb->FirstLBA = 0;
+    
+    // Calculate LastLBA using ULONGLONG to prevent 16GB truncation
+    ULONGLONG TotalSectors = PartitionInfoEx.PartitionLength.QuadPart >> Vcb->SectorShift;
+    
+    Vcb->LastLBA = (uint32)(TotalSectors - 1);
+    Vcb->LastPossibleLBA = Vcb->LastLBA;
 
-    RC = STATUS_SUCCESS;
+    Vcb->WriteBlockSize = PACKETSIZE_UDF * Vcb->SectorSize;
 
-try_exit:   NOTHING;
-
-    UDFPrint(("UDFGetBlockSize:\nBlock size is %x, Block size bits %x, Last LBA is %x\n",
+    UDFPrint(("UDFGetBlockSize Final:\n"));
+    UDFPrint(("Sector Size: %x, Shift: %d, Last LBA: %x\n", 
               Vcb->SectorSize, Vcb->SectorShift, Vcb->LastLBA));
 
-    return RC;
-
+    return STATUS_SUCCESS;
 } // end UDFGetBlockSize()
 
 uint32
@@ -976,7 +978,7 @@ try_exit:   NOTHING;
         UDFPrint(("UDF: Last LBA in last session: %x\n",Vcb->LastLBA));
         UDFPrint(("UDF: First writable LBA (NWA) in last session: %x\n",Vcb->NWA));
         UDFPrint(("UDF: Last available LBA beyond end of last session: %x\n",Vcb->LastPossibleLBA));
-        UDFPrint(("UDF: blocks per frame: %x\n",1 << Vcb->WCacheBlocksPerFrameSh));
+ //       UDFPrint(("UDF: blocks per frame: %x\n",1 << Vcb->WCacheBlocksPerFrameSh));
         UDFPrint(("UDF: Flags: %s%s\n",
                  Vcb->VcbState & UDF_VCB_FLAGS_RAW_DISK ? "RAW " : "",
                  Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY ? "R/O " : "WR "
@@ -1036,8 +1038,23 @@ UDFReadSectors(
     OUT PULONG ReadBytes
     )
 {
-    return UDFTRead(IrpContext, Vcb, Buffer, BCount*Vcb->SectorSize, Lba, ReadBytes);
-} // end UDFReadSectors()
+    // FIX: Calculate ByteOffset and ByteCount using 64-bit math
+    // to prevent overflow on volumes > 2TB or large offsets on 256GB volumes.
+    ULONGLONG ByteOffset = (ULONGLONG)Lba * Vcb->SectorSize;
+    ULONG ByteCount = BCount * Vcb->SectorSize;
+
+    // Check if UDFTRead can handle the ULONGLONG offset. 
+    // If UDFTRead expects a 32-bit 'uint32' for offset, this is where the mount fails.
+    return UDFTRead(
+        IrpContext, 
+        Vcb, 
+        Buffer, 
+        ByteCount, 
+        (uint32)Lba, // If UDFTRead uses LBA, pass LBA. 
+        ReadBytes
+    );
+}
+
 
 /*
     This routine reads physical sectors

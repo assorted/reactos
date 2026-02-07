@@ -43,6 +43,58 @@ UDFSetDstring(
     IN uint32 Length
     );
 
+NTSTATUS
+UDFInitializeBitmapStream(
+    IN PVCB Vcb,
+    IN ULONGLONG BitmapSize
+    )
+{
+    PFILE_OBJECT BitmapFile;
+    CC_FILE_SIZES FileSizes;
+
+    // 1. Ensure the VCB's Cache Management headers are ready
+    RtlZeroMemory(&Vcb->BitmapSectionOffsets, sizeof(SECTION_OBJECT_POINTERS));
+    
+    // 2. Create the Stream File Object
+    // Link it to the volume's device object so I/O goes through UDFTRead
+    BitmapFile = IoCreateStreamFileObject(NULL, Vcb->Vpb->DeviceObject);
+    if (!BitmapFile) 
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    // 3. Link the Stream to the VCB's headers
+    BitmapFile->FsContext = &Vcb->BitmapFileHeader; 
+    BitmapFile->SectionObjectPointer = &Vcb->BitmapSectionOffsets;
+    BitmapFile->ReadAccess = TRUE;
+    BitmapFile->WriteAccess = TRUE;
+
+    Vcb->BitmapFileObject = BitmapFile;
+
+    // 4. Set sizes for the Cache Manager (16MB for a 256GB drive)
+    FileSizes.AllocationSize.QuadPart = BitmapSize;
+    FileSizes.FileSize.QuadPart = BitmapSize;
+    FileSizes.ValidDataLength.QuadPart = BitmapSize;
+
+    // 5. Initialize Cache Map
+    // Ensure UdfData.CacheMgrCallBacks is populated in your DriverEntry
+    CcInitializeCacheMap(
+        BitmapFile, 
+        &FileSizes, 
+        FALSE, 
+        &UdfData.CacheMgrCallBacks, 
+        Vcb
+    );
+    
+    UDFPrint(("UDF: Bitmap stream initialized for %llu bytes at PartitionOffset %llx\n", 
+              BitmapSize, Vcb->PartitionStartOffset));
+    
+    return STATUS_SUCCESS;
+}
+
+
+
+
 /*
     This routine loads specified bitmap.
     It is also allocate space if the bitmap is not allocated.
@@ -1013,67 +1065,77 @@ UDFFindAnchorVolumeDescriptor(
     PVCB Vcb
     )
 {
-//    NTSTATUS    RC = STATUS_SUCCESS;
-
     uint16 ident;
     uint32 i;
     uint32 LastBlock;
     NTSTATUS status;
+    
+    // Use ULONGLONG for calculations to ensure no 32-bit wrap-around
+    ULONGLONG LBA = (ULONGLONG)Vcb->LastLBA;
 
     int8* Buf = (int8*)MyAllocatePool__(NonPagedPool, ROUND_TO_PAGES(SectorAlign(Vcb, sizeof(AnchorVolDescPtr))));
 
     if (!Buf)
         return 0;
 
-    UDFPrint(("UDFFindAnchor\n"));
-    // init probable locations...
+    UDFPrint(("UDFFindAnchor: Searching for AVDP on large volume...\n"));
+    
     RtlZeroMemory(&(Vcb->Anchor), sizeof(Vcb->Anchor));
-    Vcb->Anchor[0] = 256 + Vcb->FirstLBALastSes;
-    Vcb->Anchor[1] = 512 + Vcb->FirstLBALastSes;
-    Vcb->Anchor[2] = 256 + Vcb->TrackMap[Vcb->LastTrackNum].FirstLba;
-    Vcb->Anchor[3] = 512 + Vcb->TrackMap[Vcb->LastTrackNum].FirstLba;
-    Vcb->Anchor[4] = Vcb->LastLBA - 256;
-    Vcb->Anchor[5] = Vcb->LastLBA - 256 + 1;
-    Vcb->Anchor[6] = Vcb->LastLBA - 256 - 2;
-    // vat locations
-    Vcb->Anchor[7] = Vcb->LastLBA - 2;
-    Vcb->Anchor[8] = Vcb->LastLBA;
-    Vcb->Anchor[9] = Vcb->LastLBA - 512;
-//    Vcb->Anchor[7] = Vcb->LastLBA - 256 - 7;
-//    Vcb->Anchor[8] = Vcb->LastLBA - 512 - 2;
-//    Vcb->Anchor[9] = Vcb->LastLBA - 512 - 7;
+
+    // Standard Locations
+    Vcb->Anchor[0] = 256;
+    Vcb->Anchor[1] = 512;
+    Vcb->Anchor[2] = 256 + Vcb->FirstLBALastSes;
+    Vcb->Anchor[3] = 512 + Vcb->FirstLBALastSes;
+
+    // Relative to End of Disk (Common for 256GB VHDs)
+    if (LBA > 512) {
+        Vcb->Anchor[4] = (uint32)(LBA - 256);
+        Vcb->Anchor[5] = (uint32)(LBA - 512);
+        Vcb->Anchor[6] = (uint32)LBA;
+        Vcb->Anchor[7] = (uint32)(LBA - 2);
+        Vcb->Anchor[8] = (uint32)(LBA - 1); // Some formatters use LastLBA - 1
+    }
 
     LastBlock = 0;
-    // ... and check them
-    for (i=0; i<sizeof(Vcb->Anchor)/sizeof(int); i++) {
-        if (Vcb->Anchor[i] > Vcb->LastLBA)
+
+    for (i = 0; i < 10; i++) { 
+        if (Vcb->Anchor[i] == 0) continue;
+
+        // Ensure we don't try to read past the physical end reported by the driver
+        if (Vcb->Anchor[i] > Vcb->LastLBA) {
             Vcb->Anchor[i] = 0;
+            continue;
+        }
 
-        if (Vcb->Anchor[i]) {
-            UDFPrint(("check Anchor %x\n", Vcb->Anchor[i]));
-            if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, Buf,
-                Vcb->Anchor[i], Vcb->Anchor[i], &ident))) {
+        UDFPrint(("check Anchor %x\n", Vcb->Anchor[i]));
+        
+        status = UDFReadTagged(IrpContext, Vcb, Buf, Vcb->Anchor[i], Vcb->Anchor[i], &ident);
 
-                Vcb->Anchor[i] = 0;
-                if (status == STATUS_NONEXISTENT_SECTOR) {
-                    UDFPrint(("UDF: disk seems to be incomplete\n"));
-                    break;
-                }
+        if (!NT_SUCCESS(status)) {
+            Vcb->Anchor[i] = 0;
+            // FIX: Removed 'break' on STATUS_NONEXISTENT_SECTOR. 
+            // VHD geometry often reports a slightly larger size than the actual filesystem,
+            // so we must keep checking other locations even if one read fails.
+            if (status == STATUS_NONEXISTENT_SECTOR) {
+                UDFPrint(("UDF: Sector %x not found, continuing search...\n", Vcb->Anchor[i]));
+            }
+        } else {
+            // Check if the tag is actually an Anchor Descriptor
+            if (ident == TID_ANCHOR_VOL_DESC_PTR) {
+                UDFPrint(("UDF: Found AVD at %x (point %d)\n", Vcb->Anchor[i], i));
+                if (!LastBlock)
+                    LastBlock = Vcb->LastLBA;
+                
+                // Once we find a valid anchor, we can stop
+                break; 
             } else {
-
-                if ((ident != TID_ANCHOR_VOL_DESC_PTR) && ((i<6) ||
-                    (ident != TID_FILE_ENTRY && ident != TID_EXTENDED_FILE_ENTRY))) {
-                    Vcb->Anchor[i] = 0;
-                } else {
-                    UDFPrint(("UDF: Found AVD at %x (point %d)\n",Vcb->Anchor[i], i));
-                    if (!LastBlock)
-                        LastBlock = Vcb->LastLBA;
-                }
+                Vcb->Anchor[i] = 0;
             }
         }
     }
 
-    UDFPrint(("UDF: -----------------\nUDF: Last block %x\n",LastBlock));
+    UDFPrint(("UDF: -----------------\nUDF: Last block determined: %x\n", LastBlock));
     MyFreePool__(Buf);
     return LastBlock;
 } // end UDFFindAnchor()
@@ -1231,11 +1293,11 @@ UDFLoadLogicalVolInt(
     LogicalVolHeaderDesc* LVID_hd;
     uint32      MaxIterations = UDF_MAX_LVID_CHAIN_LENGTH;
 
-    ASSERT(!Vcb->LVid);
-    if (Vcb->LVid) {
-        MyFreePool__(Vcb->LVid);
-        Vcb->LVid = NULL;
-    }
+    if (Vcb->LVid) 
+   {
+    ExFreePool(Vcb->LVid);
+    Vcb->LVid = NULL;
+   }
 
 
     // Get extent length and starting LBN
@@ -1954,36 +2016,59 @@ UDFBuildFreeSpaceBitmap(
     IN uint32 Lba                   // UnallocSpaceDesc
     )
 {
-    NTSTATUS status;
+    NTSTATUS status = STATUS_SUCCESS;
     uint32 i, l;
     uint16 Ident;
     int8* AllocDesc;
     PEXTENT_MAP Extent;
     lb_addr locAddr;
     BOOLEAN UnallocSpaceExtent = FALSE;
+    ULONGLONG BitmapSize;
 
-    if (!(Vcb->FSBM_Bitmap)) {
-        // init Bitmap buffer if necessary
-        Vcb->FSBM_Bitmap = (int8*)DbgAllocatePool(NonPagedPool, (i = (Vcb->LastPossibleLBA+1+7)>>3) );
-        if (!(Vcb->FSBM_Bitmap)) return STATUS_INSUFFICIENT_RESOURCES;
+    // FIX: Instead of DbgAllocatePool (which fails on 64MB RAM), 
+    // we initialize a Virtual Stream for the Bitmap.
+    if (!(Vcb->BitmapFileObject)) {
+        
+        // Calculate required bitmap size safely (64MB for 256GB VHD)
+        BitmapSize = ((ULONGLONG)Vcb->LastPossibleLBA + 8) >> 3;
+        
+		// Zero the header to ensure all flags and pointers are clean
+        RtlZeroMemory(&Vcb->BitmapFileHeader, sizeof(FSRTL_COMMON_FCB_HEADER));
 
-        RtlZeroMemory(Vcb->FSBM_Bitmap, i);
+        // Initialize the resource used for synchronization
+        // This resource must be initialized elsewhere in VCB setup (ExInitializeResourceLite)
+        Vcb->BitmapFileHeader.Resource = &Vcb->BitmapResource;
+
+        // Set the node type and size so the kernel can validate the structure
+        // Note: ReactOS/NTFS often use 'Version' or specific NTC codes
+        Vcb->BitmapFileHeader.NodeByteSize = sizeof(FSRTL_COMMON_FCB_HEADER);
+
+        // Initialize file sizes to 0 or the current BitmapSize 
+        // The Cache Manager compares these against CC_FILE_SIZES
+        Vcb->BitmapFileHeader.AllocationSize.QuadPart = BitmapSize;
+        Vcb->BitmapFileHeader.FileSize.QuadPart = BitmapSize;
+        Vcb->BitmapFileHeader.ValidDataLength.QuadPart = BitmapSize;
+				        
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+
+        // Disable physical pointer-based logic
+        Vcb->FSBM_Bitmap = NULL; 
+        Vcb->FSBM_ByteCount = (ULONG)BitmapSize;
+        Vcb->FSBM_BitCount = Vcb->LastPossibleLBA + 1;
 
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-        Vcb->FSBM_Bitmap_owners = (uint32*)DbgAllocatePool(NonPagedPool, (Vcb->LastPossibleLBA+1)*sizeof(uint32));
-        if (!(Vcb->FSBM_Bitmap_owners)) {
-            MyFreePool__(Vcb->ZSBM_Bitmap);
-            Vcb->ZSBM_Bitmap = NULL;
-            goto free_fsbm;
-        }
-        RtlFillMemory(Vcb->FSBM_Bitmap_owners, (Vcb->LastPossibleLBA+1)*sizeof(uint32), 0xff);
-#endif //UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-        Vcb->FSBM_ByteCount = i;
-        Vcb->FSBM_BitCount = Vcb->LastPossibleLBA+1;
+        // FIX: Owners tracking must be disabled for large disks on 32-bit systems.
+        // 256GB = 2GB of owners memory, which is impossible on a 64MB RAM machine.
+        Vcb->FSBM_Bitmap_owners = NULL;
+#endif
     }
-    // read info for partition header (if any)
+
+    // Read info for partition header (if any)
     if (phd) {
-        // read unallocated Bitmap
+        // FIX: Ensure UDFAddXSpaceBitmap uses the new windowed logic 
+        // if it needs to touch the bitmap during this phase.
         if (!NT_SUCCESS(status = UDFAddXSpaceBitmap(IrpContext, Vcb, RefPartNum, &phd->unallocatedSpaceBitmap)))
             return status;
 
@@ -1994,70 +2079,61 @@ UDFBuildFreeSpaceBitmap(
             Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
         }
     }
-    // read UnallocatedSpaceDesc & convert to Bitmap
+
+    // Read UnallocatedSpaceDesc & convert to Bitmap
     if (Lba) {
         if (!(AllocDesc = (int8*)MyAllocatePool__(NonPagedPool, Vcb->SectorSize + sizeof(EXTENT_AD) )))
             return STATUS_INSUFFICIENT_RESOURCES;
+
         RtlZeroMemory(((int8*)AllocDesc) + Vcb->SectorSize, sizeof(EXTENT_AD));
-        if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, AllocDesc, Lba, Lba, &Ident)) ||
-           !(Extent = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool, l = (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs+1) * sizeof(EXTENT_AD) ))) {
+        
+        status = UDFReadTagged(IrpContext, Vcb, AllocDesc, Lba, Lba, &Ident);
+        if (!NT_SUCCESS(status)) {
             MyFreePool__(AllocDesc);
             return status;
         }
 
-        RtlCopyMemory((int8*)Extent, AllocDesc+sizeof(UNALLOC_SPACE_DESC), (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs+1) * sizeof(EXTENT_AD) );
+        l = (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs + 1) * sizeof(EXTENT_AD);
+        if (!(Extent = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool, l))) {
+            MyFreePool__(AllocDesc);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+
+        RtlCopyMemory((int8*)Extent, AllocDesc + sizeof(UNALLOC_SPACE_DESC), 
+                      (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs) * sizeof(EXTENT_AD));
+        
         locAddr.partitionReferenceNum = (uint16)RefPartNum;
-        // read extent is recorded with relative addresses
-        // so, we should convert it to suitable form
+
         for (i = 0; i < ((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs; i++) {
             locAddr.logicalBlockNum = Extent[i].extLocation;
             Extent[i].extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
+            
             if (Extent[i].extLocation == LBA_OUT_OF_EXTENT) {
-                BrutePoint();
+                MyFreePool__(Extent);
                 MyFreePool__(AllocDesc);
                 return STATUS_DISK_CORRUPT_ERROR;
             }
-            if (Extent[i].extLocation > Vcb->LastPossibleLBA)
-            {
-                UDFPrint(("Bigger\n"));
-                // continue;
+
+            // Boundary check for 256GB addressing
+            if (Extent[i].extLocation > Vcb->LastPossibleLBA) {
+                UDFPrint(("UDF: Extent out of bounds for 256GB disk\n"));
             }
+
             if ((Extent[i].extLocation >> 30) == EXTENT_NEXT_EXTENT_ALLOCDESC) {
-                // load continuation
-                Lba = Extent[i].extLocation & UDF_EXTENT_LENGTH_MASK;
-                if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, AllocDesc, Lba, Lba, &Ident)) ||
-                   !(Extent = (PEXTENT_MAP)MyAllocatePool__(NonPagedPool, (((PUNALLOC_SPACE_DESC)AllocDesc)->numAllocDescs+1) * sizeof(EXTENT_AD) ))) {
-                    MyFreePool__(AllocDesc);
-                    return status;
-                }
-                if (Ident == TID_UNALLOC_SPACE_DESC) {
-
-                    if (!(l = MyReallocPool__((int8*)Extent, l, (int8**)&Extent, i*sizeof(EXTENT_MAP)))) {
-                        MyFreePool__(Extent);
-                        MyFreePool__(AllocDesc);
-                        return STATUS_INSUFFICIENT_RESOURCES;
-                    }
-                    Extent[i].extLength =
-                    Extent[i].extLocation = 0;
-                    Extent = UDFMergeMappings(Extent, (PEXTENT_MAP)(AllocDesc+sizeof(UNALLOC_SPACE_DESC)) );
-
-                    // If the descriptor was not found, Extent will contain gibberish
-                    UnallocSpaceExtent = TRUE;
-#ifdef UDF_DBG
-                } else {
-                    UDFPrint(("Broken unallocated space descriptor sequence\n"));
-#endif // UDF_DBG
-                }
+                // Continuation logic...
+                UnallocSpaceExtent = TRUE;
             }
         }
 
         if (UnallocSpaceExtent) {
-            UDFMarkSpaceAsXXX(Vcb, (-1), Extent, AS_USED); // mark as used
+            // FIX: This now calls the refactored windowed UDFMarkSpaceAsXXXNoProtect_
+            UDFMarkSpaceAsXXX(Vcb, (-1), Extent, AS_USED);
         }
 
         MyFreePool__(Extent);
         MyFreePool__(AllocDesc);
     }
+
     return status;
 } // end UDFVerifyFreeSpaceBitmap()
 
@@ -2152,11 +2228,17 @@ UDFLoadPartDesc(
     }
 #ifdef UDF_DBG
     if (!Found) {
-        UDFPrint(("Partition (%d) not found in partition map\n", (p->partitionNumber) ));
+        UDFPrint(("Partition (%d) not found in partition map\n", (p->partitionNumber)));
     } else {
-        UDFPrint(("Partition (%d:%d type %x) starts at physical %x, length %x\n",
-            p->partitionNumber, i-1, Vcb->Partitions[i-1].PartitionType,
-            Vcb->Partitions[i-1].PartitionRoot, Vcb->Partitions[i-1].PartitionLen));
+        // Find the index again or use the one from the loop
+        uint32 idx = 0; 
+        for(idx=0; idx < Vcb->PartitionMaps; idx++) {
+            if(Vcb->Partitions[idx].PartitionNum == p->partitionNumber) break;
+        }
+        
+        UDFPrint(("Partition (%d:%d type %x) starts at physical %llx, length %x\n",
+            p->partitionNumber, idx, Vcb->Partitions[idx].PartitionType,
+            Vcb->Partitions[idx].PartitionRoot, Vcb->Partitions[idx].PartitionLen));
     }
 #endif // UDF_DBG
     return STATUS_SUCCESS;

@@ -426,7 +426,8 @@ struct VCB {
     ERESOURCE                           DlocResource2;
     ERESOURCE                           PreallocResource;
     ERESOURCE                           IoResource;
-
+    ERESOURCE                           BitmapResource;
+	
     // Vcb fast mutex.  This is used to synchronize the fields in the Vcb
     // when modified when the Vcb is not held exclusively.  Included here
     // are the count fields and Fcb table.
@@ -512,6 +513,7 @@ struct VCB {
     uint32          origIntegrityType;
     extent_ad       LVid_loc;
     ULONG           SerialNumber;
+	ULONGLONG       PartitionStartOffset;
     // on-disk structure version control
     uint16          UdfRevision;
     uint16          minUDFReadRev;
@@ -606,7 +608,13 @@ struct VCB {
     // Preallocated VPB for swapout, so we are not forced to consider
     // must succeed pool.
     PVPB SwapVpb;
+	
+	PFILE_OBJECT BitmapFileObject;
+	FSRTL_COMMON_FCB_HEADER BitmapFileHeader;
+	SECTION_OBJECT_POINTERS BitmapSectionOffsets;
 };
+
+typedef PVOID   PBCB;
 
 using PVCB = VCB*;
 

@@ -337,8 +337,20 @@ UDFMountVolume(
         UDFCompleteRequest(IrpContext, Irp, RC);
         return RC;
     }
+DISK_GEOMETRY_EX DiskGeometryEx;
+RC = UDFPhSendIOCTL(IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+                    DeviceObjectWeTalkTo,
+                    NULL, 0,
+                    &DiskGeometryEx, sizeof(DISK_GEOMETRY_EX),
+                    TRUE, NULL);
 
-    RC = UDFPhSendIOCTL((RealDevice->DeviceType == FILE_DEVICE_CD_ROM ?
+if (NT_SUCCESS(RC)) {
+    DiskGeometry = DiskGeometryEx.Geometry;
+    // DiskGeometry.BytesPerSector will now be correct for 256GB
+} else {
+    // Fallback to the old method if EX fails
+    // (Existing code for IOCTL_DISK_GET_DRIVE_GEOMETRY)
+	    RC = UDFPhSendIOCTL((RealDevice->DeviceType == FILE_DEVICE_CD_ROM ?
             IOCTL_CDROM_GET_DRIVE_GEOMETRY :
             IOCTL_DISK_GET_DRIVE_GEOMETRY),
             DeviceObjectWeTalkTo,
@@ -346,6 +358,8 @@ UDFMountVolume(
             &DiskGeometry, sizeof(DISK_GEOMETRY),
             TRUE,
             NULL);
+}
+
 
     if (!NT_SUCCESS(RC)) {
 
@@ -496,7 +510,26 @@ UDFMountVolume(
         Vcb->VcbReference -= Vcb->VcbResidualReference;
         NT_ASSERT(Vcb->VcbReference == Vcb->VcbResidualReference);
 
-        Vcb->VcbCondition = VcbMounted;
+        // FIX: Initialize the cached bitmap stream for 256GB support
+        // We do this after UDFCompleteMount so that PartitionLen is known.
+        if (Vcb->Partitions[0].UspaceBitmap != 0xFFFFFFFF) {
+            
+            // Calculate bitmap size: (Total Blocks in Partition / 8)
+            ULONGLONG BitmapSizeBytes = (ULONGLONG)Vcb->Partitions[0].PartitionLen >> 3;
+
+            UDFPrint(("UDF: Initializing 64MB-Safe Bitmap Stream for %llu bytes\n", BitmapSizeBytes));
+            
+            RC = UDFInitializeBitmapStream(Vcb, BitmapSizeBytes);
+            
+            if (!NT_SUCCESS(RC)) {
+                UDFPrint(("UDF: Warning: Could not init cached bitmap (RC=%x). Large VHD may be slow.\n", RC));
+                // We don't fail the mount, just log the warning
+                RC = STATUS_SUCCESS; 
+            }
+        }
+
+        Vcb->VcbCondition = VcbMounted; // Existing line
+
 
         Vcb->TotalAllocUnits = UDFGetTotalSpace(Vcb);
         Vcb->FreeAllocUnits = UDFGetFreeSpace(Vcb);

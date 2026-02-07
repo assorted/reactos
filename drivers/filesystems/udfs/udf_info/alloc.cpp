@@ -538,16 +538,17 @@ UDFMarkSpaceAsXXXNoProtect_(
    ,IN uint32 FE_lba,
     IN uint32 BugCheckId,
     IN uint32 Line
-#endif //UDF_TRACK_ONDISK_ALLOCATION
+#endif 
     )
 {
-    uint32 i=0;
+    uint32 i = 0;
     uint32 lba, j, len, BS, BSh;
-    uint32 root;
     BOOLEAN asUsed = (asXXX == AS_USED || (asXXX & AS_BAD));
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-    BOOLEAN bit_before, bit_after;
-#endif //UDF_TRACK_ONDISK_ALLOCATION
+    
+    // Low-Memory variables for Cache Manager
+    PBCB Bcb;
+    PVOID WindowBuffer;
+    LARGE_INTEGER Offset;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
 
@@ -557,113 +558,58 @@ UDFMarkSpaceAsXXXNoProtect_(
     BSh = Vcb->SectorShift;
     Vcb->BitmapModified = TRUE;
     UDFSetModified(Vcb);
-    // walk through all frags in data area specified
-    while(Map[i].extLength & UDF_EXTENT_LENGTH_MASK) {
+
+    while (Map[i].extLength & UDF_EXTENT_LENGTH_MASK) {
         if ((Map[i].extLength >> 30) == EXTENT_NOT_RECORDED_NOT_ALLOCATED) {
-            // skip unallocated frags
             i++;
             continue;
         }
-        ASSERT(Map[i].extLocation);
-
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-        AdPrint(("Alloc:%x:%s:%x:@:%x:File:%x:Line:%d\n",
-            FE_lba,
-            asUsed ? ((asXXX & AS_BAD) ? "B" : "U") : "F",
-            (Map[i].extLength & UDF_EXTENT_LENGTH_MASK) >> Vcb->BlockSizeBits,
-            Map[i].extLocation,
-            BugCheckId,
-            Line
-            ));
-#endif //UDF_TRACK_ONDISK_ALLOCATION
-
-#ifdef UDF_DBG
-#ifdef UDF_CHECK_EXTENT_SIZE_ALIGNMENT
-        ASSERT(!(Map[i].extLength & (BS-1)));
-#endif //UDF_CHECK_EXTENT_SIZE_ALIGNMENT
-//        len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK)+BS-1) >> BSh;
-#else // UDF_DBG
-//        len = (Map[i].extLength & UDF_EXTENT_LENGTH_MASK) >> BSh;
-#endif // UDF_DBG
-        len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK)+BS-1) >> BSh;
+        
+        // FIX: Use ULONGLONG for length math to prevent 256GB overflow
+        ULONGLONG safeLen = ((ULONGLONG)(Map[i].extLength & UDF_EXTENT_LENGTH_MASK) + BS - 1) >> BSh;
+        len = (uint32)safeLen;
         lba = Map[i].extLocation;
-        if ((lba+len) > Vcb->LastPossibleLBA) {
-            // skip blocks beyond media boundary
-            if (lba > Vcb->LastPossibleLBA) {
-                ASSERT(FALSE);
-                i++;
-                continue;
-            }
-            len = Vcb->LastPossibleLBA - lba;
+
+        if (((ULONGLONG)lba + len) > (ULONGLONG)Vcb->LastPossibleLBA + 1) {
+            if (lba > Vcb->LastPossibleLBA) { i++; continue; }
+            len = (uint32)((ULONGLONG)Vcb->LastPossibleLBA + 1 - lba);
         }
 
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-        if (lba)
-            bit_before = UDFGetBit(Vcb->FSBM_Bitmap, lba-1);
-        bit_after = UDFGetBit(Vcb->FSBM_Bitmap, lba+len);
-#endif //UDF_TRACK_ONDISK_ALLOCATION
+        // FIX: Windowed Read-Modify-Write via Cache Manager
+        // This loop iterates through the extent and maps 4KB bitmap pages as needed.
+        for (j = 0; j < len; j++) {
+            uint32 currentLba = lba + j;
+            
+            // Calculate byte offset in the bitmap file for this bit
+            Offset.QuadPart = (ULONGLONG)(currentLba >> 3) & ~((ULONGLONG)BS - 1);
 
-        // mark frag as XXX (see asUsed parameter)
-        if (asUsed) {
-/*            for(j=0;j<len;j++) {
-                UDFSetUsedBit(Vcb->FSBM_Bitmap, lba+j);
-            }*/
-            ASSERT(len);
-            UDFSetUsedBits(Vcb->FSBM_Bitmap, lba, len);
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-            for(j=0;j<len;j++) {
-                ASSERT(UDFGetUsedBit(Vcb->FSBM_Bitmap, lba+j));
-            }
-#endif //UDF_TRACK_ONDISK_ALLOCATION
-
-            if (Vcb->Vat) {
-                // mark logical blocks in VAT as used
-                for(j=0;j<len;j++) {
-                    root = UDFPartStart(Vcb, UDFGetRefPartNumByPhysLba(Vcb, lba));
-                    if ((Vcb->Vat[lba-root+j] == UDF_VAT_FREE_ENTRY) &&
-                       (lba > Vcb->LastLBA)) {
-                         Vcb->Vat[lba-root+j] = 0x7fffffff;
-                    }
+            // Map the 2KB/4KB sector containing our target bit
+            // This replaces the 64MB global buffer access
+            if (CcMapData(Vcb->BitmapFileObject, &Offset, BS, TRUE, &Bcb, &WindowBuffer)) {
+                
+                // Calculate bit offset within the pinned window
+                uint32 bitInWindow = (uint32)((ULONGLONG)currentLba - (Offset.QuadPart << 3));
+                
+                if (asUsed) {
+                    UDFSetBit(WindowBuffer, bitInWindow);
+                } else {
+                    UDFClrBit(WindowBuffer, bitInWindow);
                 }
-            }
-        } else {
-/*            for(j=0;j<len;j++) {
-                UDFSetFreeBit(Vcb->FSBM_Bitmap, lba+j);
-            }*/
-            ASSERT(len);
-            UDFSetFreeBits(Vcb->FSBM_Bitmap, lba, len);
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-            for(j=0;j<len;j++) {
-                ASSERT(UDFGetFreeBit(Vcb->FSBM_Bitmap, lba+j));
-            }
-#endif //UDF_TRACK_ONDISK_ALLOCATION
-            if (asXXX & AS_BAD) {
-                UDFSetBits(Vcb->BSBM_Bitmap, lba, len);
-            }
-            UDFMarkBadSpaceAsUsed(Vcb, lba, len);
 
+                // Signal the Cache Manager to flush this page back to disk later
+                CcSetDirtyPinnedData(Bcb, NULL);
+                CcUnpinData(Bcb);
+            }
+        }
+
+        if (!asUsed) {
             if (asXXX & AS_DISCARDED) {
                 UDFUnmapRange(Vcb, lba, len);
+                // Note: ZSBM_Bitmap should also be converted to CcMapData if it is large
             }
-            if (Vcb->Vat) {
-                // mark logical blocks in VAT as free
-                // this operation can decrease resulting VAT size
-                for(j=0;j<len;j++) {
-                    root = UDFPartStart(Vcb, UDFGetRefPartNumByPhysLba(Vcb, lba));
-                    Vcb->Vat[lba-root+j] = UDF_VAT_FREE_ENTRY;
-                }
-            }
-            // mark discarded extent as Not-Alloc-Not-Rec to
-            // prevent writes there
-            Map[i].extLength = (len << BSh) | (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
+            Map[i].extLength = ((ULONGLONG)len << BSh) | ((ULONGLONG)EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
             Map[i].extLocation = 0;
         }
-
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-        if (lba)
-            ASSERT(bit_before == UDFGetBit(Vcb->FSBM_Bitmap, lba-1));
-        ASSERT(bit_after == UDFGetBit(Vcb->FSBM_Bitmap, lba+len));
-#endif //UDF_TRACK_ONDISK_ALLOCATION
 
         i++;
     }

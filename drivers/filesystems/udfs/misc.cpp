@@ -1590,6 +1590,26 @@ UDFDeleteVCB(
         UDFPrint(("UDF: Cleanup VCB\n"));
         ASSERT(IsListEmpty(&(Vcb->NextNotifyIRP)));
         FsRtlNotifyUninitializeSync(&Vcb->NotifySync);
+		    // 1. Properly tear down the Cache Manager stream
+    if (Vcb->BitmapFileObject != NULL) {
+        UDFPrint(("UDF: Tearing down cached bitmap stream\n"));
+        
+        // Uninitialize the cache map to flush pending writes
+        CcUninitializeCacheMap(Vcb->BitmapFileObject, NULL, NULL);
+        
+        // Dereference the file object so the kernel can delete it
+        ObDereferenceObject(Vcb->BitmapFileObject);
+        Vcb->BitmapFileObject = NULL;
+    }
+
+    // 2. Delete the new resource we added to struct.h
+    _SEH2_TRY {
+        UDFPrint(("UDF: Deleting bitmap resources\n"));
+        // Assuming you named it BitmapResource in your VCB struct
+        ExDeleteResourceLite(&Vcb->BitmapResource);
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        // Silently fail if resource was never initialized
+    } _SEH2_END;
         UDFCleanupVCB(Vcb);
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
