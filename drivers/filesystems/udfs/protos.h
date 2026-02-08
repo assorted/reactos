@@ -1140,12 +1140,6 @@ BOOLEAN
 UDFMarkDevForVerifyIfVcbMounted(
     IN PVCB Vcb
     );
-	
-NTSTATUS
-UDFInitializeBitmapStream(
-    IN PVCB Vcb,
-    IN ULONGLONG BitmapSize
-    );
 
 //
 //  BOOLEAN

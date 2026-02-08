@@ -34,37 +34,38 @@ UDFAsyncCompletionRoutine(
     IN PVOID Contxt
     )
 {
+    UDFPrint(("UDFAsyncCompletionRoutine ctx=%x\n", Contxt));
     PUDF_PH_CALL_CONTEXT Context = (PUDF_PH_CALL_CONTEXT)Contxt;
     PMDL Mdl, NextMdl;
 
-    UDFPrint(("UDFAsyncCompletionRoutine ctx=%x\n", Contxt));
-
-    // 1. Capture the final status and information (bytes read)
     Context->IosbToUse = Irp->IoStatus;
-
-    // 2. Cleanup MDLs manually since we used IoBuildAsynchronousFsdRequest
+#if 1
+    // Unlock pages that are described by MDL (if any)...
     Mdl = Irp->MdlAddress;
-    while (Mdl) {
+    while(Mdl) {
+        MmPrint(("    Unlock MDL=%x\n", Mdl));
+        MmUnlockPages(Mdl);
+        Mdl = Mdl->Next;
+    }
+    // ... and free MDL
+    Mdl = Irp->MdlAddress;
+    while(Mdl) {
+        MmPrint(("    Free MDL=%x\n", Mdl));
         NextMdl = Mdl->Next;
-        
-        // Only unlock if the MDL was actually locked (has the MDL_PAGES_LOCKED flag)
-        if (FlagOn(Mdl->MdlFlags, MDL_PAGES_LOCKED)) {
-            MmUnlockPages(Mdl);
-        }
-        
         IoFreeMdl(Mdl);
         Mdl = NextMdl;
     }
     Irp->MdlAddress = NULL;
-
-    // 3. Free the IRP itself
     IoFreeIrp(Irp);
 
-    // 4. SIGNAL THE EVENT - This releases the thread waiting in UDFPhReadSynchronous
-    KeSetEvent(&(Context->event), 0, FALSE);
+    KeSetEvent( &(Context->event), 0, FALSE );
 
-    // 5. Tell the I/O manager to stop - we have fully disposed of the IRP
     return STATUS_MORE_PROCESSING_REQUIRED;
+#else
+    KeSetEvent( &(Context->event), 0, FALSE );
+
+    return STATUS_SUCCESS;
+#endif
 } // end UDFAsyncCompletionRoutine()
 
 NTSTATUS
@@ -117,115 +118,158 @@ UDFSyncCompletionRoutine2(
 */
 NTSTATUS
 UDFPhReadSynchronous(
-    IN PIRP_CONTEXT IrpContext,
-    IN PDEVICE_OBJECT DeviceObject,   // The physical device object
-    IN PVOID Buffer,
-    IN ULONG ByteCount,
-    IN LONGLONG Offset,               // 64-bit offset (critical for 256GB)
-    OUT PULONG ReadBytes,
-    IN ULONG Flags
+    PIRP_CONTEXT IrpContext,
+    PDEVICE_OBJECT DeviceObject,   // the physical device object
+    PVOID Buffer,
+    ULONG ByteCount,
+    LONGLONG Offset,
+    PULONG ReadBytes,
+    ULONG Flags
     )
 {
-    NTSTATUS RC = STATUS_SUCCESS;
-    LARGE_INTEGER ROffset;
+    NTSTATUS            RC = STATUS_SUCCESS;
+    LARGE_INTEGER       ROffset;
     PUDF_PH_CALL_CONTEXT Context = NULL;
-    PIRP Irp = NULL;
-    PIO_STACK_LOCATION IrpSp;
-    PVOID IoBuf = NULL;
+    PIRP                Irp;
+    PIO_STACK_LOCATION  IrpSp;
+    KIRQL               CurIrql = KeGetCurrentIrql();
+    PVOID               IoBuf = NULL;
+    
+    // Chunking variables
+    ULONG               BytesRemaining = ByteCount;
+    ULONG               CurrentChunkSize = 0;
+    ULONG               TotalRead = 0;
+    ULONG               ChunkRead = 0;
+    const ULONG         MAX_UDF_CHUNK = 65536; // 64KB limit for NonPagedPool safety
 
     ROffset.QuadPart = Offset;
     (*ReadBytes) = 0;
 
-    // 1. Memory Allocation: Use a temporary buffer if requested or for alignment safety
+    // --- CHUNKING LOGIC START ---
+    // If the request is large and we aren't already using a temporary buffer,
+    // split the request into smaller chunks to avoid NonPagedPool exhaustion.
+    if (!(Flags & PH_TMP_BUFFER) && ByteCount > MAX_UDF_CHUNK) {
+        
+        UDFPrint(("    UDF: Chunking large read: %lu bytes at Offset %I64x\n", ByteCount, Offset));
+        
+        // Allocate one small reusable buffer for the chunks
+        IoBuf = DbgAllocatePoolWithTag(NonPagedPool, MAX_UDF_CHUNK, 'bNWD');
+        if (!IoBuf) {
+            UDFPrint(("    !IoBuf (Chunk buffer allocation failed)\n"));
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+
+        while (BytesRemaining > 0) {
+            CurrentChunkSize = (BytesRemaining > MAX_UDF_CHUNK) ? MAX_UDF_CHUNK : BytesRemaining;
+            ChunkRead = 0;
+
+            // Perform a recursive synchronous read for this specific chunk.
+            // We pass PH_TMP_BUFFER so the recursive call uses our IoBuf directly.
+            RC = UDFPhReadSynchronous(
+                    IrpContext, 
+                    DeviceObject, 
+                    IoBuf, 
+                    CurrentChunkSize, 
+                    ROffset.QuadPart, 
+                    &ChunkRead, 
+                    Flags | PH_TMP_BUFFER);
+            
+            if (!NT_SUCCESS(RC)) {
+                UDFPrint(("    UDF: Chunked read failed at Offset %I64x, RC=%x\n", ROffset.QuadPart, RC));
+                break;
+            }
+
+            // Copy the data from the chunk buffer to the caller's main buffer
+            RtlCopyMemory((PVOID)((PUCHAR)Buffer + TotalRead), IoBuf, ChunkRead);
+            
+            TotalRead += ChunkRead;
+            BytesRemaining -= ChunkRead;
+            ROffset.QuadPart += ChunkRead;
+
+            if (ChunkRead < CurrentChunkSize) break; // Short read, stop here
+        }
+        
+        *ReadBytes = TotalRead;
+        if (IoBuf) DbgFreePool(IoBuf);
+        return RC;
+    }
+    // --- CHUNKING LOGIC END ---
+
+    // Original allocation/execution logic for standard or chunk-sized reads
     if (Flags & PH_TMP_BUFFER) {
         IoBuf = Buffer;
     } else {
         IoBuf = DbgAllocatePoolWithTag(NonPagedPool, ByteCount, 'bNWD');
-        if (!IoBuf) {
-            UDFPrint(("    UDFPhRead: Failed to allocate IoBuf\n"));
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
     }
 
-    // 2. Context Allocation: To track the IRP completion and event signaling
-    Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__(NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT));
-    if (!Context) {
-        UDFPrint(("    UDFPhRead: Failed to allocate Context\n"));
-        if (!(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
+    if (!IoBuf) {
+        UDFPrint(("    !IoBuf\n"));
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    // 3. Initialize the synchronization event
+    Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
+    if (!Context) {
+        UDFPrint(("    !Context\n"));
+        RC = STATUS_INSUFFICIENT_RESOURCES;
+        goto try_exit;
+    }
+
+    // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
 
-    // 4. Build the IRP: Use Asynchronous to have full control over the completion routine
-    Irp = IoBuildAsynchronousFsdRequest(
-        IRP_MJ_READ, 
-        DeviceObject, 
-        IoBuf,
-        ByteCount, 
-        &ROffset, 
-        &(Context->IosbToUse)
-    );
-
-    if (!Irp) {
-        UDFPrint(("    UDFPhRead: Failed to build IRP\n"));
-        MyFreePool__(Context);
-        if (!(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
-        return STATUS_INSUFFICIENT_RESOURCES;
+    if (TRUE || CurIrql > PASSIVE_LEVEL) {
+        Irp = IoBuildAsynchronousFsdRequest(IRP_MJ_READ, DeviceObject, IoBuf,
+                                               ByteCount, &ROffset, &(Context->IosbToUse) );
+        if (!Irp) {
+            UDFPrint(("    !irp Async\n"));
+            RC = STATUS_INSUFFICIENT_RESOURCES;
+            goto try_exit;
+        }
+        MmPrint(("    Alloc async Irp MDL=%x, ctx=%x\n", Irp->MdlAddress, Context));
+        IoSetCompletionRoutine(Irp, &UDFAsyncCompletionRoutine,
+                                Context, TRUE, TRUE, TRUE );
+    } else {
+        Irp = IoBuildSynchronousFsdRequest(IRP_MJ_READ, DeviceObject, IoBuf,
+                                               ByteCount, &ROffset, &(Context->event), &(Context->IosbToUse) );
+        if (!Irp) {
+            UDFPrint(("    !irp Sync\n"));
+            RC = STATUS_INSUFFICIENT_RESOURCES;
+            goto try_exit;
+        }
+        MmPrint(("    Alloc Irp MDL=%x, ctx=%x\n", Irp->MdlAddress, Context));
     }
 
-    // 5. Setup Completion Routine: This MUST signal the event in the context
-    IoSetCompletionRoutine(
-        Irp, 
-        &UDFAsyncCompletionRoutine,
-        Context, 
-        TRUE, 
-        TRUE, 
-        TRUE
-    );
-
-    // 6. Setup Stack Flags
     IrpSp = IoGetNextIrpStackLocation(Irp);
+
     if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH)) {
         SetFlag(IrpSp->Flags, SL_WRITE_THROUGH);
     }
+
     SetFlag(IrpSp->Flags, SL_OVERRIDE_VERIFY_VOLUME);
 
-    // 7. Call the Disk Driver
     RC = IoCallDriver(DeviceObject, Irp);
 
-    // 8. Strict Wait: Always wait for the event if the status is PENDING.
-    // On 256GB VHDs, disk I/O is rarely immediate.
     if (RC == STATUS_PENDING) {
-        KeWaitForSingleObject(&(Context->event), Executive, KernelMode, FALSE, NULL);
+        DbgWaitForSingleObject(&(Context->event), NULL);
         RC = Context->IosbToUse.Status;
-    }
-
-    // Special handling for Data Overrun (common in some ReactOS storage stacks)
-    if (RC == STATUS_DATA_OVERRUN) {
-        RC = STATUS_SUCCESS;
-    }
-
-    // 9. Data Transfer: Only copy if the read was successful
-    if (NT_SUCCESS(RC)) {
-        *ReadBytes = (ULONG)Context->IosbToUse.Information;
-        
-        // Ensure we don't copy more than requested
-        if (*ReadBytes > ByteCount) *ReadBytes = ByteCount;
-
-        if (!(Flags & PH_TMP_BUFFER)) {
-            RtlCopyMemory(Buffer, IoBuf, *ReadBytes);
+        if (RC == STATUS_DATA_OVERRUN) {
+            RC = STATUS_SUCCESS;
         }
-    } else {
-        UDFPrint(("UDF: PhRead Error %x at LBA %llx\n", RC, Offset >> 11));
     }
 
-    // 10. Final Cleanup
+    if (NT_SUCCESS(RC)) {
+        (*ReadBytes) = (ULONG)Context->IosbToUse.Information;
+    }
+
+    if (!(Flags & PH_TMP_BUFFER)) {
+        RtlCopyMemory(Buffer, IoBuf, *ReadBytes);
+    }
+
+try_exit:
     if (Context) MyFreePool__(Context);
     if (IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
 
-    return RC;
+    return(RC);
 } // end UDFPhReadSynchronous()
 
 
@@ -259,19 +303,16 @@ UDFPhWriteSynchronous(
     PIRP                irp;
     KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
-
-    PVCB Vcb = NULL;
+    
+    // Chunking variables
+    ULONG               BytesRemaining = ByteCount;
+    ULONG               CurrentChunkSize = 0;
+    SIZE_T              TotalWritten = 0;
+    SIZE_T              ChunkWritten = 0;
+    const ULONG         MAX_UDF_CHUNK = 65536; // 64KB limit for NonPagedPool safety
 
 #ifdef DBG
     if (UDF_SIMULATE_WRITES) {
-/* FIXME ReactOS
-   If this function is to force a read from the bufffer to simulate any segfaults, then it makes sense.
-   Else, this forloop is useless.
-        UCHAR a;
-        for(ULONG i=0; i<Length; i++) {
-            a = ((PUCHAR)Buffer)[i];
-        }
-*/
         *WrittenBytes = ByteCount;
         return STATUS_SUCCESS;
     }
@@ -280,32 +321,93 @@ UDFPhWriteSynchronous(
     ROffset.QuadPart = Offset;
     (*WrittenBytes) = 0;
 
-   // Utilizing a temporary buffer to circumvent the situation where the IO buffer contains TransitionPage pages.
-   // This typically occurs during IRP_NOCACHE. Otherwise, an assert occurs within IoBuildAsynchronousFsdRequest.
+    // --- CHUNKING LOGIC START ---
+    // If the request is large and we aren't already using a temporary buffer,
+    // split the request into smaller chunks to avoid NonPagedPool exhaustion.
+    if (!(Flags & PH_TMP_BUFFER) && ByteCount > MAX_UDF_CHUNK) {
+        
+        UDFPrint(("    UDF: Chunking large write: %lu bytes at Offset %I64x\n", ByteCount, Offset));
+        
+        // Allocate one small reusable buffer for the chunks
+        IoBuf = DbgAllocatePool(NonPagedPool, MAX_UDF_CHUNK);
+        if (!IoBuf) {
+            UDFPrint(("    !IoBuf (Write Chunk buffer allocation failed)\n"));
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+
+        while (BytesRemaining > 0) {
+            CurrentChunkSize = (BytesRemaining > MAX_UDF_CHUNK) ? MAX_UDF_CHUNK : BytesRemaining;
+            ChunkWritten = 0;
+
+            // Copy data from the caller's main buffer into our small chunk buffer
+            RtlCopyMemory(IoBuf, (PVOID)((PUCHAR)Buffer + TotalWritten), CurrentChunkSize);
+
+            // Perform a recursive synchronous write for this specific chunk.
+            // Passing PH_TMP_BUFFER ensures the recursive call uses our IoBuf directly.
+            RC = UDFPhWriteSynchronous(
+                    DeviceObject, 
+                    IoBuf, 
+                    CurrentChunkSize, 
+                    ROffset.QuadPart, 
+                    &ChunkWritten, 
+                    Flags | PH_TMP_BUFFER);
+            
+            if (!NT_SUCCESS(RC)) {
+                UDFPrint(("    UDF: Chunked write failed at Offset %I64x, RC=%x\n", ROffset.QuadPart, RC));
+                break;
+            }
+
+            TotalWritten += ChunkWritten;
+            BytesRemaining -= (ULONG)ChunkWritten;
+            ROffset.QuadPart += ChunkWritten;
+
+            if (ChunkWritten < CurrentChunkSize) break; // Short write, stop here
+        }
+        
+        *WrittenBytes = TotalWritten;
+        if (IoBuf) DbgFreePool(IoBuf);
+        return RC;
+    }
+    // --- CHUNKING LOGIC END ---
+
+    // Utilizing a temporary buffer to circumvent the situation where the IO buffer contains TransitionPage pages.
     if (Flags & PH_TMP_BUFFER) {
         IoBuf = Buffer;
     } else {
         IoBuf = DbgAllocatePool(NonPagedPool, ByteCount);
-        if (!IoBuf) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
+        if (!IoBuf) {
+            RC = STATUS_INSUFFICIENT_RESOURCES;
+            goto try_exit;
+        }
         RtlCopyMemory(IoBuf, Buffer, ByteCount);
     }
 
     Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
-    if (!Context) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
+    if (!Context) {
+        RC = STATUS_INSUFFICIENT_RESOURCES;
+        goto try_exit;
+    }
+
     // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
 
     if (TRUE || CurIrql > PASSIVE_LEVEL) {
         irp = IoBuildAsynchronousFsdRequest(IRP_MJ_WRITE, DeviceObject, IoBuf,
                                             ByteCount, &ROffset, &(Context->IosbToUse) );
-        if (!irp) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        if (!irp) {
+            RC = STATUS_INSUFFICIENT_RESOURCES;
+            goto try_exit;
+        }
         MmPrint(("    Alloc async Irp MDL=%x, ctx=%x\n", irp->MdlAddress, Context));
         IoSetCompletionRoutine( irp, &UDFAsyncCompletionRoutine,
                                 Context, TRUE, TRUE, TRUE );
     } else {
         irp = IoBuildSynchronousFsdRequest(IRP_MJ_WRITE, DeviceObject, IoBuf,
                                            ByteCount, &ROffset, &(Context->event), &(Context->IosbToUse) );
-        if (!irp) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        if (!irp) {
+            RC = STATUS_INSUFFICIENT_RESOURCES;
+            goto try_exit;
+        }
         MmPrint(("    Alloc Irp MDL=%x\n, ctx=%x", irp->MdlAddress, Context));
     }
 
@@ -314,23 +416,22 @@ UDFPhWriteSynchronous(
 
     if (RC == STATUS_PENDING) {
         DbgWaitForSingleObject(&(Context->event), NULL);
-        if ((RC = Context->IosbToUse.Status) == STATUS_DATA_OVERRUN) {
+        RC = Context->IosbToUse.Status;
+        if (RC == STATUS_DATA_OVERRUN) {
             RC = STATUS_SUCCESS;
         }
-//        *WrittenBytes = Context->IosbToUse.Information;
-    } else {
-//        *WrittenBytes = irp->IoStatus.Information;
     }
+
     if (NT_SUCCESS(RC)) {
         (*WrittenBytes) = Context->IosbToUse.Information;
     }
 
-try_exit: NOTHING;
-
+try_exit:
     if (Context) MyFreePool__(Context);
     if (IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
+    
     if (!NT_SUCCESS(RC)) {
-        UDFPrint(("WriteError\n"));
+        UDFPrint(("WriteError: %08x\n", RC));
     }
 
     return(RC);

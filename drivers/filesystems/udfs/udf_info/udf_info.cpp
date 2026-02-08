@@ -4379,14 +4379,15 @@ UDFReadTagged(
 {
     NTSTATUS RC;
     tag* PTag = (tag*)Buf;
+//    icbtag* Icb = (icbtag*)(Buf+1);
     uint8 checksum;
     unsigned int i;
     ULONG ReadBytes;
     int8* tb;
 
-    // 1. Correct return type for invalid block
+    // Read the block
     if (Block == 0xFFFFFFFF)
-        return STATUS_INVALID_PARAMETER;
+        return NULL;
 
     _SEH2_TRY {
         RC = UDFReadSectors(IrpContext, Vcb, FALSE, Block, 1, FALSE, Buf, &ReadBytes);
@@ -4397,17 +4398,10 @@ UDFReadTagged(
 
         *Ident = PTag->tagIdent;
 
-        // 2. Strict Location Check
-        // On 256GB volumes, ensure we aren't comparing signed vs unsigned
-        if ((uint32)Location != (uint32)PTag->tagLocation) {
+        if (Location != PTag->tagLocation) {
             UDFPrint(("UDF: location mismatch block %x, tag %x != %x\n",
                 Block, PTag->tagLocation, Location));
-            
-            // NOTE: Some formatters don't fill tagLocation correctly for the AVDP.
-            // If this is block 256 or LastLBA-256, we might want to be lenient.
-            if (Block != 256) {
-                try_return(RC = STATUS_FILE_CORRUPT_ERROR);
-            }
+            try_return(RC = STATUS_FILE_CORRUPT_ERROR);
         }
 
         /* Verify the tag checksum */
@@ -4421,29 +4415,29 @@ UDFReadTagged(
             try_return(RC = STATUS_CRC_ERROR);
         }
 
-        // Verify the tag version (Standard UDF is 2 or 3)
-        if ((PTag->descVersion != 2) && (PTag->descVersion != 3)) {
-            UDFPrint(("UDF: Tag version 0x%04x invalid at block %x\n", PTag->descVersion, Block));
+        // Verify the tag version
+        if ((PTag->descVersion != 2) &&
+           (PTag->descVersion != 3)) {
+            UDFPrint(("UDF: Tag version 0x%04x != 0x0002 || 0x0003 block %x\n",
+                (PTag->descVersion), Block));
             try_return(RC = STATUS_FILE_CORRUPT_ERROR);
         }
 
-        // 3. Robust CRC Check
-        // Ensure descCRCLength doesn't exceed sector size (common on corrupt descriptors)
-        if (PTag->descCRCLength + sizeof(tag) > Vcb->SectorSize) {
-             UDFPrint(("UDF: descCRCLength too large at block %x\n", Block));
-             try_return(RC = STATUS_FILE_CORRUPT_ERROR);
-        }
-
-        if (PTag->descCRC == UDFCrc((uint8 *)Buf + sizeof(tag), PTag->descCRCLength, 0)) {
+        // Verify the descriptor CRC
+        if (((PTag->descCRCLength) + sizeof(tag) > Vcb->SectorSize) ||
+            ((PTag->descCRC) == UDFCrc((uint8 *)Buf + sizeof(tag), PTag->descCRCLength, 0)) || !(PTag->descCRC))
+        {
+            /*        UDFPrint(("Tag ID: %x, ver %x\t", PTag->tagIdent, PTag->descVersion ));
+                    if ((i == TID_FILE_ENTRY) ||
+                       (i == TID_EXTENDED_FILE_ENTRY)) {
+                        UDFPrint(("StrategType: %x, ", Icb->strategyType ));
+                        UDFPrint(("FileType: %x\t", Icb->fileType ));
+                    }
+                    UDFPrint(("\n"));*/
             try_return(RC = STATUS_SUCCESS);
         }
-
-        // Special case: If CRC is 0, some implementations treat it as "not computed"
-        if (PTag->descCRC == 0) {
-            try_return(RC = STATUS_SUCCESS);
-        }
-
-        UDFPrint(("UDF: Crc failure block %x: expected %x\n", Block, PTag->descCRC));
+        UDFPrint(("UDF: Crc failure block %x: crc = %x, crclen = %x\n",
+            Block, PTag->descCRC, PTag->descCRCLength));
         RC = STATUS_CRC_ERROR;
 
 try_exit:    NOTHING;

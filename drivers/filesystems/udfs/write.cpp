@@ -342,6 +342,9 @@ UDFCommonWrite(
 
         // Acquire the appropriate FCB resource
         if (PagingIo) {
+			// Don't offload jobs when doing paging IO - otherwise this can lead to
+            // deadlocks in CcCopyWrite.
+            Wait = true;
 
             // For PagingIo: FcbResource already acquired by UDFAcqLazyWrite/UDFFastIoAcqModWrite
             // callback before this function is called
@@ -572,7 +575,7 @@ UDFCommonWrite(
 
             // Send the request to lower level drivers
             if (!Wait) {
-//                UDFPrint(("UDFCommonWrite: Post physical write %x bytes at %x\n", TruncatedLength, StartingOffset.LowPart));
+                UDFPrint(("UDFCommonWrite: Post physical write %x bytes at %x\n", TruncatedLength, StartingOffset.LowPart));
 
                 try_return(Status = STATUS_PENDING);
             }
