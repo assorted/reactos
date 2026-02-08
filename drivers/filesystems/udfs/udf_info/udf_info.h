@@ -1408,17 +1408,53 @@ UDFDirIndex(
 #define UDFSetBit(arr, bit) ( (((uint32*)(arr))[(bit)>>5]) |= (((uint32)1) << ((bit)&31)) )
 #define UDFClrBit(arr, bit) ( (((uint32*)(arr))[(bit)>>5]) &= (~(((uint32)1) << ((bit)&31))) )
 
-#define UDFSetBits(arr, bit, bc) \
-{uint32 j;                       \
-    for(j=0;j<bc;j++) {          \
-        UDFSetBit(arr, (bit)+j); \
-}}
+#define UDFSetBits(arr, bit, bc)                                \
+do {                                                            \
+    uint32 _b = (uint32)(bit);                                  \
+    uint32 _c = (uint32)(bc);                                   \
+    if (_c > 0) {                                               \
+        /* 1. Tail: bit-by-bit until byte aligned */            \
+        while (_c > 0 && (_b & 7) != 0) {                       \
+            UDFSetBit(arr, _b);                                 \
+            _b++; _c--;                                         \
+        }                                                       \
+        /* 2. Fast Path: High-speed byte fill */                \
+        if (_c >= 8) {                                          \
+            uint32 _bytes = _c >> 3;                            \
+            RtlFillMemory(((uint8*)(arr)) + (_b >> 3), _bytes, 0xFF); \
+            _b += (_bytes << 3);                                \
+            _c -= (_bytes << 3);                                \
+        }                                                       \
+        /* 3. Tail: remaining bits */                           \
+        while (_c > 0) {                                        \
+            UDFSetBit(arr, _b);                                 \
+            _b++; _c--;                                         \
+        }                                                       \
+    }                                                           \
+} while (0)
 
-#define UDFClrBits(arr, bit, bc) \
-{uint32 j;                       \
-    for(j=0;j<bc;j++) {          \
-        UDFClrBit(arr, (bit)+j); \
-}}
+#define UDFClrBits(arr, bit, bc)                                \
+do {                                                            \
+    uint32 _b = (uint32)(bit);                                  \
+    uint32 _c = (uint32)(bc);                                   \
+    if (_c > 0) {                                               \
+        while (_c > 0 && (_b & 7) != 0) {                       \
+            UDFClrBit(arr, _b);                                 \
+            _b++; _c--;                                         \
+        }                                                       \
+        if (_c >= 8) {                                          \
+            uint32 _bytes = _c >> 3;                            \
+            RtlZeroMemory(((uint8*)(arr)) + (_b >> 3), _bytes); \
+            _b += (_bytes << 3);                                \
+            _c -= (_bytes << 3);                                \
+        }                                                       \
+        while (_c > 0) {                                        \
+            UDFClrBit(arr, _b);                                 \
+            _b++; _c--;                                         \
+        }                                                       \
+    }                                                           \
+} while (0)
+
 
 #define UDFGetUsedBit(arr,bit)      (!UDFGetBit(arr,bit))
 #define UDFGetFreeBit(arr,bit)      UDFGetBit(arr,bit)

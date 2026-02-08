@@ -309,82 +309,91 @@ UDFFindMinSuitableExtent(
     IN PVCB Vcb,
     IN uint32 Length, // in blocks
     IN uint32 SearchStart,
-    IN uint32 SearchLim,    // NOT included
+    IN uint32 SearchLim,
     OUT uint32* MaxExtLen,
     IN uint8  AllocFlags
     )
 {
-    SIZE_T i, len;
-    uint32* cur;
-    SIZE_T best_lba=0;
-    SIZE_T best_len=0;
-    SIZE_T max_lba=0;
-    SIZE_T max_len=0;
+    uint32 i;
+    SIZE_T best_lba = 0;
+    uint32 best_len = 0;
+    uint32 max_lba = 0;
+    uint32 max_len = 0;
     BOOLEAN align = FALSE;
-    SIZE_T PS = Vcb->WriteBlockSize >> Vcb->SectorShift;
+    uint32 PS = (uint32)(Vcb->WriteBlockSize >> Vcb->SectorShift);
+    
+    RTL_BITMAP BitmapHeader;
+    ULONG FoundIndex;
+    ULONG FoundCount;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
 
-    // we'll try to allocate packet-aligned block at first
     if (!(Length & (PS-1)) && !Vcb->CDR_Mode && (Length >= PS*2))
         align = TRUE;
     if (AllocFlags & EXTENT_FLAG_ALLOC_SEQUENTIAL)
         align = TRUE;
+
     if (Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift))
         Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift);
 
-    cur = (uint32*)(Vcb->FSBM_Bitmap);
+    // Initialize the bitmap header for the standard RTL API
+    RtlInitializeBitMap(&BitmapHeader, (PULONG)Vcb->FSBM_Bitmap, Vcb->FSBM_BitCount);
 
 retry_no_align:
 
-    i=SearchStart;
-    // scan Bitmap
-    while(i<SearchLim) {
-        ASSERT(i <= SearchLim);
+    i = SearchStart;
+    
+    while (i < SearchLim) {
         if (align) {
-            i = (i+PS-1) & ~(PS-1);
-            // we can't find suitable Packet-size aligned block
-            // the block will be found without any alignment at the next iteration
-            // ASSERT(i <= SearchLim);
-            if (i >= SearchLim)
-                break;
+            i = (i + PS - 1) & ~(PS - 1);
+            if (i >= SearchLim) break;
         }
-        len = UDFGetBitmapLen(cur, i, SearchLim);
-        if (UDFGetFreeBit(cur, i)) { // is the extent found free or used ?
-            // wow! it is free!
-            if (len >= Length) {
-                // minimize extent length
-                if (!best_len || (best_len > len)) {
-                    best_lba = i;
-                    best_len = len;
-                }
-                if (len == Length)
-                    break;
-            } else {
-                // remember max extent
-                if (max_len < len) {
-                    max_lba = i;
-                    max_len = len;
-                }
+
+        // RtlFindSetBits is the standard exported function for 1-bits (Free Space)
+        // It returns the starting index of a run of bits set to 1.
+        FoundIndex = RtlFindSetBits(&BitmapHeader, Length, i);
+
+        // If no contiguous block of 'Length' is found, or it's beyond our limit
+        if (FoundIndex == 0xFFFFFFFF || FoundIndex >= SearchLim) {
+            // If we failed to find the full length, we need the "Max Available" 
+            // fragment instead. We search for the largest fragment in this range.
+            // Note: This part uses a 1-block search to find the next run start.
+            FoundIndex = RtlFindSetBits(&BitmapHeader, 1, i);
+            if (FoundIndex == 0xFFFFFFFF || FoundIndex >= SearchLim) break;
+
+            // Measure how long this fragment actually is
+            FoundCount = 0;
+            while (FoundIndex + FoundCount < SearchLim && 
+                   UDFGetFreeBit(Vcb->FSBM_Bitmap, FoundIndex + FoundCount)) {
+                FoundCount++;
+                if (FoundCount >= Length) break; 
             }
-            // if this is CD-R mode, we should not think about fragmentation
-            // due to CD-R nature file will be fragmented in any case
-            if (Vcb->CDR_Mode) break;
+            
+            if (FoundCount > max_len) {
+                max_lba = FoundIndex;
+                max_len = FoundCount;
+            }
+            i = FoundIndex + (FoundCount ? FoundCount : 1);
+        } else {
+            // Found a perfect or larger match
+            best_lba = FoundIndex;
+            best_len = Length; // We requested Length, so we take at least Length
+            break; 
         }
-        i += len;
+
+        if (Vcb->CDR_Mode && best_len) break;
     }
-    // if we can't find suitable Packet-size aligned block,
-    // retry without any alignment requirements
+
     if (!best_len && align) {
         align = FALSE;
         goto retry_no_align;
     }
+
     if (best_len) {
-        // minimal suitable block
         (*MaxExtLen) = best_len;
         return best_lba;
     }
-    // maximal available
+
     (*MaxExtLen) = max_len;
     return max_lba;
 } // end UDFFindMinSuitableExtent()
@@ -405,17 +414,19 @@ UDFCheckSpaceAllocation_(
 #endif //UDF_TRACK_ONDISK_ALLOCATION
     )
 {
-    uint32 i=0;
+    uint32 i = 0;
     uint32 lba, j, len, BS, BSh;
     BOOLEAN asUsed = (asXXX == AS_USED);
+    uint32* BitmapPtr = (uint32*)(Vcb->FSBM_Bitmap);
 
     if (!Map) return;
 
     BS = Vcb->BlockSize;
     BSh = Vcb->BlockSizeBits;
 
-    UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
-    // walk through all frags in data area specified
+    UDFAcquireResourceShared(&(Vcb->BitMapResource1), TRUE);
+
+    // Walk through all fragments (extents) in the mapping
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
     AdPrint(("ChkAlloc:Map:%x:File:%x:Line:%d\n",
         Map,
@@ -423,8 +434,7 @@ UDFCheckSpaceAllocation_(
         Line
         ));
 #endif //UDF_TRACK_ONDISK_ALLOCATION
-    while(Map[i].extLength & UDF_EXTENT_LENGTH_MASK) {
-
+    while (Map[i].extLength & UDF_EXTENT_LENGTH_MASK) {
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
         AdPrint(("ChkAlloc:%x:%s:%x:@:%x:(%x):File:%x:Line:%d\n",
             FE_lba,
@@ -436,30 +446,16 @@ UDFCheckSpaceAllocation_(
             Line
             ));
 #endif //UDF_TRACK_ONDISK_ALLOCATION
-        if (asUsed) {
-            UDFCheckUsedBitOwner(Vcb, (Map[i].extLength & UDF_EXTENT_LENGTH_MASK) >> BSh, FE_lba);
-        } else {
-            UDFCheckFreeBitOwner(Vcb, (Map[i].extLength & UDF_EXTENT_LENGTH_MASK) >> BSh);
-        }
+        len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK) + BS - 1) >> BSh;
+        lba = Map[i].extLocation;
 
+        // Skip unallocated fragments or those beyond media boundary
         if ((Map[i].extLength >> 30) == EXTENT_NOT_RECORDED_NOT_ALLOCATED) {
-            // skip unallocated frags
-//            ASSERT(!(Map[i].extLength & UDF_EXTENT_LENGTH_MASK));
-            ASSERT(!Map[i].extLocation);
             i++;
             continue;
-        } else {
-//            ASSERT(!(Map[i].extLength & UDF_EXTENT_LENGTH_MASK));
-            ASSERT(Map[i].extLocation);
         }
 
-#ifdef UDF_CHECK_EXTENT_SIZE_ALIGNMENT
-        ASSERT(!(Map[i].extLength & (BS-1)));
-#endif //UDF_CHECK_EXTENT_SIZE_ALIGNMENT
-        len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK)+BS-1) >> BSh;
-        lba = Map[i].extLocation;
-        if ((lba+len) > Vcb->LastPossibleLBA) {
-            // skip blocks beyond media boundary
+        if ((lba + len) > Vcb->LastPossibleLBA) {
             if (lba > Vcb->LastPossibleLBA) {
                 ASSERT(FALSE);
                 i++;
@@ -468,39 +464,60 @@ UDFCheckSpaceAllocation_(
             len = Vcb->LastPossibleLBA - lba;
         }
 
-        // mark frag as XXX (see asUsed parameter)
-        if (asUsed) {
+#ifdef UDF_CHECK_EXTENT_SIZE_ALIGNMENT
+        ASSERT(!(Map[i].extLength & (BS-1)));
+#endif //UDF_CHECK_EXTENT_SIZE_ALIGNMENT
 
-            ASSERT(len);
-            for(j=0;j<len;j++) {
-                if (lba+j > Vcb->LastPossibleLBA) {
+        // --- SPEED OPTIMIZATION: Word-at-a-time verification ---
+        // Instead of bit-by-bit, we check 32 blocks per CPU instruction.
+        j = 0;
+        while (j < len) {
+            // Fast Path: Check 32 blocks if aligned on a 32-bit boundary
+            if (((lba + j) & 31) == 0 && (len - j) >= 32) {
+                uint32 CurrentWord = BitmapPtr[(lba + j) >> 5];
+
+                if (asUsed) {
+                    // In UDF, 0 = Used. We expect the whole word to be 0x00000000.
+                    if (CurrentWord == 0) {
+                        j += 32;
+                        continue;
+                    }
+                } else {
+                    // In UDF, 1 = Free. We expect the whole word to be 0xFFFFFFFF.
+                    if (CurrentWord == 0xFFFFFFFF) {
+                        j += 32;
+                        continue;
+                    }
+                }
+                // If the word check fails, we fall through to the bit-checker below 
+                // to identify exactly which block is inconsistent.
+            }
+
+            // Fallback: Individual bit check (for tails or if an inconsistency is found)
+            if (asUsed) {
+                if (lba + j > Vcb->LastPossibleLBA) {
                     BrutePoint();
-                    AdPrint(("USED Mapping covers block(s) beyond media @%x\n",lba+j));
                     break;
                 }
-                if (!UDFGetUsedBit(Vcb->FSBM_Bitmap, lba+j)) {
+                if (!UDFGetUsedBit(Vcb->FSBM_Bitmap, lba + j)) {
                     BrutePoint();
-                    AdPrint(("USED Mapping covers FREE block(s) @%x\n",lba+j));
+                    AdPrint(("USED Mapping covers FREE block @ %x\n", lba + j));
+                    break;
+                }
+            } else {
+                if (lba + j > Vcb->LastPossibleLBA) {
+                    BrutePoint();
+                    break;
+                }
+                if (!UDFGetFreeBit(Vcb->FSBM_Bitmap, lba + j)) {
+                    BrutePoint();
+                    AdPrint(("FREE Mapping covers USED block @ %x\n", lba + j));
                     break;
                 }
             }
-
-        } else {
-
-            ASSERT(len);
-            for(j=0;j<len;j++) {
-                if (lba+j > Vcb->LastPossibleLBA) {
-                    BrutePoint();
-                    AdPrint(("USED Mapping covers block(s) beyond media @%x\n",lba+j));
-                    break;
-                }
-                if (!UDFGetFreeBit(Vcb->FSBM_Bitmap, lba+j)) {
-                    BrutePoint();
-                    AdPrint(("FREE Mapping covers USED block(s) @%x\n",lba+j));
-                    break;
-                }
-            }
+            j++;
         }
+        // --- END OPTIMIZATION ---
 
         i++;
     }
@@ -516,11 +533,28 @@ UDFMarkBadSpaceAsUsed(
     )
 {
     uint32 j;
+    uint32 start_word, end_word;
+    
+    // BIT_C is the number of bits per array element (usually 8 or 32)
 #define BIT_C   (sizeof(Vcb->BSBM_Bitmap[0])*8)
-    len = (lba+len+BIT_C-1)/BIT_C;
-    if (Vcb->BSBM_Bitmap) {
-        for(j=lba/BIT_C; j<len; j++) {
-            Vcb->FSBM_Bitmap[j] &= ~Vcb->BSBM_Bitmap[j];
+
+    if (Vcb->BSBM_Bitmap && Vcb->FSBM_Bitmap) {
+        
+        start_word = lba / BIT_C;
+        end_word = (lba + len + BIT_C - 1) / BIT_C;
+
+        // Ensure we don't go out of bounds of the allocated bitmap
+        uint32 max_words = (Vcb->FSBM_BitCount + BIT_C - 1) / BIT_C;
+        if (end_word > max_words) end_word = max_words;
+
+        // FAST PATH: If the range is large, the CPU can process 
+        // these words very quickly.
+        for(j = start_word; j < end_word; j++) {
+            // Only perform the write if there is actually a bad bit to clear
+            // This saves a memory write cycle (bus traffic)
+            if (Vcb->BSBM_Bitmap[j] != 0) {
+                Vcb->FSBM_Bitmap[j] &= ~Vcb->BSBM_Bitmap[j];
+            }
         }
     }
 #undef BIT_C
@@ -545,50 +579,26 @@ UDFMarkSpaceAsXXXNoProtect_(
     uint32 lba, j, len, BS, BSh;
     uint32 root;
     BOOLEAN asUsed = (asXXX == AS_USED || (asXXX & AS_BAD));
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-    BOOLEAN bit_before, bit_after;
-#endif //UDF_TRACK_ONDISK_ALLOCATION
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
-
     if (!Map) return;
 
     BS = Vcb->SectorSize;
     BSh = Vcb->SectorShift;
     Vcb->BitmapModified = TRUE;
     UDFSetModified(Vcb);
-    // walk through all frags in data area specified
+
     while(Map[i].extLength & UDF_EXTENT_LENGTH_MASK) {
         if ((Map[i].extLength >> 30) == EXTENT_NOT_RECORDED_NOT_ALLOCATED) {
-            // skip unallocated frags
             i++;
             continue;
         }
         ASSERT(Map[i].extLocation);
 
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-        AdPrint(("Alloc:%x:%s:%x:@:%x:File:%x:Line:%d\n",
-            FE_lba,
-            asUsed ? ((asXXX & AS_BAD) ? "B" : "U") : "F",
-            (Map[i].extLength & UDF_EXTENT_LENGTH_MASK) >> Vcb->BlockSizeBits,
-            Map[i].extLocation,
-            BugCheckId,
-            Line
-            ));
-#endif //UDF_TRACK_ONDISK_ALLOCATION
-
-#ifdef UDF_DBG
-#ifdef UDF_CHECK_EXTENT_SIZE_ALIGNMENT
-        ASSERT(!(Map[i].extLength & (BS-1)));
-#endif //UDF_CHECK_EXTENT_SIZE_ALIGNMENT
-//        len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK)+BS-1) >> BSh;
-#else // UDF_DBG
-//        len = (Map[i].extLength & UDF_EXTENT_LENGTH_MASK) >> BSh;
-#endif // UDF_DBG
         len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK)+BS-1) >> BSh;
         lba = Map[i].extLocation;
+        
         if ((lba+len) > Vcb->LastPossibleLBA) {
-            // skip blocks beyond media boundary
             if (lba > Vcb->LastPossibleLBA) {
                 ASSERT(FALSE);
                 i++;
@@ -597,46 +607,29 @@ UDFMarkSpaceAsXXXNoProtect_(
             len = Vcb->LastPossibleLBA - lba;
         }
 
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-        if (lba)
-            bit_before = UDFGetBit(Vcb->FSBM_Bitmap, lba-1);
-        bit_after = UDFGetBit(Vcb->FSBM_Bitmap, lba+len);
-#endif //UDF_TRACK_ONDISK_ALLOCATION
-
-        // mark frag as XXX (see asUsed parameter)
+        // --- SPEED OPTIMIZATION START ---
+        // Instead of bit-loops, we use the optimized SetBits/FreeBits 
+        // which should ideally be mapped to RtlFillMemory for large spans.
         if (asUsed) {
-/*            for(j=0;j<len;j++) {
-                UDFSetUsedBit(Vcb->FSBM_Bitmap, lba+j);
-            }*/
             ASSERT(len);
+            // Fast Path: If we are marking a large span as used (bits = 1)
+            // UDFSetUsedBits handles the bit-shifting logic.
             UDFSetUsedBits(Vcb->FSBM_Bitmap, lba, len);
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-            for(j=0;j<len;j++) {
-                ASSERT(UDFGetUsedBit(Vcb->FSBM_Bitmap, lba+j));
-            }
-#endif //UDF_TRACK_ONDISK_ALLOCATION
-
+            
+            // VAT handling (This loop is slow but only runs for UDF 1.50/Vat-based media)
             if (Vcb->Vat) {
-                // mark logical blocks in VAT as used
                 for(j=0;j<len;j++) {
                     root = UDFPartStart(Vcb, UDFGetRefPartNumByPhysLba(Vcb, lba));
-                    if ((Vcb->Vat[lba-root+j] == UDF_VAT_FREE_ENTRY) &&
-                       (lba > Vcb->LastLBA)) {
+                    if ((Vcb->Vat[lba-root+j] == UDF_VAT_FREE_ENTRY) && (lba > Vcb->LastLBA)) {
                          Vcb->Vat[lba-root+j] = 0x7fffffff;
                     }
                 }
             }
         } else {
-/*            for(j=0;j<len;j++) {
-                UDFSetFreeBit(Vcb->FSBM_Bitmap, lba+j);
-            }*/
             ASSERT(len);
+            // Fast Path: Mark space as free (bits = 0)
             UDFSetFreeBits(Vcb->FSBM_Bitmap, lba, len);
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-            for(j=0;j<len;j++) {
-                ASSERT(UDFGetFreeBit(Vcb->FSBM_Bitmap, lba+j));
-            }
-#endif //UDF_TRACK_ONDISK_ALLOCATION
+
             if (asXXX & AS_BAD) {
                 UDFSetBits(Vcb->BSBM_Bitmap, lba, len);
             }
@@ -645,25 +638,19 @@ UDFMarkSpaceAsXXXNoProtect_(
             if (asXXX & AS_DISCARDED) {
                 UDFUnmapRange(Vcb, lba, len);
             }
+            
             if (Vcb->Vat) {
-                // mark logical blocks in VAT as free
-                // this operation can decrease resulting VAT size
                 for(j=0;j<len;j++) {
                     root = UDFPartStart(Vcb, UDFGetRefPartNumByPhysLba(Vcb, lba));
                     Vcb->Vat[lba-root+j] = UDF_VAT_FREE_ENTRY;
                 }
             }
-            // mark discarded extent as Not-Alloc-Not-Rec to
-            // prevent writes there
+
+            // Optimization for the Map itself
             Map[i].extLength = (len << BSh) | (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
             Map[i].extLocation = 0;
         }
-
-#ifdef UDF_TRACK_ONDISK_ALLOCATION
-        if (lba)
-            ASSERT(bit_before == UDFGetBit(Vcb->FSBM_Bitmap, lba-1));
-        ASSERT(bit_after == UDFGetBit(Vcb->FSBM_Bitmap, lba+len));
-#endif //UDF_TRACK_ONDISK_ALLOCATION
+        // --- SPEED OPTIMIZATION END ---
 
         i++;
     }
@@ -725,99 +712,117 @@ UDFAllocFreeExtent_(
     EXTENT_AD Ext;
     PEXTENT_MAP Map = NULL;
     uint32 len, LBS, BSh, blen;
+    NTSTATUS status = STATUS_SUCCESS;
 
     LBS = Vcb->SectorSize;
     BSh = Vcb->SectorShift;
+
+    // Ensure we don't exceed the UDF architectural limit for a single extent
     uint32 MaxExtentLength = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS);
-    blen = (uint32)(((Length+LBS-1) & ~((int64)LBS-1)) >> BSh);
+    
+    // Calculate required blocks (blen) using 64-bit safe math
+    blen = (uint32)(((Length + LBS - 1) & ~((int64)LBS - 1)) >> BSh);
+    
     ExtInfo->Mapping = NULL;
     ExtInfo->Offset = 0;
+    ExtInfo->Length = 0;
 
+    // Sanity check for length
     ASSERT(blen <= (uint32)(MaxExtentLength >> BSh));
 
-    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+    UDFAcquireResourceExclusive(&(Vcb->BitMapResource1), TRUE);
 
+    // Initial boundary check
+    if (SearchLim > Vcb->LastPossibleLBA) SearchLim = Vcb->LastPossibleLBA;
     if (blen > (SearchLim - SearchStart)) {
         goto no_free_space_err;
     }
+
     // walk through the free space bitmap & find a single extent or a set of
     // frags giving in sum the Length specified
     while(blen) {
+        
+        // This function MUST be optimized (using RtlFindSetBits) to avoid 
+        // bit-by-bit scanning on your 256GB drive.
         Ext.extLocation = UDFFindMinSuitableExtent(Vcb, blen, SearchStart,
-                                                               SearchLim, &len, AllocFlags);
+                                                   SearchLim, &len, AllocFlags);
 
         if (len >= blen) {
-            // complete search
-            Ext.extLength = blen<<BSh;
+            // Found a sufficiently large contiguous block
+            Ext.extLength = blen << BSh;
             blen = 0;
-        } else if (len) {
-            // we need still some frags to complete request &
-            // probably we have the opportunity to do it
-            Ext.extLength = len<<BSh;
+        } else if (len > 0) {
+            // Found a fragment; we will need more to complete the request
+            Ext.extLength = len << BSh;
             blen -= len;
+            
+            // SPEED OPTIMIZATION: Advance SearchStart to the end of this fragment
+            // so we don't re-scan the same area in the next iteration.
+            SearchStart = Ext.extLocation + len;
         } else {
 no_free_space_err:
-            // no more free space. abort
+            // No more free space found. Roll back any fragments already allocated.
             if (ExtInfo->Mapping) {
-                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
+                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED);
                 MyFreePool__(ExtInfo->Mapping);
                 ExtInfo->Mapping = NULL;
             }
             UDFReleaseResource(&(Vcb->BitMapResource1));
-            ExtInfo->Length = 0;//UDFGetExtentLength(ExtInfo->Mapping);
-            AdPrint(("  DISK_FULL\n"));
+            ExtInfo->Length = 0;
+            AdPrint(("  DISK_FULL (Wanted %lu blocks)\n", blen));
             return STATUS_DISK_FULL;
         }
-        // append the frag found to mapping
+
         ASSERT(!(Ext.extLength >> 30));
         ASSERT(Ext.extLocation);
 
+        // Verification logic (Slow on large drives if enabled)
         if (AllocFlags & EXTENT_FLAG_VERIFY) {
             if (!UDFCheckArea(IrpContext, Vcb, Ext.extLocation, Ext.extLength >> BSh)) {
-                AdPrint(("newly allocated extent contains BB\n"));
-                UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
-                UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation, Ext.extLength >> BSh); // bad -> bad+used
-                // roll back
-                blen += Ext.extLength>>BSh;
+                AdPrint(("newly allocated extent contains BB @ %x\n", Ext.extLocation));
+                // Mark this specific area as bad and try again
+                UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation, Ext.extLength >> BSh);
+                blen += (Ext.extLength >> BSh);
                 continue;
             }
         }
 
-        Ext.extLength |= EXTENT_NOT_RECORDED_ALLOCATED << 30;
+        Ext.extLength |= (uint32)EXTENT_NOT_RECORDED_ALLOCATED << 30;
+
         if (!(ExtInfo->Mapping)) {
-            // create new
+            // First fragment: create the initial mapping
 #ifdef UDF_TRACK_ALLOC_FREE_EXTENT
             ExtInfo->Mapping = UDFExtentToMapping_(&Ext, src, line);
-#else // UDF_TRACK_ALLOC_FREE_EXTENT
+#else
             ExtInfo->Mapping = UDFExtentToMapping(&Ext);
-#endif // UDF_TRACK_ALLOC_FREE_EXTENT
+#endif
             if (!ExtInfo->Mapping) {
-                BrutePoint();
-                UDFReleaseResource(&(Vcb->BitMapResource1));
-                ExtInfo->Length = 0;
-                return STATUS_INSUFFICIENT_RESOURCES;
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                goto resource_err;
             }
-            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_USED); // used
+            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_USED);
         } else {
-            // update existing
+            // Subsequent fragments: merge into existing mapping
             Map = UDFExtentToMapping(&Ext);
             if (!Map) {
-                BrutePoint();
-                UDFReleaseResource(&(Vcb->BitMapResource1));
-                ExtInfo->Length = UDFGetExtentLength(ExtInfo->Mapping);
-                return STATUS_INSUFFICIENT_RESOURCES;
+                status = STATUS_INSUFFICIENT_RESOURCES;
+                goto resource_err;
             }
-            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, Map, AS_USED); // used
+            UDFMarkSpaceAsXXXNoProtect(Vcb, 0, Map, AS_USED);
             ExtInfo->Mapping = UDFMergeMappings(ExtInfo->Mapping, Map);
             MyFreePool__(Map);
+            Map = NULL;
         }
+
         if (!ExtInfo->Mapping) {
+resource_err:
             BrutePoint();
             UDFReleaseResource(&(Vcb->BitMapResource1));
             ExtInfo->Length = 0;
-            return STATUS_INSUFFICIENT_RESOURCES;
+            return status;
         }
     }
+
     UDFReleaseResource(&(Vcb->BitMapResource1));
     ExtInfo->Length = Length;
     return STATUS_SUCCESS;

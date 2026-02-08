@@ -437,14 +437,26 @@ UDFPrepareForWriteOperation(
 {
 #ifdef _UDF_STRUCTURES_H_
     if (Vcb->BSBM_Bitmap) {
-        ULONG i;
-        for(i=0; i<BCount; i++) {
-            if (UDFGetBit((uint32*)(Vcb->BSBM_Bitmap), Lba+i)) {
-                UDFPrint(("W: Known BB @ %#x\n", Lba));
-                //return STATUS_FT_WRITE_RECOVERY; // this shall not be treated as error and
-                                                   // we shall get IO request to BAD block
+        uint32 i = 0;
+        uint32* BitmapPtr = (uint32*)(Vcb->BSBM_Bitmap);
+
+        // FAST PATH: Check bits in groups of 32
+        while (i < BCount) {
+            // If we are at the start of a 32-bit boundary and have 32 bits to check
+            if (((Lba + i) & 31) == 0 && (BCount - i) >= 32) {
+                if (BitmapPtr[(Lba + i) >> 5] == 0) {
+                    // All 32 blocks are healthy! Skip them.
+                    i += 32;
+                    continue;
+                }
+            }
+
+            // Fallback: Check individual bit if near boundaries or if a bad block is nearby
+            if (UDFGetBit(BitmapPtr, Lba + i)) {
+                UDFPrint(("W: Known BB @ %#x\n", Lba + i));
                 return STATUS_DEVICE_DATA_ERROR;
             }
+            i++;
         }
     }
 #endif //_UDF_STRUCTURES_H_
@@ -998,22 +1010,34 @@ UDFPrepareForReadOperation(
     IN uint32 BCount
     )
 {
+    // Basic state handling
     if ( (Vcb->FsDeviceType != FILE_DEVICE_CD_ROM_FILE_SYSTEM) ) {
         Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
         return STATUS_SUCCESS;
     }
-    uint32 i = Vcb->LastReadTrack;
 
 #ifdef _UDF_STRUCTURES_H_
     if (Vcb->BSBM_Bitmap) {
-        ULONG i;
-        for(i=0; i<BCount; i++) {
-            if (UDFGetBit((uint32*)(Vcb->BSBM_Bitmap), Lba+i)) {
-                UDFPrint(("R: Known BB @ %#x\n", Lba));
-                //return STATUS_FT_WRITE_RECOVERY; // this shall not be treated as error and
-                                                   // we shall get IO request to BAD block
+        uint32 i = 0;
+        uint32* BitmapPtr = (uint32*)(Vcb->BSBM_Bitmap);
+
+        // SPEED OPTIMIZATION: Check blocks in 32-bit chunks
+        while (i < BCount) {
+            // If we are at a 32-bit boundary and have at least 32 bits left to check
+            if (((Lba + i) & 31) == 0 && (BCount - i) >= 32) {
+                // If the entire 32-bit word is 0, all 32 blocks are healthy
+                if (BitmapPtr[(Lba + i) >> 5] == 0) {
+                    i += 32;
+                    continue;
+                }
+            }
+
+            // Fallback: Individual bit check for remaining bits or near bad sectors
+            if (UDFGetBit(BitmapPtr, Lba + i)) {
+                UDFPrint(("R: Known BB @ %#x\n", Lba + i));
                 return STATUS_DEVICE_DATA_ERROR;
             }
+            i++;
         }
     }
 #endif //_UDF_STRUCTURES_H_
