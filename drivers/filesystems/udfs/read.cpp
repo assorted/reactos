@@ -154,9 +154,7 @@ UDFCommonRead(
         // Acquire the appropriate FCB resource shared
 
         if (PagingIo) {
-            // Don't offload jobs when doing paging IO - otherwise this can lead to
-            // deadlocks in CcCopyRead.
-            Wait = true;
+
             UDFAcquireFcbSharedStarveExclusive(IrpContext, Fcb, FALSE);
             FcbAcquired = TRUE;
 

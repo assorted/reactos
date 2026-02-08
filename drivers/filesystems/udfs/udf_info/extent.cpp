@@ -42,41 +42,22 @@ UDFExtentOffsetToLba(
     BOffset = (uint32)(Offset >> BSh);
     // scan extent table for suitable range (frag)
     ExtPrint(("ExtLen %x\n", Extent->extLength));
+    while(i+(d = (l = (Extent->extLength & UDF_EXTENT_LENGTH_MASK)) >> BSh) <= BOffset) {
 
-    while (TRUE) {
-        // SAFE READ: Read the length first, within the loop body.
-        l = (Extent->extLength & UDF_EXTENT_LENGTH_MASK);
-
-        // TERMINATOR CHECK: Stop immediately if we hit the zero-terminator.
         if (!l) {
-            if (Index) (*Index) = j; // Current position before termination
+            if (Index) (*Index) = j-1;
             if (Flags) {
-                // In the original version, Extent was decremented here; 
-                // the new logic reads flags from the current (terminator) entry.
+                Extent--;
                 (*Flags) = (Extent->extLength >> 30);
             }
             return LBA_OUT_OF_EXTENT;
         }
-
-        d = l >> BSh; // Blocks in this extent (integer division)
-
-        // BOUNDS CHECK: Does the requested offset fall within this extent's range?
-        if (i + d > BOffset) {
-            // Yes, this is the correct extent. Break the loop to calculate offsets.
-            break; 
-        }
-
-        // Handle extent smaller than a sector if necessary, otherwise advance.
-        if (!d) {
-            // If the extent has length > 0 but < sector size, and we didn't hit BOffset yet, break to handle it
-            if (i == BOffset) break;
-        }
-
-        i += d; // frag offset
-        j++;    // frag index
-        Extent++; // Advance pointer safely within the bounds
+        if (!d)
+            break;
+        i += d; //frag offset
+        j++; // frag index
+        Extent++;
     }
-
     BOffset -= i;
     Offs = (*((uint32*)&Offset)) - (i << BSh); // offset in frag
 
@@ -114,6 +95,7 @@ UDFNextExtentToLba(
 
     if (!l) {
         (*Index) = -1;
+        Extent--;
         (*Flags) = (Extent->extLength >> 30);
         return LBA_OUT_OF_EXTENT;
     }
@@ -3007,60 +2989,45 @@ UDFReadExtent(
 
     AdPrint(("Read ExtInfo %x, Mapping %x\n", ExtInfo, ExtInfo->Mapping));
 
+    PEXTENT_MAP Extent = ExtInfo->Mapping;   // Extent array
     SIZE_T to_read;
     ULONG _ReadBytes;
     uint32 Lba, sect_offs, flags;
-    uint32 currentIndex; // Track the absolute position in the Mapping array
+    uint32 index;
     NTSTATUS status;
-
     // prevent reading out of data space
     if (Offset > ExtInfo->Length) return STATUS_END_OF_FILE;
     if (Offset+Length > ExtInfo->Length) Length = (uint32)(ExtInfo->Length - Offset);
-    
     Offset += ExtInfo->Offset;               // used for in-ICB data
-
     // read maximal possible part of each frag of extent
-    // 1. Initial lookup to find starting LBA and the correct array index
-    Lba = UDFExtentOffsetToLba(Vcb, ExtInfo->Mapping, Offset, &sect_offs, &to_read, &flags, &currentIndex);
-
-    while(Length > 0) {
-        // 2. Sentinel Check: Stop if we hit an invalid LBA or the array terminator
-        if (Lba == LBA_OUT_OF_EXTENT) break;
-
-        // 3. Safety Mask: Implementation of the Linux "fake" check
-        // If the current extent has no length, we've reached the end of valid data.
-        if (!(ExtInfo->Mapping[currentIndex].extLength & UDF_EXTENT_LENGTH_MASK)) break;
-
+    Lba = UDFExtentOffsetToLba(Vcb, Extent, Offset, &sect_offs, &to_read, &flags, &index);
+    _ReadBytes = index;
+    while(Length) {
+        // EOF check
+        if (Lba == LBA_OUT_OF_EXTENT) return STATUS_END_OF_FILE;
+        Extent += (_ReadBytes + 1);
         // check for reading tail
         to_read = min(to_read, Length);
-
         if (flags == EXTENT_RECORDED_ALLOCATED) {
-            status = UDFReadData(IrpContext, Vcb, TRUE, 
-                                (((uint64)Lba) << Vcb->SectorShift) + sect_offs, 
-                                to_read, Direct, Buffer, &_ReadBytes);
+            status = UDFReadData(IrpContext, Vcb, TRUE, ( ((uint64)Lba) << Vcb->SectorShift) + sect_offs, to_read, Direct, Buffer, &_ReadBytes);
             (*ReadBytes) += _ReadBytes;
             if (!NT_SUCCESS(status)) return status;
         } else {
-            // Handle unallocated/hole extents by zeroing the buffer
             RtlZeroMemory(Buffer, to_read);
             (*ReadBytes) += to_read;
         }
-
         // prepare for reading next frag...
         Length -= to_read;
-        if (Length == 0) break;
-
+        if (!Length)
+            break;
+        ASSERT(to_read);
         Buffer += to_read;
-        sect_offs = 0; // Reset sector offset for subsequent extents
-
-        // 4. Safe Advancement: Increment index and fetch next LBA
-        currentIndex++;
-        
-        // Pass the address of the NEXT element in the mapping array
-        Lba = UDFNextExtentToLba(Vcb, &(ExtInfo->Mapping[currentIndex]), &to_read, &flags, &currentIndex);
+//        Offset += to_read;
+        Lba = UDFNextExtentToLba(Vcb, Extent, &to_read, &flags, &index);
+        _ReadBytes = index;
+        sect_offs = 0;
     }
-
-    return ((*ReadBytes) > 0) ? STATUS_SUCCESS : STATUS_END_OF_FILE;
+    return STATUS_SUCCESS;
 } // end UDFReadExtent()
 
 /*

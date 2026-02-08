@@ -1097,6 +1097,7 @@ UDFReadData(
     uint32 BSh=Vcb->SectorShift;
     NTSTATUS status;
     ULONG _ReadBytes = 0;
+    uint32 to_read;
 
     (*ReadBytes) = 0;
     if (!Length) return STATUS_SUCCESS;
@@ -1116,16 +1117,17 @@ UDFReadData(
     }
     // read sector_size-aligned part
     i = Length >> BSh;
-	if (i) {
-        status = UDFReadSectors(IrpContext, Vcb, Translate, Lba, i, Direct, Buffer, &_ReadBytes);
+    while(i) {
+        to_read = min(i, 64);
+        status = UDFReadSectors(IrpContext, Vcb, Translate, Lba, to_read, Direct, Buffer, &_ReadBytes);
         (*ReadBytes) += _ReadBytes;
         if (!NT_SUCCESS(status)) {
             return status;
         }
-        l = i<<BSh;
-        if (!(Length = Length - l)) return STATUS_SUCCESS;
-        Lba += i;
-        Buffer += l;
+        Buffer += to_read<<BSh;
+        Length -= to_read<<BSh;
+        Lba += to_read;
+        i -= to_read;
     }
     // read head of the last sector
     if (!Length) return STATUS_SUCCESS;
