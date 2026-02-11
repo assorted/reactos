@@ -1002,7 +1002,6 @@ UDFPrepareForReadOperation(
         Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
         return STATUS_SUCCESS;
     }
-    uint32 i = Vcb->LastReadTrack;
 
 #ifdef _UDF_STRUCTURES_H_
     if (Vcb->BSBM_Bitmap) {

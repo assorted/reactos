@@ -134,7 +134,6 @@ UDFPhReadSynchronous(
     PIO_STACK_LOCATION IrpSp;
     KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
-    PVCB Vcb = NULL;
 
     ROffset.QuadPart = Offset;
     (*ReadBytes) = 0;
@@ -252,7 +251,6 @@ UDFPhWriteSynchronous(
     KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
 
-    PVCB Vcb = NULL;
 
 #ifdef DBG
     if (UDF_SIMULATE_WRITES) {
