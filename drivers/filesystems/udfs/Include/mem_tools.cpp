@@ -39,7 +39,7 @@ InitLockMemoryManager() {
     KeInitializeSpinLock(&FrameLock);
     return STATUS_SUCCESS;
 }
-#define DeinitLockMemoryManager()  {NOTHING;}
+#define DeinitLockMemoryManager()  ((void)0)
 #else //MEM_LOCK_BY_SPINLOCK
 ERESOURCE FrameLock;
 #define LockMemoryManager()        ExAcquireResourceExclusiveLite(&FrameLock, TRUE)
@@ -184,9 +184,9 @@ MyAllocCheck(
 //#endif //CHECK_ALLOC_FRAMES
 #else
 
-#define MyAllocDumpFrame(a) {}
-#define MyAllocCheck(a) {}
-#define MyAllocDumpFrames() {}
+#define MyAllocDumpFrame(a) ((void)0)
+#define MyAllocCheck(a) ((void)0)
+#define MyAllocDumpFrames() ((void)0)
 
 #endif // UDF_DBG
 

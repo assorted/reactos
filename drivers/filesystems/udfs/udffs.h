@@ -98,6 +98,8 @@ typedef FILE_ID                     *PFILE_ID;
 #define UDF_DBG
 #endif
 
+//#define BRUTE
+
 #define VALIDATE_STRUCTURES
 // the following include files should be in the inc sub-dir associated with this driver
 

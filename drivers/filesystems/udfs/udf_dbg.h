@@ -61,13 +61,13 @@
   #ifdef USE_KD_PRINT
     #define KdPrint(_x_) DbgPrint _x_
   #else
-    #define KdPrint(a)  {NOTHING;}
+    #define KdPrint(a)  ((void)0)
   #endif //USE_KD_PRINT
 
   #ifdef USE_MM_PRINT
     #define MmPrint(_x_) DbgPrint _x_
   #else
-    #define MmPrint(_x_) {NOTHING;}
+    #define MmPrint(_x_) ((void)0)
   #endif //USE_MM_PRINT
 
   #ifdef USE_TIME_PRINT
@@ -80,29 +80,29 @@
   #ifdef USE_AD_PRINT
     #define AdPrint(_x_) {DbgPrint("Thrd:%x:",PsGetCurrentThread());DbgPrint _x_;}
   #else
-    #define AdPrint(_x_) {NOTHING;}
+    #define AdPrint(_x_) ((void)0)
   #endif
 
   #ifdef USE_TH_PRINT
     #define ThPrint(_x_) {DbgPrint("Thrd:%x:",PsGetCurrentThread());DbgPrint _x_;}
   #else
-    #define ThPrint(_x_) {NOTHING;}
+    #define ThPrint(_x_) ((void)0)
   #endif
 
   #ifdef UDF_DUMP_EXTENT
     #define ExtPrint(_x_)  KdPrint(_x_)
   #else
-    #define ExtPrint(_x_)  {NOTHING;}
+    #define ExtPrint(_x_)  ((void)0)
   #endif
 
 #else // defined UDF_DBG || defined PRINT_ALWAYS
 
-  #define MmPrint(_x_)   {NOTHING;}
-  #define TmPrint(_x_)   {NOTHING;}
-  #define PerfPrint(_x_) {NOTHING;}
-  #define AdPrint(_x_)   {NOTHING;}
-  #define ThPrint(_x_)   {NOTHING;}
-  #define ExtPrint(_x_)  {NOTHING;}
+  #define MmPrint(_x_)   ((void)0)
+  #define TmPrint(_x_)   ((void)0)
+  #define PerfPrint(_x_) ((void)0)
+  #define AdPrint(_x_)   ((void)0)
+  #define ThPrint(_x_)   ((void)0)
+  #define ExtPrint(_x_)  ((void)0)
 
 #endif // defined UDF_DBG || defined PRINT_ALWAYS
 
@@ -120,24 +120,16 @@ DbgWaitForSingleObject_(
 
 #ifdef UDF_DBG
 
-#ifdef _X86_
-// This is an illegal use of INT3
-#define UDFBreakPoint() { __asm int 3 }
-#else // _X86_
-
-#define UDFBreakPoint() DbgBreakPoint()
-#endif // _X86_
-
 #ifdef BRUTE
 #define BrutePoint() UDFBreakPoint()
 #else
-#define BrutePoint() {}
+#define BrutePoint() ((void)0)
 #endif // BRUTE
 
 #ifdef CHECK_REF_COUNTS
 #define ASSERT_REF(_a_) ASSERT(_a_)
 #else
-#define ASSERT_REF(_a_) {NOTHING;}
+#define ASSERT_REF(_a_) ((void)0)
 #endif //CHECK_REF_COUNTS
 
 #ifdef TRACK_SYS_ALLOCS
@@ -186,7 +178,7 @@ VOID DebugFreePool(PVOID addr);
 }
 
 #else
-#define ValidateFileInfo(fi)  {}
+#define ValidateFileInfo(fi)  ((void)0)
 #endif
 
 #if defined (_X86_) && defined (_MSC_VER)
@@ -219,13 +211,13 @@ __inline VOID UDFTouch(IN PVOID addr)
 #define DbgCopyMemory(d, s, l)     RtlCopyMemory(d, s, l)
 #define DbgCompareMemory(d, s, l)  RtlCompareMemory(d, s, l)
 
-#define ASSERT_REF(_a_) {NOTHING;}
+#define ASSERT_REF(_a_) ((void)0)
 
-#define UDFBreakPoint() {}
-#define BrutePoint() {}
-#define ValidateFileInfo(fi)  {}
+#define UDFBreakPoint() ((void)0)
+#define BrutePoint() ((void)0)
+#define ValidateFileInfo(fi)  ((void)0)
 
-#define UDFTouch(addr) {}
+#define UDFTouch(addr) ((void)0)
 
 #endif // UDF_DBG
 
@@ -245,7 +237,7 @@ if ((a)!=NULL) {                            \
 
 #else
 
-#define KdDump(a,b) {}
+#define KdDump(a,b) ((void)0)
 
 #endif // UDF_DBG
 
