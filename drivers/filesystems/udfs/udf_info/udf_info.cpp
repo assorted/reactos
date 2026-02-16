@@ -1629,13 +1629,11 @@ UDFWriteFile__(
     if (Direct) return STATUS_INVALID_PARAMETER;
     OldLen = Dloc->DataLoc.Length;
     
-    // Check if we can keep the file in IN_ICB mode
-    // Directories are excluded to allow preallocation for growth
-    if (!UDFIsADirectory(FileInfo) &&
-        (((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
+    // Check if we can keep the file/directory in IN_ICB mode
+    if ((((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
         // Check if new size would fit in IN_ICB mode
         if (t <= (Vcb->SectorSize - FileInfo->Dloc->FileEntryLen)) {
-            // Keep file in IN_ICB mode - just extend the inline data length
+            // Keep file/directory in IN_ICB mode - just extend the inline data length
             ExtPrint(("  Keep IN_ICB: %I64x <= %x\n", t, Vcb->SectorSize - FileInfo->Dloc->FileEntryLen));
             UDFSetFileSize(FileInfo, t);
             Dloc->DataLoc.Length = t;
