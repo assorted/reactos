@@ -1827,7 +1827,8 @@ UDFCommonCreate(
             try_return(RC);
         }
 
-        if (DeleteOnClose && !(PtrNewFcb->FcbState & UDF_FCB_DIRECTORY) &&
+        if (DeleteOnClose &&
+            !(PtrNewFcb->FcbState & UDF_FCB_DIRECTORY) &&
             (PtrNewFcb->FcbState & UDF_FCB_READ_ONLY)) {
             AdPrint(("    Can't delete Read-Only file\n"));
             RC = STATUS_CANNOT_DELETE;
