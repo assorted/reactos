@@ -1628,6 +1628,20 @@ UDFWriteFile__(
     // We should not get here if Direct=TRUE
     if (Direct) return STATUS_INVALID_PARAMETER;
     OldLen = Dloc->DataLoc.Length;
+    
+    // Check if we can keep the file in IN_ICB mode
+    if ((((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
+        // Check if new size would fit in IN_ICB mode
+        if (t <= (Vcb->SectorSize - FileInfo->Dloc->FileEntryLen)) {
+            // Keep file in IN_ICB mode - just extend the inline data length
+            ExtPrint(("  Keep IN_ICB: %I64x <= %x\n", t, Vcb->SectorSize - FileInfo->Dloc->FileEntryLen));
+            UDFSetFileSize(FileInfo, t);
+            Dloc->DataLoc.Length = t;
+            Dloc->DataLoc.Modified = TRUE;
+            return UDFWriteExtent(IrpContext, Vcb, &Dloc->DataLoc, Offset, Length, Direct, Buffer, WrittenBytes);
+        }
+    }
+    
     if (Dloc->DataLoc.Offset && Dloc->DataLoc.Length) {
         // read in-icb data. it'll be replaced after resize
         ExtPrint(("  read in-icb data\n"));
