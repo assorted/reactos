@@ -1630,7 +1630,9 @@ UDFWriteFile__(
     OldLen = Dloc->DataLoc.Length;
     
     // Check if we can keep the file in IN_ICB mode
-    if ((((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
+    // Directories are excluded to allow preallocation for growth
+    if (!UDFIsADirectory(FileInfo) &&
+        (((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
         // Check if new size would fit in IN_ICB mode
         if (t <= (Vcb->SectorSize - FileInfo->Dloc->FileEntryLen)) {
             // Keep file in IN_ICB mode - just extend the inline data length
