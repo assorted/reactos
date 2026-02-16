@@ -1605,8 +1605,9 @@ UDFWriteFile__(
         return status;
     }
     elen = UDFGetExtentLength(Dloc->DataLoc.Mapping);
-    ExtPrint(("  DataLoc Offs %x, Len %I64x\n",
-        Dloc->DataLoc.Offset, Dloc->DataLoc.Length));
+    ExtPrint(("  DataLoc Offs %x, Len %I64x, ICB mode: %s\n",
+        Dloc->DataLoc.Offset, Dloc->DataLoc.Length,
+        (Dloc->DataLoc.Offset ? "IN_ICB" : "EXTERNAL")));
     if (t <= (elen - Dloc->DataLoc.Offset)) {
         // write Alloc-Not-Rec area
         ExtPrint(("  WAlloc-Not-Rec: %I64x <= %I64x (%I64x - %I64x)\n",
@@ -1656,6 +1657,7 @@ UDFWriteFile__(
     // init Alloc mode
     ExtPrint(("  init Alloc mode\n"));
     if ((((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
+        ExtPrint(("  Converting from IN_ICB to external allocation\n"));
         ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags &= ~ICB_FLAG_ALLOC_MASK;
         ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags |= Vcb->DefaultAllocMode;
         WasInIcb = TRUE;
