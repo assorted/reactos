@@ -1827,9 +1827,7 @@ UDFCommonCreate(
             try_return(RC);
         }
 
-        if (DeleteOnClose &&
-            !(PtrNewFcb->FcbState & UDF_FCB_DIRECTORY) &&
-            (PtrNewFcb->FcbState & UDF_FCB_READ_ONLY)) {
+        if (DeleteOnClose && (PtrNewFcb->FcbState & UDF_FCB_READ_ONLY)) {
             AdPrint(("    Can't delete Read-Only file\n"));
             RC = STATUS_CANNOT_DELETE;
             try_return(RC);
@@ -1891,7 +1889,6 @@ UDFCommonCreate(
                                NewFileInfo->Dloc->FileEntry);
 
         if (DeleteOnClose &&
-           !UDFIsADirectory(NewFileInfo) &&
            (TmpFileAttributes & FILE_ATTRIBUTE_READONLY)) {
             ASSERT(CurrentFcb);
             RC = UDFCheckAccessRights(NULL, NULL, OldRelatedFileInfo->Fcb, RelatedCcb, FILE_DELETE_CHILD, 0);
