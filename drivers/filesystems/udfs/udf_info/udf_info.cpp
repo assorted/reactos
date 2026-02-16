@@ -1909,6 +1909,27 @@ cleanup_SDir:
             FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_IS_DEL_SDIR;
             UDFDecFileLinkCount(FileInfo->ParentFile);
         }
+        // Wipe inline data for security before flushing
+        if (Dloc->DataLoc.Offset && Dloc->FileEntry && Dloc->DataLoc.Length) {
+            uint32 inline_data_offset = Dloc->DataLoc.Offset;
+            uint32 inline_data_length = (uint32)Dloc->DataLoc.Length;
+            uint32 available_space = Vcb->SectorSize - inline_data_offset;
+            
+            // Make sure we don't overflow the FileEntry sector
+            if (inline_data_length > available_space) {
+                inline_data_length = available_space;
+            }
+            
+            // Zero the inline data area
+            if (inline_data_length > 0) {
+                AdPrint(("  Wiping inline data: offset %x, length %x\n", 
+                         inline_data_offset, inline_data_length));
+                RtlZeroMemory((PCHAR)(Dloc->FileEntry) + inline_data_offset, 
+                              inline_data_length);
+                // Mark FE as modified so the zeroed data gets written
+                Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
+            }
+        }
         if (Dloc->DirIndex) {
             UDFFlushFESpace(Vcb, Dloc, FLUSH_FE_FOR_DEL);
         }
