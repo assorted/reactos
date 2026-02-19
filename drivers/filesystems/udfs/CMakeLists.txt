@@ -10,6 +10,7 @@ list(APPEND SOURCE
     udf_info/physical.cpp
     udf_info/remap.cpp
     udf_info/udf_info.cpp
+    udf_info/xrle.cpp
     cleanup.cpp
     close.cpp
     create.cpp

@@ -10,6 +10,7 @@
 #include "ecma_167.h"
 #include "osta_misc.h"
 #include "udf_rel.h"
+#include "xrle.h"
 
 // memory re-allocation (returns new buffer size)
 uint32    UDFMemRealloc(IN int8* OldBuff,     // old buffer

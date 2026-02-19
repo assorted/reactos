@@ -220,8 +220,19 @@ UDFUpdateXSpaceBitmaps(
 
     pstart = UDFPartStart(Vcb, RefPartNum);
     new_bm = Vcb->FSBM_Bitmap;
-    old_bm = Vcb->FSBM_OldBitmap;
     bad_bm = Vcb->BSBM_Bitmap;
+
+    // Decompress the XRLE-compressed old bitmap snapshot for use during update
+    old_bm = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
+    if (!old_bm) {
+        if (USBM) { DbgFreePool(USBM); MyFreePool__(USBMExtInfo.Mapping); }
+        if (FSBM) { DbgFreePool(FSBM); MyFreePool__(FSBMExtInfo.Mapping); }
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    if (xrle_decompress(old_bm, Vcb->FSBM_OldBitmap, Vcb->FSBM_OldBitmapCompressedSize) != Vcb->FSBM_ByteCount) {
+        // decompression produced unexpected size; use current bitmap as fallback
+        RtlCopyMemory(old_bm, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
+    }
 
     if ((status  == STATUS_INSUFFICIENT_RESOURCES) ||
        (status2 == STATUS_INSUFFICIENT_RESOURCES)) {
@@ -288,8 +299,11 @@ UDFUpdateXSpaceBitmaps(
         }
     }
 
-    if (!NT_SUCCESS(status))
+    if (!NT_SUCCESS(status)) {
+        DbgFreePool(old_bm);
         return status;
+    }
+    DbgFreePool(old_bm);
     return status2;
 } // end UDFUpdateXSpaceBitmaps()
 
@@ -966,11 +980,23 @@ UDFUmount__(
 #endif // UDF_DBG
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
-    // check if we should update BM
-    if (Vcb->FSBM_ByteCount == RtlCompareMemory(Vcb->FSBM_Bitmap, Vcb->FSBM_OldBitmap, Vcb->FSBM_ByteCount)) {
-        flags &= ~1;
-    } else {
-        flags |= 1;
+    // check if we should update BM: decompress the old bitmap snapshot for comparison
+    {
+        int8* old_bm_decomp = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
+        if (old_bm_decomp) {
+            if (xrle_decompress(old_bm_decomp, Vcb->FSBM_OldBitmap, Vcb->FSBM_OldBitmapCompressedSize) != Vcb->FSBM_ByteCount) {
+                // decompression produced unexpected size; conservatively assume bitmap changed
+                flags |= 1;
+            } else if (Vcb->FSBM_ByteCount == RtlCompareMemory(Vcb->FSBM_Bitmap, old_bm_decomp, Vcb->FSBM_ByteCount)) {
+                flags &= ~1;
+            } else {
+                flags |= 1;
+            }
+            DbgFreePool(old_bm_decomp);
+        } else {
+            // if decompression buffer fails, conservatively assume bitmap changed
+            flags |= 1;
+        }
     }
 
 #ifdef UDF_DBG
@@ -989,7 +1015,7 @@ UDFUmount__(
     }
 
     if (flags & 1)
-        RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
+        Vcb->FSBM_OldBitmapCompressedSize = xrle_compress(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
 
 //skip_update_bitmap:
 
@@ -2964,9 +2990,9 @@ UDFGetDiskInfoAndVerify(
 
         UDFLoadFileset(Vcb,FileSetDesc, &(Vcb->RootLbAddr), &(Vcb->SysStreamLbAddr));
 
-        Vcb->FSBM_OldBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
+        Vcb->FSBM_OldBitmap = (int8*)DbgAllocatePool(NonPagedPool, xrle_max_out(Vcb->FSBM_ByteCount));
         if (!(Vcb->FSBM_OldBitmap)) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-        RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
+        Vcb->FSBM_OldBitmapCompressedSize = xrle_compress(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
 
 try_exit:   NOTHING;
     } _SEH2_FINALLY {

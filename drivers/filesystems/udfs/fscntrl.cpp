@@ -690,6 +690,7 @@ UDFCleanupVCB(
     if (Vcb->FSBM_OldBitmap) {
         DbgFreePool(Vcb->FSBM_OldBitmap);
         Vcb->FSBM_OldBitmap = NULL;
+        Vcb->FSBM_OldBitmapCompressedSize = 0;
     }
 
     MyFreeMemoryAndPointer(Vcb->VolIdent.Buffer);
