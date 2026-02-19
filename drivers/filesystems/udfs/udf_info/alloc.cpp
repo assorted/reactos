@@ -468,39 +468,61 @@ UDFCheckSpaceAllocation_(
             len = Vcb->LastPossibleLBA - lba;
         }
 
-        // mark frag as XXX (see asUsed parameter)
-        if (asUsed) {
+        // --- SPEED OPTIMIZATION: Word-at-a-time verification ---
+        // Instead of bit-by-bit, we check 32 blocks per CPU instruction.
+        j = 0;
+        {
+        uint32* BitmapPtr = (uint32*)(Vcb->FSBM_Bitmap);
+        while (j < len) {
+            // Fast Path: Check 32 blocks if aligned on a 32-bit boundary
+            if (((lba + j) & 31) == 0 && (len - j) >= 32) {
+                uint32 CurrentWord = BitmapPtr[(lba + j) >> 5];
 
-            ASSERT(len);
-            for(j=0;j<len;j++) {
-                if (lba+j > Vcb->LastPossibleLBA) {
+                if (asUsed) {
+                    // In UDF, 0 = Used. We expect the whole word to be 0x00000000.
+                    if (CurrentWord == 0) {
+                        j += 32;
+                        continue;
+                    }
+                } else {
+                    // In UDF, 1 = Free. We expect the whole word to be 0xFFFFFFFF.
+                    if (CurrentWord == 0xFFFFFFFF) {
+                        j += 32;
+                        continue;
+                    }
+                }
+                // If the word check fails, fall through to the bit-checker below
+                // to identify exactly which block is inconsistent.
+            }
+
+            // Fallback: Individual bit check (for tails or if an inconsistency is found)
+            if (asUsed) {
+                if (lba + j > Vcb->LastPossibleLBA) {
                     BrutePoint();
-                    AdPrint(("USED Mapping covers block(s) beyond media @%x\n",lba+j));
+                    AdPrint(("USED Mapping covers block(s) beyond media @%x\n", lba + j));
                     break;
                 }
-                if (!UDFGetUsedBit(Vcb->FSBM_Bitmap, lba+j)) {
+                if (!UDFGetUsedBit(Vcb->FSBM_Bitmap, lba + j)) {
                     BrutePoint();
-                    AdPrint(("USED Mapping covers FREE block(s) @%x\n",lba+j));
+                    AdPrint(("USED Mapping covers FREE block(s) @%x\n", lba + j));
+                    break;
+                }
+            } else {
+                if (lba + j > Vcb->LastPossibleLBA) {
+                    BrutePoint();
+                    AdPrint(("FREE Mapping covers block(s) beyond media @%x\n", lba + j));
+                    break;
+                }
+                if (!UDFGetFreeBit(Vcb->FSBM_Bitmap, lba + j)) {
+                    BrutePoint();
+                    AdPrint(("FREE Mapping covers USED block(s) @%x\n", lba + j));
                     break;
                 }
             }
-
-        } else {
-
-            ASSERT(len);
-            for(j=0;j<len;j++) {
-                if (lba+j > Vcb->LastPossibleLBA) {
-                    BrutePoint();
-                    AdPrint(("USED Mapping covers block(s) beyond media @%x\n",lba+j));
-                    break;
-                }
-                if (!UDFGetFreeBit(Vcb->FSBM_Bitmap, lba+j)) {
-                    BrutePoint();
-                    AdPrint(("FREE Mapping covers USED block(s) @%x\n",lba+j));
-                    break;
-                }
-            }
+            j++;
         }
+        }
+        // --- END SPEED OPTIMIZATION ---
 
         i++;
     }
@@ -516,11 +538,27 @@ UDFMarkBadSpaceAsUsed(
     )
 {
     uint32 j;
+    uint32 start_word, end_word;
+
 #define BIT_C   (sizeof(Vcb->BSBM_Bitmap[0])*8)
-    len = (lba+len+BIT_C-1)/BIT_C;
-    if (Vcb->BSBM_Bitmap) {
-        for(j=lba/BIT_C; j<len; j++) {
-            Vcb->FSBM_Bitmap[j] &= ~Vcb->BSBM_Bitmap[j];
+
+    if (Vcb->BSBM_Bitmap && Vcb->FSBM_Bitmap) {
+
+        start_word = lba / BIT_C;
+        end_word = (lba + len + BIT_C - 1) / BIT_C;
+
+        // Ensure we don't go out of bounds of the allocated bitmap
+        uint32 max_words = (Vcb->FSBM_BitCount + BIT_C - 1) / BIT_C;
+        if (end_word > max_words) end_word = max_words;
+
+        // FAST PATH: If the range is large, the CPU can process
+        // these words very quickly.
+        for (j = start_word; j < end_word; j++) {
+            // Only perform the write if there is actually a bad bit to clear
+            // This saves a memory write cycle (bus traffic)
+            if (Vcb->BSBM_Bitmap[j] != 0) {
+                Vcb->FSBM_Bitmap[j] &= ~Vcb->BSBM_Bitmap[j];
+            }
         }
     }
 #undef BIT_C
@@ -603,12 +641,16 @@ UDFMarkSpaceAsXXXNoProtect_(
         bit_after = UDFGetBit(Vcb->FSBM_Bitmap, lba+len);
 #endif //UDF_TRACK_ONDISK_ALLOCATION
 
-        // mark frag as XXX (see asUsed parameter)
+        // --- SPEED OPTIMIZATION START ---
+        // Instead of bit-loops, we use the optimized SetBits/FreeBits
+        // which should ideally be mapped to RtlFillMemory for large spans.
         if (asUsed) {
 /*            for(j=0;j<len;j++) {
                 UDFSetUsedBit(Vcb->FSBM_Bitmap, lba+j);
             }*/
             ASSERT(len);
+            // Fast Path: If we are marking a large span as used (bits = 0)
+            // UDFSetUsedBits handles the bit-shifting logic.
             UDFSetUsedBits(Vcb->FSBM_Bitmap, lba, len);
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
             for(j=0;j<len;j++) {
@@ -631,6 +673,7 @@ UDFMarkSpaceAsXXXNoProtect_(
                 UDFSetFreeBit(Vcb->FSBM_Bitmap, lba+j);
             }*/
             ASSERT(len);
+            // Fast Path: Mark space as free (bits = 1)
             UDFSetFreeBits(Vcb->FSBM_Bitmap, lba, len);
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
             for(j=0;j<len;j++) {
@@ -658,6 +701,7 @@ UDFMarkSpaceAsXXXNoProtect_(
             Map[i].extLength = (len << BSh) | (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
             Map[i].extLocation = 0;
         }
+        // --- SPEED OPTIMIZATION END ---
 
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
         if (lba)
