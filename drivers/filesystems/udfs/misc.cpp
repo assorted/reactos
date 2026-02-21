@@ -334,7 +334,7 @@ UDFProcessException(
         } 
         else if ((ExceptionCode == STATUS_VERIFY_REQUIRED) &&
                  FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_TOP_LEVEL) &&
-                 KeAreAllApcsDisabled()) {
+                 (KeGetCurrentIrql() >= APC_LEVEL)) {
                  
             ExceptionCode = UDFFsdPostRequest(IrpContext, Irp);
         }
