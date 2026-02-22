@@ -2680,6 +2680,12 @@ UDFLoadPartition(
 //                    Vcb->VDS1 = 0;
                     break;
                 }
+                // Both main and reserve failed for this anchor.
+                // Free any LVid set by the reserve sequence before trying the next anchor.
+                if (Vcb->LVid) {
+                    MyFreePool__(Vcb->LVid);
+                    Vcb->LVid = NULL;
+                }
             } else {
                 // remember these values for umount__
                 Vcb->VDS1_Len = main_e - main_s;
