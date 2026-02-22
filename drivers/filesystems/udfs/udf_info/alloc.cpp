@@ -639,7 +639,10 @@ UDFChunkedGetBit(
     PCHAR data;
     if (!bm->Chunks || chunkIdx >= bm->ChunkCount) return FALSE;
     data = UDFEnsureChunkDecompressed(bm, chunkIdx);
-    if (!data) return FALSE;
+    if (!data) {
+        UDFPrint(("UDFChunkedGetBit: OOM decompressing chunk %u\n", chunkIdx));
+        return FALSE;
+    }
     return (BOOLEAN)UDFGetBit((uint32*)data, bitInChunk);
 } // end UDFChunkedGetBit()
 
@@ -654,7 +657,10 @@ UDFChunkedSetBit(
     PCHAR data;
     if (!bm->Chunks || chunkIdx >= bm->ChunkCount) return;
     data = UDFEnsureChunkDecompressed(bm, chunkIdx);
-    if (!data) return;
+    if (!data) {
+        UDFPrint(("UDFChunkedSetBit: OOM decompressing chunk %u\n", chunkIdx));
+        return;
+    }
     UDFSetBit((uint32*)data, bitInChunk);
     bm->Chunks[chunkIdx].Dirty = TRUE;
 } // end UDFChunkedSetBit()
@@ -670,7 +676,10 @@ UDFChunkedClrBit(
     PCHAR data;
     if (!bm->Chunks || chunkIdx >= bm->ChunkCount) return;
     data = UDFEnsureChunkDecompressed(bm, chunkIdx);
-    if (!data) return;
+    if (!data) {
+        UDFPrint(("UDFChunkedClrBit: OOM decompressing chunk %u\n", chunkIdx));
+        return;
+    }
     UDFClrBit((uint32*)data, bitInChunk);
     bm->Chunks[chunkIdx].Dirty = TRUE;
 } // end UDFChunkedClrBit()
@@ -693,7 +702,10 @@ UDFChunkedSetBits(
         PCHAR data;
         if (!bm->Chunks || chunkIdx >= bm->ChunkCount) break;
         data = UDFEnsureChunkDecompressed(bm, chunkIdx);
-        if (!data) break;
+        if (!data) {
+            UDFPrint(("UDFChunkedSetBits: OOM decompressing chunk %u\n", chunkIdx));
+            break;
+        }
         UDFSetBits((uint32*)data, relCur, relCount);
         bm->Chunks[chunkIdx].Dirty = TRUE;
         cur = chunkBase + relEnd;
@@ -718,7 +730,10 @@ UDFChunkedClrBits(
         PCHAR data;
         if (!bm->Chunks || chunkIdx >= bm->ChunkCount) break;
         data = UDFEnsureChunkDecompressed(bm, chunkIdx);
-        if (!data) break;
+        if (!data) {
+            UDFPrint(("UDFChunkedClrBits: OOM decompressing chunk %u\n", chunkIdx));
+            break;
+        }
         UDFClrBits((uint32*)data, relCur, relCount);
         bm->Chunks[chunkIdx].Dirty = TRUE;
         cur = chunkBase + relEnd;
@@ -752,7 +767,10 @@ UDFChunkedGetBitmapLen(
         PCHAR data;
         if (chunkIdx >= bm->ChunkCount) break;
         data = UDFEnsureChunkDecompressed(bm, chunkIdx);
-        if (!data) break;
+        if (!data) {
+            UDFPrint(("UDFChunkedGetBitmapLen: OOM decompressing chunk %u\n", chunkIdx));
+            break;
+        }
         /* If this chunk's bit at relCur doesn't match startBit, the run ended */
         if ((BOOLEAN)UDFGetBit((uint32*)data, relCur) != startBit) break;
         len = UDFGetBitmapLen((uint32*)data, relCur, relLim);
@@ -788,7 +806,10 @@ UDFChunkedCountFreeBits(
         uint32 j;
         if (chunkIdx >= bm->ChunkCount) break;
         data = UDFEnsureChunkDecompressed(bm, chunkIdx);
-        if (!data) break;
+        if (!data) {
+            UDFPrint(("UDFChunkedCountFreeBits: OOM decompressing chunk %u\n", chunkIdx));
+            break;
+        }
         for (j = relCur / 8; j < (relEnd + 7) / 8; j++) {
             s += bit_count_tab[(uint8)data[j]];
         }
@@ -851,7 +872,10 @@ UDFChunkedBitmapsEqual(
     for (i = 0; i < a->ChunkCount; i++) {
         PCHAR da = UDFEnsureChunkDecompressed(a, i);
         PCHAR db = UDFEnsureChunkDecompressed(b, i);
-        if (!da || !db) return FALSE;
+        if (!da || !db) {
+            UDFPrint(("UDFChunkedBitmapsEqual: OOM decompressing chunk %u\n", i));
+            return FALSE;
+        }
         if (RtlCompareMemory(da, db, UDF_BITMAP_CHUNK_BYTES) != UDF_BITMAP_CHUNK_BYTES)
             return FALSE;
     }
@@ -881,7 +905,10 @@ UDFChunkedMarkBadSpaceAsUsed(
         if (chunkIdx >= fsbm->ChunkCount || chunkIdx >= bsbm->ChunkCount) break;
         fd = UDFEnsureChunkDecompressed(fsbm, chunkIdx);
         bd = UDFEnsureChunkDecompressed(bsbm, chunkIdx);
-        if (!fd || !bd) break;
+        if (!fd || !bd) {
+            UDFPrint(("UDFChunkedMarkBadSpaceAsUsed: OOM decompressing chunk %u\n", chunkIdx));
+            break;
+        }
         fd[j - chunkBase] &= ~bd[j - chunkBase];
         fsbm->Chunks[chunkIdx].Dirty = TRUE;
     }
@@ -1041,7 +1068,9 @@ UDFMarkSpaceAsXXXNoProtect_(
 #endif //UDF_TRACK_ONDISK_ALLOCATION
             if (asXXX & AS_BAD) {
                 if (!Vcb->BSBM_Chunked.Chunks && Vcb->FSBM_ByteCount) {
-                    UDFInitChunkedBitmap(Vcb, &Vcb->BSBM_Chunked, Vcb->FSBM_ByteCount);
+                    if (!NT_SUCCESS(UDFInitChunkedBitmap(Vcb, &Vcb->BSBM_Chunked, Vcb->FSBM_ByteCount))) {
+                        UDFPrint(("UDFMarkSpaceAsXXX: OOM allocating BSBM_Chunked\n"));
+                    }
                 }
                 if (Vcb->BSBM_Chunked.Chunks) {
                     UDFChunkedSetBits(&Vcb->BSBM_Chunked, lba, len);
