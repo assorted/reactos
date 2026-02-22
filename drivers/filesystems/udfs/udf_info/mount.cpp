@@ -1646,9 +1646,12 @@ UDFAddXSpaceBitmap(
     i=UDFPartStart(Vcb, RefPartNum);
     flags = bm->extLength >> 30;
     if (!flags /*|| flags == EXTENT_NOT_RECORDED_ALLOCATED*/) {
-        /* Allocate only one sector-sized buffer to avoid large temporary
-           allocations that coexist with the 64 MB FSBM_Bitmap. */
-        tmp = (int8*)DbgAllocatePool(NonPagedPool, Vcb->SectorSize);
+        /* Allocate one 64 KB buffer (UDF_BITMAP_CHUNK_BYTES) to match the
+           chunked-bitmap granularity and keep async I/O count manageable.
+           For a 256 GB drive (~64 MB bitmap) this gives ~1 024 reads instead
+           of ~131 072 sector-sized reads while still avoiding a full 64 MB
+           temporary allocation coexisting with FSBM_Chunked. */
+        tmp = (int8*)DbgAllocatePool(NonPagedPool, UDF_BITMAP_CHUNK_BYTES);
         if (!tmp) return STATUS_INSUFFICIENT_RESOURCES;
         locAddr.partitionReferenceNum = (uint16)RefPartNum;
         locAddr.logicalBlockNum = bm->extPosition;
@@ -1667,17 +1670,21 @@ err_addxsbm_1:
         numOfBits = ((PSPACE_BITMAP_DESC)tmp)->numOfBits;
         lim = min(i + numOfBits, Vcb->FSBM_BitCount);
 
-        /* Process the on-disk bitmap one sector at a time.
+        /* Process the on-disk bitmap UDF_BITMAP_CHUNK_BYTES at a time.
            The first sector was already read above (header + start of bitmap data).
            Walk through the bitmap area: the header occupies sizeof(SPACE_BITMAP_DESC)
            bytes of the first sector, so we start the bit-copy from after the header.
-           We re-read each sector (including the first) to avoid indexing complexity. */
+           We re-read each chunk (including the first) to avoid indexing complexity. */
         bitmap_lba = lba;  // physical LBA of first bitmap sector
         bitmap_offset = 0; // byte offset within the on-disk bitmap file
         bytes_remaining = Length;
 
         while (bytes_remaining > 0 && i < lim) {
-            read_len = (uint32)min((SIZE_T)Vcb->SectorSize, bytes_remaining);
+            /* Read up to UDF_BITMAP_CHUNK_BYTES at a time (sector-aligned). */
+            read_len = (uint32)min((SIZE_T)UDF_BITMAP_CHUNK_BYTES, bytes_remaining);
+            /* Truncate to a whole number of sectors (never less than one). */
+            if (read_len >= Vcb->SectorSize)
+                read_len = (read_len / Vcb->SectorSize) * Vcb->SectorSize;
 
             if (!NT_SUCCESS(status = UDFReadData(IrpContext, Vcb, FALSE,
                     ((uint64)bitmap_lba) << Vcb->SectorShift,
@@ -1702,7 +1709,7 @@ err_addxsbm_1:
 
             bitmap_offset += read_len;
             bytes_remaining -= read_len;
-            bitmap_lba++;
+            bitmap_lba += read_len >> Vcb->SectorShift;
         }
         DbgFreePool(tmp);
     }
