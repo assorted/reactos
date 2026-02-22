@@ -448,7 +448,9 @@ UDFMountVolume(
         Vcb->MountPhErrorCount = 0;
 
         UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+        UDFDecompressBitmaps(Vcb);
         RC = UDFGetDiskInfoAndVerify(IrpContext, DeviceObjectWeTalkTo,Vcb);
+        UDFCompressBitmaps(Vcb);
         UDFReleaseResource(&(Vcb->BitMapResource1));
 
         ASSERT(!Vcb->Modified);
@@ -462,7 +464,9 @@ UDFMountVolume(
 
             // Complete mount operations: create root FCB
             UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+            UDFDecompressBitmaps(Vcb);
             RC = UDFCompleteMount(IrpContext, Vcb);
+            UDFCompressBitmaps(Vcb);
             UDFReleaseResource(&(Vcb->BitMapResource1));
             if (!NT_SUCCESS(RC)) {
                 // We must have Vcb->VcbReference = 1 for UDFBlankMount()
@@ -690,6 +694,14 @@ UDFCleanupVCB(
     if (Vcb->FSBM_OldBitmap) {
         DbgFreePool(Vcb->FSBM_OldBitmap);
         Vcb->FSBM_OldBitmap = NULL;
+    }
+    if (Vcb->FSBM_CompressedBitmap) {
+        DbgFreePool(Vcb->FSBM_CompressedBitmap);
+        Vcb->FSBM_CompressedBitmap = NULL;
+    }
+    if (Vcb->FSBM_OldCompressedBitmap) {
+        DbgFreePool(Vcb->FSBM_OldCompressedBitmap);
+        Vcb->FSBM_OldCompressedBitmap = NULL;
     }
 
     MyFreeMemoryAndPointer(Vcb->VolIdent.Buffer);

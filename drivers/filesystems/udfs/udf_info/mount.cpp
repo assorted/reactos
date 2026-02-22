@@ -953,6 +953,7 @@ UDFUmount__(
     UDFUpdateNonAllocated(IrpContext, Vcb);
 
     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+    UDFDecompressBitmaps(Vcb);
 
     // RAM mode
 #ifdef UDF_DBG
@@ -995,6 +996,7 @@ UDFUmount__(
 
     Vcb->VcbState &= ~UDF_VCB_ASSUME_ALL_USED;
 
+    UDFCompressBitmaps(Vcb);
     UDFReleaseResource(&(Vcb->BitMapResource1));
 
     return STATUS_SUCCESS;

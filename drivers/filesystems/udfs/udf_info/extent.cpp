@@ -2385,6 +2385,7 @@ UDFResizeExtent(
                         lim = req_s;
                     }
                     UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+                    UDFDecompressBitmaps(Vcb);
 /*                    if ((ExtInfo->Flags & EXTENT_FLAG_SEQUENTIAL) &&
                        ((Length & ~(PS-1)) > (l & ~(PS-1))) &&
                        TRUE) {
@@ -2422,6 +2423,7 @@ UDFResizeExtent(
                                                                            MEM_EXTMAP_TAG);
                         if (!TmpExtInf.Mapping) {
                             UDFPrint(("UDFResizeExtent: !TmpExtInf.Mapping\n"));
+                            UDFCompressBitmaps(Vcb);
                             UDFReleaseResource(&(Vcb->BitMapResource1));
                             return STATUS_INSUFFICIENT_RESOURCES;
                         }
@@ -2437,6 +2439,7 @@ UDFResizeExtent(
                         (*ExtInfo) = TmpExtInf;
                     }
                     UDFCheckSpaceAllocation(Vcb, 0, ExtInfo->Mapping, AS_USED); // check if used
+                    UDFCompressBitmaps(Vcb);
                     UDFReleaseResource(&(Vcb->BitMapResource1));
                 // check if Alloc-Rec
                 } else {
@@ -2464,6 +2467,7 @@ UDFResizeExtent(
                         uint32 d=0;
 
                         UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
+                        UDFDecompressBitmaps(Vcb);
                         //ASSERT(req_s);
                         if ((lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, lba)) {
                             s += (d = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s)));
@@ -2495,6 +2499,7 @@ UDFResizeExtent(
                         } else {
                             AdPrint(("Can't grow last Rec (6)\n"));
                         }
+                        UDFCompressBitmaps(Vcb);
                         UDFReleaseResource(&(Vcb->BitMapResource1));
                     } else {
                         AdPrint(("Max frag length reached (6)\n"));

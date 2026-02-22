@@ -648,6 +648,10 @@ extern NTSTATUS UDFDismountVolume(IN PIRP_CONTEXT IrpContext,
 extern NTSTATUS UDFGetVolumeBitmap(IN PIRP_CONTEXT IrpContext,
                                    IN PIRP Irp);
 
+extern NTSTATUS UDFDecompressBitmaps(IN PVCB Vcb);
+extern VOID     UDFCompressBitmaps(IN PVCB Vcb);
+extern NTSTATUS UDFEnsureBitmapDecompressed(IN PVCB Vcb);
+
 extern NTSTATUS UDFGetRetrievalPointers(IN PIRP_CONTEXT IrpContext,
                                         IN PIRP Irp);
 
