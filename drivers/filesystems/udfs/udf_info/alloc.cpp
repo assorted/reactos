@@ -568,7 +568,7 @@ UDFFreeChunkedBitmap(
     Ensure chunk chunkIdx in bm is decompressed (Decompressed pointer is valid).
     Returns NULL on allocation failure.
 */
-static PCHAR
+PCHAR
 UDFEnsureChunkDecompressed(
     IN PUDF_CHUNKED_BITMAP bm,
     IN ULONG chunkIdx
