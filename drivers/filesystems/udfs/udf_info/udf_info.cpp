@@ -3007,7 +3007,7 @@ CrF__2:
 
 #ifdef UDF_CHECK_DISK_ALLOCATION
         if (  /*FileInfo->Fcb &&*/
-             UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+             UDFChunkedGetBit(&Vcb->FSBM_Chunked, FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
 
             if (!FileInfo->FileIdent ||
                !(FileInfo->FileIdent->fileCharacteristics & FILE_DELETED)) {
@@ -3220,7 +3220,7 @@ UDFCloseFile__(
     }
 #ifdef UDF_CHECK_DISK_ALLOCATION
     if (  FileInfo->Fcb &&
-         UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+         UDFChunkedGetBit(&Vcb->FSBM_Chunked, FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
 
         //ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
         if (UDFIsAStreamDir(FileInfo)) {
@@ -3247,7 +3247,7 @@ UDFCloseFile__(
         }
     } else {
         if (!FileInfo->Dloc->FELoc.Mapping[0].extLocation ||
-            UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+            UDFChunkedGetBit(&Vcb->FSBM_Chunked, FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
             UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->DataLoc.Mapping, AS_FREE); // check if free
         } else {
             UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->DataLoc.Mapping, AS_USED); // check if used
@@ -3314,7 +3314,7 @@ UDFCloseFile__(
 //    ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     if ((FileInfo->Dloc->FileEntry->descVersion != 2) &&
        (FileInfo->Dloc->FileEntry->descVersion != 3)) {
-        ASSERT(UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation));
+        ASSERT(UDFChunkedGetBit(&Vcb->FSBM_Chunked, FileInfo->Dloc->FELoc.Mapping[0].extLocation));
     }
 #endif // UDF_DBG
     return STATUS_SUCCESS;
@@ -3915,7 +3915,7 @@ err_vat_15:
         // sync VAT and FSBM
         for(i=0; i<len; i++) {
             if (Vcb->Vat[i] == UDF_VAT_FREE_ENTRY) {
-                UDFSetFreeBit(Vcb->FSBM_Bitmap, root+i);
+                UDFChunkedSetBit(&Vcb->FSBM_Chunked, root+i);
             }
         }
         len = Vcb->LastPossibleLBA;
@@ -3924,12 +3924,12 @@ err_vat_15:
             for (j = 0; (j < PACKETSIZE_UDF) && (i < len); j++, i++)
             {
                 UDFPrint(("udf_info:FSBM_Bitmap Set Free: %x\n", root + i));
-                UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
+                UDFChunkedSetBit(&Vcb->FSBM_Chunked, i);
             }
             for (j = 0; (j < 7) && (i < len); j++, i++)
             {
                 UDFPrint(("udf_info:FSBM_Bitmap Set Used: %x\n", root + i));
-                UDFSetUsedBit(Vcb->FSBM_Bitmap, i);
+                UDFChunkedClrBit(&Vcb->FSBM_Chunked, i);
             }
         }
         DbgFreePool(VatOldData);
@@ -4138,8 +4138,8 @@ retry_flush_FE:
         // if FE is located in remapped block, place it to reliable space
         lba = FileInfo->Dloc->FELoc.Mapping[0].extLocation;
         UDFEnsureBitmapDecompressed(Vcb);
-        if (Vcb->BSBM_Bitmap) {
-            if (UDFGetBadBit((uint32*)(Vcb->BSBM_Bitmap), lba)) {
+        if (Vcb->BSBM_Chunked.Chunks) {
+            if (UDFChunkedGetBit(&Vcb->BSBM_Chunked, lba)) {
                 AdPrint(("  bad block under FE @%x\n", lba));
                 goto relocate_FE;
             }
@@ -4325,7 +4325,7 @@ UDFFlushFile__(
     }
 #ifdef UDF_CHECK_DISK_ALLOCATION
     if ( FileInfo->Fcb &&
-        UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+        UDFChunkedGetBit(&Vcb->FSBM_Chunked, FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
 
         if (UDFIsAStreamDir(FileInfo)) {
             if (!UDFIsSDirDeleted(FileInfo)) {
@@ -5046,7 +5046,7 @@ UDFRecordVAT(
     len = min(UDFPartLen(Vcb, PartNum), Vcb->FSBM_BitCount - root);
     len = min(Vcb->VatCount, len);
     for(i=0; i<len; i++) {
-        if (UDFGetFreeBit(Vcb->FSBM_Bitmap, root+i))
+        if (UDFChunkedGetBit(&Vcb->FSBM_Chunked, root+i))
             Vat[i] = UDF_VAT_FREE_ENTRY;
     }
     // Ok, now we shall construct new VAT image...

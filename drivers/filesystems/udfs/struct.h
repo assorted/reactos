@@ -403,6 +403,26 @@ enum VCB_CONDITION {
     VcbDismountInProgress
 };
 
+/* Size of each independent bitmap chunk for xrle compression */
+#define UDF_BITMAP_CHUNK_BYTES  (64 * 1024)
+#define UDF_BITMAP_CHUNK_BITS   (UDF_BITMAP_CHUNK_BYTES * 8)
+
+/* One independently-compressible chunk of a bitmap */
+typedef struct _UDF_BITMAP_CHUNK {
+    PCHAR   Compressed;       /* xrle-compressed data; NULL if not yet compressed */
+    ULONG   CompressedSize;   /* bytes used in Compressed buffer */
+    PCHAR   Decompressed;     /* raw UDF_BITMAP_CHUNK_BYTES data; NULL if compressed */
+    BOOLEAN Dirty;            /* Decompressed was modified; needs recompression */
+} UDF_BITMAP_CHUNK, *PUDF_BITMAP_CHUNK;
+
+/* A bitmap stored as an array of independently-compressible chunks */
+typedef struct _UDF_CHUNKED_BITMAP {
+    ULONG              ByteCount;   /* total bitmap bytes */
+    ULONG              BitCount;    /* total bitmap bits */
+    ULONG              ChunkCount;  /* number of chunks */
+    PUDF_BITMAP_CHUNK  Chunks;      /* array of ChunkCount descriptors; NULL if not initialised */
+} UDF_CHUNKED_BITMAP, *PUDF_CHUNKED_BITMAP;
+
 struct VCB {
 
     UDFIdentifier NodeIdentifier;
@@ -594,26 +614,19 @@ struct VCB {
     uint32          SparingTableLength;
     uint32          SparingTableModified;
     // free space bitmap
-    ULONG           FSBM_ByteCount;
-    // the following 2 fields are equal to NTIFS's RTL_BITMAP structure
-    ULONG           FSBM_BitCount;
-    PCHAR           FSBM_Bitmap;     // 0 - free, 1 - used (decompressed, NULL when compressed)
-    PCHAR           FSBM_CompressedBitmap;   // xrle-compressed FSBM_Bitmap
-    ULONG           FSBM_CompressedByteCount; // size of FSBM_CompressedBitmap data
-    volatile LONG   FSBM_LockDepth;          // exclusive BitMapResource1 recursion depth
+    ULONG              FSBM_ByteCount;     /* bitmap byte count (kept for size queries) */
+    ULONG              FSBM_BitCount;      /* bitmap bit count */
+    UDF_CHUNKED_BITMAP FSBM_Chunked;       /* free-space bitmap (chunked xrle) */
+    volatile LONG      FSBM_LockDepth;     /* exclusive BitMapResource1 recursion depth */
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
     PULONG          FSBM_Bitmap_owners; // 0 - free
     // -1 - used by unknown
     // other - owner's FE location
 #endif //UDF_TRACK_ONDISK_ALLOCATION_OWNERS
 
-    PCHAR           FSBM_OldBitmap;  // 0 - free, 1 - used (decompressed, NULL when compressed)
-    PCHAR           FSBM_OldCompressedBitmap;   // xrle-compressed FSBM_OldBitmap
-    ULONG           FSBM_OldCompressedByteCount; // size of FSBM_OldCompressedBitmap data
-    ULONG           BitmapModified;
-    PCHAR           BSBM_Bitmap;     // 0 - normal, 1 - bad-block (decompressed, NULL when compressed)
-    PCHAR           BSBM_CompressedBitmap;   // xrle-compressed BSBM_Bitmap
-    ULONG           BSBM_CompressedByteCount; // size of BSBM_CompressedBitmap data
+    UDF_CHUNKED_BITMAP FSBM_OldChunked;    /* old free-space bitmap snapshot (chunked xrle) */
+    ULONG              BitmapModified;
+    UDF_CHUNKED_BITMAP BSBM_Chunked;       /* bad-block bitmap (chunked xrle) */
 
     // pointers to Volume Descriptor Sequences
     ULONG VDS1;

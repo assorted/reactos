@@ -677,37 +677,15 @@ UDFCleanupVCB(
     MyFreeMemoryAndPointer(Vcb->Vat);
     MyFreeMemoryAndPointer(Vcb->SparingTable);
 
-    if (Vcb->FSBM_Bitmap) {
-        DbgFreePool(Vcb->FSBM_Bitmap);
-        Vcb->FSBM_Bitmap = NULL;
-    }
-
-    if (Vcb->BSBM_Bitmap) {
-        DbgFreePool(Vcb->BSBM_Bitmap);
-        Vcb->BSBM_Bitmap = NULL;
-    }
-    if (Vcb->BSBM_CompressedBitmap) {
-        DbgFreePool(Vcb->BSBM_CompressedBitmap);
-        Vcb->BSBM_CompressedBitmap = NULL;
-    }
+    UDFFreeChunkedBitmap(&Vcb->FSBM_Chunked);
+    UDFFreeChunkedBitmap(&Vcb->BSBM_Chunked);
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
     if (Vcb->FSBM_Bitmap_owners) {
         DbgFreePool(Vcb->FSBM_Bitmap_owners);
         Vcb->FSBM_Bitmap_owners = NULL;
     }
 #endif //UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-    if (Vcb->FSBM_OldBitmap) {
-        DbgFreePool(Vcb->FSBM_OldBitmap);
-        Vcb->FSBM_OldBitmap = NULL;
-    }
-    if (Vcb->FSBM_CompressedBitmap) {
-        DbgFreePool(Vcb->FSBM_CompressedBitmap);
-        Vcb->FSBM_CompressedBitmap = NULL;
-    }
-    if (Vcb->FSBM_OldCompressedBitmap) {
-        DbgFreePool(Vcb->FSBM_OldCompressedBitmap);
-        Vcb->FSBM_OldCompressedBitmap = NULL;
-    }
+    UDFFreeChunkedBitmap(&Vcb->FSBM_OldChunked);
 
     MyFreeMemoryAndPointer(Vcb->VolIdent.Buffer);
 
@@ -1288,7 +1266,6 @@ UDFGetVolumeBitmap(
     LARGE_INTEGER StartingLcn;
     PVOLUME_BITMAP_BUFFER OutputBuffer;
     ULONG i, lim;
-    PULONG FSBM;
     BOOLEAN VcbAcquired = FALSE;
 
     ASSERT_VCB(Vcb);
@@ -1391,13 +1368,12 @@ UDFGetVolumeBitmap(
 
         RtlZeroMemory( &OutputBuffer->Buffer[0], BytesToCopy );
         lim = BytesToCopy * 8;
-        FSBM = (PULONG)(Vcb->FSBM_Bitmap);
 
 //        Dest = (PULONG)(&OutputBuffer->Buffer[0]);
 
         for(i=StartingCluster & ~7; i<lim; i++) {
-            if (UDFGetFreeBit(FSBM, i << Vcb->SectorShift))
-                UDFSetFreeBit(FSBM, i);
+            if (UDFChunkedGetBit(&Vcb->FSBM_Chunked, i << Vcb->SectorShift))
+                UDFChunkedSetBit(&Vcb->FSBM_Chunked, i);
         }
 
         Irp->IoStatus.Information = FIELD_OFFSET(VOLUME_BITMAP_BUFFER, Buffer) + BytesToCopy;
