@@ -315,7 +315,6 @@ UDFFindMinSuitableExtent(
     )
 {
     SIZE_T i, len;
-    uint32* cur;
     SIZE_T best_lba=0;
     SIZE_T best_len=0;
     SIZE_T max_lba=0;
@@ -333,8 +332,6 @@ UDFFindMinSuitableExtent(
     if (Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift))
         Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift);
 
-    cur = (uint32*)(Vcb->FSBM_Bitmap);
-
 retry_no_align:
 
     i=SearchStart;
@@ -349,8 +346,8 @@ retry_no_align:
             if (i >= SearchLim)
                 break;
         }
-        len = UDFGetBitmapLen(cur, i, SearchLim);
-        if (UDFGetFreeBit(cur, i)) { // is the extent found free or used ?
+        len = UDFChunkedGetBitmapLen(&Vcb->FSBM_Chunked, i, SearchLim);
+        if (UDFChunkedGetBit(&Vcb->FSBM_Chunked, i)) { // is the extent found free or used ?
             // wow! it is free!
             if (len >= Length) {
                 // minimize extent length
@@ -479,7 +476,7 @@ UDFCheckSpaceAllocation_(
                     AdPrint(("USED Mapping covers block(s) beyond media @%x\n",lba+j));
                     break;
                 }
-                if (!UDFGetUsedBit(Vcb->FSBM_Bitmap, lba+j)) {
+                if (UDFChunkedGetBit(&Vcb->FSBM_Chunked, lba+j)) {
                     BrutePoint();
                     AdPrint(("USED Mapping covers FREE block(s) @%x\n",lba+j));
                     break;
@@ -495,7 +492,7 @@ UDFCheckSpaceAllocation_(
                     AdPrint(("USED Mapping covers block(s) beyond media @%x\n",lba+j));
                     break;
                 }
-                if (!UDFGetFreeBit(Vcb->FSBM_Bitmap, lba+j)) {
+                if (!UDFChunkedGetBit(&Vcb->FSBM_Chunked, lba+j)) {
                     BrutePoint();
                     AdPrint(("FREE Mapping covers USED block(s) @%x\n",lba+j));
                     break;
@@ -516,144 +513,416 @@ UDFMarkBadSpaceAsUsed(
     IN ULONG len
     )
 {
-    uint32 j;
-#define BIT_C   (sizeof(Vcb->BSBM_Bitmap[0])*8)
-    len = (lba+len+BIT_C-1)/BIT_C;
-    if (Vcb->BSBM_Bitmap) {
-        for(j=lba/BIT_C; j<len; j++) {
-            Vcb->FSBM_Bitmap[j] &= ~Vcb->BSBM_Bitmap[j];
-        }
+    if (Vcb->BSBM_Chunked.Chunks) {
+        UDFChunkedMarkBadSpaceAsUsed(&Vcb->FSBM_Chunked, &Vcb->BSBM_Chunked, lba, len);
     }
-#undef BIT_C
 } // UDFMarkBadSpaceAsUsed()
 
 /*
-    This routine decompresses the xrle-compressed FSBM_Bitmap and BSBM_Bitmap
-    in a way that is safe for concurrent shared read access (using interlocked
-    compare-exchange).  Does NOT affect FSBM_LockDepth; must only be used
-    without exclusive BitMapResource1 ownership.
- */
+    Allocate and zero-initialize a chunked bitmap of byteCount bytes.
+    Returns STATUS_INSUFFICIENT_RESOURCES on allocation failure.
+*/
 NTSTATUS
-UDFEnsureBitmapDecompressed(
-    IN PVCB Vcb
+UDFInitChunkedBitmap(
+    IN PVCB Vcb,
+    IN OUT PUDF_CHUNKED_BITMAP bm,
+    IN ULONG byteCount
     )
 {
-    if (Vcb->FSBM_CompressedBitmap && !Vcb->FSBM_Bitmap) {
-        int8* newBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
-        if (!newBitmap) return STATUS_INSUFFICIENT_RESOURCES;
-        xrle_decompress(newBitmap, Vcb->FSBM_CompressedBitmap, Vcb->FSBM_CompressedByteCount);
-        /* Use interlocked exchange so concurrent readers don't double-allocate */
-        if (InterlockedCompareExchangePointer((PVOID*)&Vcb->FSBM_Bitmap, newBitmap, NULL) != NULL) {
-            DbgFreePool(newBitmap);
+    ULONG i;
+    bm->ByteCount  = byteCount;
+    bm->BitCount   = byteCount * 8;
+    bm->ChunkCount = (byteCount + UDF_BITMAP_CHUNK_BYTES - 1) / UDF_BITMAP_CHUNK_BYTES;
+    bm->Chunks = (PUDF_BITMAP_CHUNK)DbgAllocatePool(NonPagedPool,
+                     bm->ChunkCount * sizeof(UDF_BITMAP_CHUNK));
+    if (!bm->Chunks) return STATUS_INSUFFICIENT_RESOURCES;
+    RtlZeroMemory(bm->Chunks, bm->ChunkCount * sizeof(UDF_BITMAP_CHUNK));
+    /* Pre-allocate decompressed buffers zero-initialized (bit=0 means used in chunked design) */
+    for (i = 0; i < bm->ChunkCount; i++) {
+        bm->Chunks[i].Decompressed = (PCHAR)DbgAllocatePool(NonPagedPool,
+                                           UDF_BITMAP_CHUNK_BYTES);
+        if (!bm->Chunks[i].Decompressed) {
+            /* partial init; caller should free on failure */
+            return STATUS_INSUFFICIENT_RESOURCES;
         }
+        RtlZeroMemory(bm->Chunks[i].Decompressed, UDF_BITMAP_CHUNK_BYTES);
+        bm->Chunks[i].Dirty = TRUE;
     }
-    if (Vcb->BSBM_CompressedBitmap && !Vcb->BSBM_Bitmap) {
-        int8* newBadBlockBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
-        if (!newBadBlockBitmap) return STATUS_INSUFFICIENT_RESOURCES;
-        xrle_decompress(newBadBlockBitmap, Vcb->BSBM_CompressedBitmap, Vcb->BSBM_CompressedByteCount);
-        if (InterlockedCompareExchangePointer((PVOID*)&Vcb->BSBM_Bitmap, newBadBlockBitmap, NULL) != NULL) {
-            DbgFreePool(newBadBlockBitmap);
+    return STATUS_SUCCESS;
+} // end UDFInitChunkedBitmap()
+
+/*
+    Free all memory associated with a chunked bitmap.
+*/
+VOID
+UDFFreeChunkedBitmap(
+    IN OUT PUDF_CHUNKED_BITMAP bm
+    )
+{
+    ULONG i;
+    if (!bm->Chunks) return;
+    for (i = 0; i < bm->ChunkCount; i++) {
+        if (bm->Chunks[i].Compressed)   DbgFreePool(bm->Chunks[i].Compressed);
+        if (bm->Chunks[i].Decompressed) DbgFreePool(bm->Chunks[i].Decompressed);
+    }
+    DbgFreePool(bm->Chunks);
+    RtlZeroMemory(bm, sizeof(UDF_CHUNKED_BITMAP));
+} // end UDFFreeChunkedBitmap()
+
+/*
+    Ensure chunk chunkIdx in bm is decompressed (Decompressed pointer is valid).
+    Returns NULL on allocation failure.
+*/
+static PCHAR
+UDFEnsureChunkDecompressed(
+    IN PUDF_CHUNKED_BITMAP bm,
+    IN ULONG chunkIdx
+    )
+{
+    PUDF_BITMAP_CHUNK chunk = &bm->Chunks[chunkIdx];
+    if (chunk->Decompressed) return chunk->Decompressed;
+    /* Chunk is compressed; decompress it */
+    chunk->Decompressed = (PCHAR)DbgAllocatePool(NonPagedPool, UDF_BITMAP_CHUNK_BYTES);
+    if (!chunk->Decompressed) return NULL;
+    if (chunk->Compressed && chunk->CompressedSize > 0) {
+        xrle_decompress(chunk->Decompressed, chunk->Compressed, chunk->CompressedSize);
+    } else {
+        RtlZeroMemory(chunk->Decompressed, UDF_BITMAP_CHUNK_BYTES);
+    }
+    return chunk->Decompressed;
+} // end UDFEnsureChunkDecompressed()
+
+/*
+    Compress all dirty chunks and free their decompressed buffers.
+    Called before releasing exclusive BitMapResource1.
+*/
+VOID
+UDFCompressAllDirtyChunks(
+    IN OUT PUDF_CHUNKED_BITMAP bm
+    )
+{
+    ULONG i;
+    if (!bm->Chunks) return;
+    for (i = 0; i < bm->ChunkCount; i++) {
+        PUDF_BITMAP_CHUNK chunk = &bm->Chunks[i];
+        if (!chunk->Decompressed) continue;  /* already compressed */
+        if (chunk->Dirty) {
+            if (!chunk->Compressed) {
+                chunk->Compressed = (PCHAR)DbgAllocatePool(NonPagedPool,
+                    xrle_max_out(UDF_BITMAP_CHUNK_BYTES));
+            }
+            if (chunk->Compressed) {
+                chunk->CompressedSize = (ULONG)xrle_compress(
+                    chunk->Compressed, chunk->Decompressed, UDF_BITMAP_CHUNK_BYTES);
+                chunk->Dirty = FALSE;
+            }
+        }
+        DbgFreePool(chunk->Decompressed);
+        chunk->Decompressed = NULL;
+    }
+} // end UDFCompressAllDirtyChunks()
+
+/* --- Chunk-aware bit access functions --- */
+
+BOOLEAN
+UDFChunkedGetBit(
+    IN PUDF_CHUNKED_BITMAP bm,
+    IN uint32 bit
+    )
+{
+    uint32 chunkIdx = bit / UDF_BITMAP_CHUNK_BITS;
+    uint32 bitInChunk = bit % UDF_BITMAP_CHUNK_BITS;
+    PCHAR data;
+    if (!bm->Chunks || chunkIdx >= bm->ChunkCount) return FALSE;
+    data = UDFEnsureChunkDecompressed(bm, chunkIdx);
+    if (!data) return FALSE;
+    return (BOOLEAN)UDFGetBit((uint32*)data, bitInChunk);
+} // end UDFChunkedGetBit()
+
+VOID
+UDFChunkedSetBit(
+    IN PUDF_CHUNKED_BITMAP bm,
+    IN uint32 bit
+    )
+{
+    uint32 chunkIdx = bit / UDF_BITMAP_CHUNK_BITS;
+    uint32 bitInChunk = bit % UDF_BITMAP_CHUNK_BITS;
+    PCHAR data;
+    if (!bm->Chunks || chunkIdx >= bm->ChunkCount) return;
+    data = UDFEnsureChunkDecompressed(bm, chunkIdx);
+    if (!data) return;
+    UDFSetBit((uint32*)data, bitInChunk);
+    bm->Chunks[chunkIdx].Dirty = TRUE;
+} // end UDFChunkedSetBit()
+
+VOID
+UDFChunkedClrBit(
+    IN PUDF_CHUNKED_BITMAP bm,
+    IN uint32 bit
+    )
+{
+    uint32 chunkIdx = bit / UDF_BITMAP_CHUNK_BITS;
+    uint32 bitInChunk = bit % UDF_BITMAP_CHUNK_BITS;
+    PCHAR data;
+    if (!bm->Chunks || chunkIdx >= bm->ChunkCount) return;
+    data = UDFEnsureChunkDecompressed(bm, chunkIdx);
+    if (!data) return;
+    UDFClrBit((uint32*)data, bitInChunk);
+    bm->Chunks[chunkIdx].Dirty = TRUE;
+} // end UDFChunkedClrBit()
+
+VOID
+UDFChunkedSetBits(
+    IN PUDF_CHUNKED_BITMAP bm,
+    IN uint32 start,
+    IN uint32 count
+    )
+{
+    uint32 cur = start;
+    uint32 end = start + count;
+    while (cur < end) {
+        uint32 chunkIdx  = cur / UDF_BITMAP_CHUNK_BITS;
+        uint32 chunkBase = chunkIdx * UDF_BITMAP_CHUNK_BITS;
+        uint32 relCur    = cur - chunkBase;
+        uint32 relEnd    = (uint32)min((SIZE_T)(end - chunkBase), (SIZE_T)UDF_BITMAP_CHUNK_BITS);
+        uint32 relCount  = relEnd - relCur;
+        PCHAR data;
+        if (!bm->Chunks || chunkIdx >= bm->ChunkCount) break;
+        data = UDFEnsureChunkDecompressed(bm, chunkIdx);
+        if (!data) break;
+        UDFSetBits((uint32*)data, relCur, relCount);
+        bm->Chunks[chunkIdx].Dirty = TRUE;
+        cur = chunkBase + relEnd;
+    }
+} // end UDFChunkedSetBits()
+
+VOID
+UDFChunkedClrBits(
+    IN PUDF_CHUNKED_BITMAP bm,
+    IN uint32 start,
+    IN uint32 count
+    )
+{
+    uint32 cur = start;
+    uint32 end = start + count;
+    while (cur < end) {
+        uint32 chunkIdx  = cur / UDF_BITMAP_CHUNK_BITS;
+        uint32 chunkBase = chunkIdx * UDF_BITMAP_CHUNK_BITS;
+        uint32 relCur    = cur - chunkBase;
+        uint32 relEnd    = (uint32)min((SIZE_T)(end - chunkBase), (SIZE_T)UDF_BITMAP_CHUNK_BITS);
+        uint32 relCount  = relEnd - relCur;
+        PCHAR data;
+        if (!bm->Chunks || chunkIdx >= bm->ChunkCount) break;
+        data = UDFEnsureChunkDecompressed(bm, chunkIdx);
+        if (!data) break;
+        UDFClrBits((uint32*)data, relCur, relCount);
+        bm->Chunks[chunkIdx].Dirty = TRUE;
+        cur = chunkBase + relEnd;
+    }
+} // end UDFChunkedClrBits()
+
+/*
+    Find the length of a consecutive run of same-valued bits starting at offs,
+    up to (but not including) lim. Handles chunk boundaries transparently.
+*/
+SIZE_T
+UDFChunkedGetBitmapLen(
+    IN PUDF_CHUNKED_BITMAP bm,
+    IN uint32 offs,
+    IN uint32 lim
+    )
+{
+    SIZE_T total = 0;
+    uint32 cur;
+    BOOLEAN startBit;
+    if (!bm->Chunks || offs >= lim || offs >= bm->BitCount) return 0;
+    if (lim > bm->BitCount) lim = bm->BitCount;
+    startBit = UDFChunkedGetBit(bm, offs);
+    cur = offs;
+    while (cur < lim) {
+        uint32 chunkIdx  = cur / UDF_BITMAP_CHUNK_BITS;
+        uint32 chunkBase = chunkIdx * UDF_BITMAP_CHUNK_BITS;
+        uint32 relCur    = cur - chunkBase;
+        uint32 relLim    = (uint32)min((SIZE_T)(lim - chunkBase), (SIZE_T)UDF_BITMAP_CHUNK_BITS);
+        SIZE_T len;
+        PCHAR data;
+        if (chunkIdx >= bm->ChunkCount) break;
+        data = UDFEnsureChunkDecompressed(bm, chunkIdx);
+        if (!data) break;
+        /* If this chunk's bit at relCur doesn't match startBit, the run ended */
+        if ((BOOLEAN)UDFGetBit((uint32*)data, relCur) != startBit) break;
+        len = UDFGetBitmapLen((uint32*)data, relCur, relLim);
+        total += len;
+        /* Run ended within this chunk segment */
+        if ((SIZE_T)relCur + len < relLim) break;
+        /* Advance to next chunk */
+        cur = chunkBase + relLim;
+    }
+    return total;
+} // end UDFChunkedGetBitmapLen()
+
+/*
+    Count free (set) bits in [start, end) across chunks.
+*/
+uint32
+UDFChunkedCountFreeBits(
+    IN PUDF_CHUNKED_BITMAP bm,
+    IN uint32 start,
+    IN uint32 end
+    )
+{
+    uint32 cur = start;
+    uint32 s = 0;
+    if (!bm->Chunks) return 0;
+    if (end > bm->BitCount) end = bm->BitCount;
+    while (cur < end) {
+        uint32 chunkIdx  = cur / UDF_BITMAP_CHUNK_BITS;
+        uint32 chunkBase = chunkIdx * UDF_BITMAP_CHUNK_BITS;
+        uint32 relCur    = cur - chunkBase;
+        uint32 relEnd    = (uint32)min((SIZE_T)(end - chunkBase), (SIZE_T)UDF_BITMAP_CHUNK_BITS);
+        PCHAR data;
+        uint32 j;
+        if (chunkIdx >= bm->ChunkCount) break;
+        data = UDFEnsureChunkDecompressed(bm, chunkIdx);
+        if (!data) break;
+        for (j = relCur / 8; j < (relEnd + 7) / 8; j++) {
+            s += bit_count_tab[(uint8)data[j]];
+        }
+        cur = chunkBase + relEnd;
+    }
+    return s;
+} // end UDFChunkedCountFreeBits()
+
+/*
+    Copy chunks from src to dst. dst must already be initialised with the same
+    ByteCount. Used to implement the FSBM_OldBitmap snapshot.
+*/
+NTSTATUS
+UDFCopyChunkedBitmap(
+    IN PUDF_CHUNKED_BITMAP dst,
+    IN PUDF_CHUNKED_BITMAP src
+    )
+{
+    ULONG i;
+    if (!dst->Chunks || !src->Chunks || dst->ChunkCount != src->ChunkCount)
+        return STATUS_INVALID_PARAMETER;
+    for (i = 0; i < src->ChunkCount; i++) {
+        PUDF_BITMAP_CHUNK sc = &src->Chunks[i];
+        PUDF_BITMAP_CHUNK dc = &dst->Chunks[i];
+        /* Free existing decompressed data in dst */
+        if (dc->Decompressed) { DbgFreePool(dc->Decompressed); dc->Decompressed = NULL; }
+        if (dc->Compressed)   { DbgFreePool(dc->Compressed);   dc->Compressed   = NULL; }
+        dc->CompressedSize = 0;
+        dc->Dirty = FALSE;
+        if (sc->Decompressed) {
+            dc->Decompressed = (PCHAR)DbgAllocatePool(NonPagedPool, UDF_BITMAP_CHUNK_BYTES);
+            if (!dc->Decompressed) return STATUS_INSUFFICIENT_RESOURCES;
+            RtlCopyMemory(dc->Decompressed, sc->Decompressed, UDF_BITMAP_CHUNK_BYTES);
+            dc->Dirty = TRUE;
+        } else if (sc->Compressed && sc->CompressedSize) {
+            dc->Compressed = (PCHAR)DbgAllocatePool(NonPagedPool,
+                                xrle_max_out(UDF_BITMAP_CHUNK_BYTES));
+            if (!dc->Compressed) return STATUS_INSUFFICIENT_RESOURCES;
+            RtlCopyMemory(dc->Compressed, sc->Compressed, sc->CompressedSize);
+            dc->CompressedSize = sc->CompressedSize;
         }
     }
     return STATUS_SUCCESS;
-} // end UDFEnsureBitmapDecompressed()
+} // end UDFCopyChunkedBitmap()
 
 /*
-    This routine decompresses all xrle-compressed bitmaps into the active
-    decompressed fields, enabling direct bit-level access.
-    Must be called after acquiring exclusive BitMapResource1.
-    Uses a depth counter to handle recursive exclusive acquisitions.
- */
+    Compare two chunked bitmaps byte-for-byte.
+    Returns TRUE if they are identical.
+*/
+BOOLEAN
+UDFChunkedBitmapsEqual(
+    IN PVCB Vcb,
+    IN PUDF_CHUNKED_BITMAP a,
+    IN PUDF_CHUNKED_BITMAP b
+    )
+{
+    ULONG i;
+    if (!a->Chunks || !b->Chunks) return (BOOLEAN)(a->Chunks == b->Chunks);
+    if (a->ChunkCount != b->ChunkCount) return FALSE;
+    for (i = 0; i < a->ChunkCount; i++) {
+        PCHAR da = UDFEnsureChunkDecompressed(a, i);
+        PCHAR db = UDFEnsureChunkDecompressed(b, i);
+        if (!da || !db) return FALSE;
+        if (RtlCompareMemory(da, db, UDF_BITMAP_CHUNK_BYTES) != UDF_BITMAP_CHUNK_BYTES)
+            return FALSE;
+    }
+    return TRUE;
+} // end UDFChunkedBitmapsEqual()
+
+/*
+    AND the FSBM bitmap with the complement of BSBM (mark bad blocks as used).
+    Replaces the raw byte loop in UDFMarkBadSpaceAsUsed.
+*/
+VOID
+UDFChunkedMarkBadSpaceAsUsed(
+    IN PUDF_CHUNKED_BITMAP fsbm,
+    IN PUDF_CHUNKED_BITMAP bsbm,
+    IN lba_t lba,
+    IN ULONG len
+    )
+{
+    ULONG firstByte = lba / 8;
+    ULONG lastByte  = (lba + len + 7) / 8;
+    ULONG byteCount = min(lastByte, fsbm->ByteCount);
+    ULONG j;
+    for (j = firstByte; j < byteCount; j++) {
+        uint32 chunkIdx  = (j * 8) / UDF_BITMAP_CHUNK_BITS;
+        uint32 chunkBase = chunkIdx * UDF_BITMAP_CHUNK_BYTES;
+        PCHAR fd, bd;
+        if (chunkIdx >= fsbm->ChunkCount || chunkIdx >= bsbm->ChunkCount) break;
+        fd = UDFEnsureChunkDecompressed(fsbm, chunkIdx);
+        bd = UDFEnsureChunkDecompressed(bsbm, chunkIdx);
+        if (!fd || !bd) break;
+        fd[j - chunkBase] &= ~bd[j - chunkBase];
+        fsbm->Chunks[chunkIdx].Dirty = TRUE;
+    }
+} // end UDFChunkedMarkBadSpaceAsUsed()
+
+/*
+    UDFDecompressBitmaps - no-op under the new chunked design.
+    Chunks are decompressed lazily on access via UDFEnsureChunkDecompressed.
+    Kept for API compatibility (called at exclusive lock acquire sites).
+*/
 NTSTATUS
 UDFDecompressBitmaps(
     IN PVCB Vcb
     )
 {
-    /* Only decompress at the first (outermost) exclusive acquisition */
-    if (InterlockedIncrement(&Vcb->FSBM_LockDepth) != 1) return STATUS_SUCCESS;
-    /* Decompress FSBM_Bitmap if stored compressed */
-    if (Vcb->FSBM_CompressedBitmap && !Vcb->FSBM_Bitmap) {
-        int8* newBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
-        if (!newBitmap) {
-            /* Leave depth at 1; UDFCompressBitmaps (always called before release) will
-               decrement it. FSBM_Bitmap remains NULL so compression will be a no-op. */
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-        xrle_decompress(newBitmap, Vcb->FSBM_CompressedBitmap, Vcb->FSBM_CompressedByteCount);
-        Vcb->FSBM_Bitmap = newBitmap;
-    }
-    /* Decompress FSBM_OldBitmap if stored compressed (only under exclusive lock) */
-    if (Vcb->FSBM_OldCompressedBitmap && !Vcb->FSBM_OldBitmap) {
-        int8* newOldBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
-        if (newOldBitmap) {
-            xrle_decompress(newOldBitmap, Vcb->FSBM_OldCompressedBitmap, Vcb->FSBM_OldCompressedByteCount);
-            Vcb->FSBM_OldBitmap = newOldBitmap;
-        }
-    }
-    /* Decompress BSBM_Bitmap if stored compressed */
-    if (Vcb->BSBM_CompressedBitmap && !Vcb->BSBM_Bitmap) {
-        int8* newBadBlockBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
-        if (newBadBlockBitmap) {
-            xrle_decompress(newBadBlockBitmap, Vcb->BSBM_CompressedBitmap, Vcb->BSBM_CompressedByteCount);
-            Vcb->BSBM_Bitmap = newBadBlockBitmap;
-        }
-    }
+    InterlockedIncrement(&Vcb->FSBM_LockDepth);
     return STATUS_SUCCESS;
 } // end UDFDecompressBitmaps()
 
 /*
-    This routine compresses all active bitmaps using xrle and frees the
-    decompressed copies to reduce NonPagedPool usage.
-    Must be called before releasing exclusive BitMapResource1.
-    Compression occurs only at the outermost (last) exclusive release.
- */
+    UDFCompressBitmaps - compress all dirty chunks of all three bitmaps and
+    free their decompressed buffers. Called before releasing exclusive BitMapResource1.
+*/
 VOID
 UDFCompressBitmaps(
     IN PVCB Vcb
     )
 {
-    /* Only compress at the outermost exclusive release (depth returns to 0) */
     if (InterlockedDecrement(&Vcb->FSBM_LockDepth) > 0) return;
-    /* Allocate compressed buffer on first use and then compress FSBM_Bitmap */
-    if (Vcb->FSBM_Bitmap) {
-        if (!Vcb->FSBM_CompressedBitmap) {
-            Vcb->FSBM_CompressedBitmap = (int8*)DbgAllocatePool(NonPagedPool,
-                xrle_max_out(Vcb->FSBM_ByteCount));
-        }
-        if (Vcb->FSBM_CompressedBitmap) {
-            Vcb->FSBM_CompressedByteCount = (ULONG)xrle_compress(
-                Vcb->FSBM_CompressedBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
-            DbgFreePool(Vcb->FSBM_Bitmap);
-            Vcb->FSBM_Bitmap = NULL;
-        }
-    }
-    /* Allocate compressed buffer on first use and then compress FSBM_OldBitmap */
-    if (Vcb->FSBM_OldBitmap) {
-        if (!Vcb->FSBM_OldCompressedBitmap) {
-            Vcb->FSBM_OldCompressedBitmap = (int8*)DbgAllocatePool(NonPagedPool,
-                xrle_max_out(Vcb->FSBM_ByteCount));
-        }
-        if (Vcb->FSBM_OldCompressedBitmap) {
-            Vcb->FSBM_OldCompressedByteCount = (ULONG)xrle_compress(
-                Vcb->FSBM_OldCompressedBitmap, Vcb->FSBM_OldBitmap, Vcb->FSBM_ByteCount);
-            DbgFreePool(Vcb->FSBM_OldBitmap);
-            Vcb->FSBM_OldBitmap = NULL;
-        }
-    }
-    /* Allocate compressed buffer on first use and then compress BSBM_Bitmap */
-    if (Vcb->BSBM_Bitmap) {
-        if (!Vcb->BSBM_CompressedBitmap) {
-            Vcb->BSBM_CompressedBitmap = (int8*)DbgAllocatePool(NonPagedPool,
-                xrle_max_out(Vcb->FSBM_ByteCount));
-        }
-        if (Vcb->BSBM_CompressedBitmap) {
-            Vcb->BSBM_CompressedByteCount = (ULONG)xrle_compress(
-                Vcb->BSBM_CompressedBitmap, Vcb->BSBM_Bitmap, Vcb->FSBM_ByteCount);
-            DbgFreePool(Vcb->BSBM_Bitmap);
-            Vcb->BSBM_Bitmap = NULL;
-        }
-    }
+    UDFCompressAllDirtyChunks(&Vcb->FSBM_Chunked);
+    UDFCompressAllDirtyChunks(&Vcb->FSBM_OldChunked);
+    UDFCompressAllDirtyChunks(&Vcb->BSBM_Chunked);
 } // end UDFCompressBitmaps()
+
+/*
+    UDFEnsureBitmapDecompressed - no-op under the new chunked design.
+    Kept for API compatibility (called at shared-lock read sites).
+*/
+NTSTATUS
+UDFEnsureBitmapDecompressed(
+    IN PVCB Vcb
+    )
+{
+    return STATUS_SUCCESS;
+} // end UDFEnsureBitmapDecompressed()
 
 /*
     This routine marks space described by Mapping as Used/Freed (optionaly)
@@ -728,8 +997,8 @@ UDFMarkSpaceAsXXXNoProtect_(
 
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
         if (lba)
-            bit_before = UDFGetBit(Vcb->FSBM_Bitmap, lba-1);
-        bit_after = UDFGetBit(Vcb->FSBM_Bitmap, lba+len);
+            bit_before = UDFChunkedGetBit(&Vcb->FSBM_Chunked, lba-1);
+        bit_after = UDFChunkedGetBit(&Vcb->FSBM_Chunked, lba+len);
 #endif //UDF_TRACK_ONDISK_ALLOCATION
 
         // mark frag as XXX (see asUsed parameter)
@@ -738,10 +1007,10 @@ UDFMarkSpaceAsXXXNoProtect_(
                 UDFSetUsedBit(Vcb->FSBM_Bitmap, lba+j);
             }*/
             ASSERT(len);
-            UDFSetUsedBits(Vcb->FSBM_Bitmap, lba, len);
+            UDFChunkedClrBits(&Vcb->FSBM_Chunked, lba, len);
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
             for(j=0;j<len;j++) {
-                ASSERT(UDFGetUsedBit(Vcb->FSBM_Bitmap, lba+j));
+                ASSERT(!UDFChunkedGetBit(&Vcb->FSBM_Chunked, lba+j));
             }
 #endif //UDF_TRACK_ONDISK_ALLOCATION
 
@@ -760,14 +1029,19 @@ UDFMarkSpaceAsXXXNoProtect_(
                 UDFSetFreeBit(Vcb->FSBM_Bitmap, lba+j);
             }*/
             ASSERT(len);
-            UDFSetFreeBits(Vcb->FSBM_Bitmap, lba, len);
+            UDFChunkedSetBits(&Vcb->FSBM_Chunked, lba, len);
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
             for(j=0;j<len;j++) {
-                ASSERT(UDFGetFreeBit(Vcb->FSBM_Bitmap, lba+j));
+                ASSERT(UDFChunkedGetBit(&Vcb->FSBM_Chunked, lba+j));
             }
 #endif //UDF_TRACK_ONDISK_ALLOCATION
             if (asXXX & AS_BAD) {
-                UDFSetBits(Vcb->BSBM_Bitmap, lba, len);
+                if (!Vcb->BSBM_Chunked.Chunks && Vcb->FSBM_ByteCount) {
+                    UDFInitChunkedBitmap(Vcb, &Vcb->BSBM_Chunked, Vcb->FSBM_ByteCount);
+                }
+                if (Vcb->BSBM_Chunked.Chunks) {
+                    UDFChunkedSetBits(&Vcb->BSBM_Chunked, lba, len);
+                }
             }
             UDFMarkBadSpaceAsUsed(Vcb, lba, len);
 
@@ -790,8 +1064,8 @@ UDFMarkSpaceAsXXXNoProtect_(
 
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
         if (lba)
-            ASSERT(bit_before == UDFGetBit(Vcb->FSBM_Bitmap, lba-1));
-        ASSERT(bit_after == UDFGetBit(Vcb->FSBM_Bitmap, lba+len));
+            ASSERT(bit_before == UDFChunkedGetBit(&Vcb->FSBM_Chunked, lba-1));
+        ASSERT(bit_after  == UDFChunkedGetBit(&Vcb->FSBM_Chunked, lba+len));
 #endif //UDF_TRACK_ONDISK_ALLOCATION
 
         i++;
@@ -970,19 +1244,9 @@ UDFGetPartFreeSpace(
     IN uint32 partNum
     )
 {
-    uint32 lim/*, len=1*/;
-    uint32 s=0;
-    uint32 j;
-
     UDFEnsureBitmapDecompressed(Vcb);
-    PUCHAR cur = (PUCHAR)(Vcb->FSBM_Bitmap);
-    if (!cur) return 0;
-
-    lim = (UDFPartEnd(Vcb,partNum)+7)/8;
-    for(j=(UDFPartStart(Vcb,partNum)+7)/8; j<lim/* && len*/; j++) {
-        s+=bit_count_tab[cur[j]];
-    }
-    return s;
+    return UDFChunkedCountFreeBits(&Vcb->FSBM_Chunked,
+               UDFPartStart(Vcb, partNum), UDFPartEnd(Vcb, partNum));
 } // end UDFGetPartFreeSpace()
 
 int64

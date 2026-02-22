@@ -194,9 +194,6 @@ UDFUpdateXSpaceBitmaps(
 {
     uint32 i,j,d;
     uint32 plen, pstart, pend;
-    int8* bad_bm;
-    int8* old_bm;
-    int8* new_bm;
     int8* fpart_bm;
     int8* upart_bm;
     NTSTATUS status, status2;
@@ -219,16 +216,14 @@ UDFUpdateXSpaceBitmaps(
     }
 
     pstart = UDFPartStart(Vcb, RefPartNum);
-    new_bm = Vcb->FSBM_Bitmap;
-    old_bm = Vcb->FSBM_OldBitmap;
-    bad_bm = Vcb->BSBM_Bitmap;
 
     if ((status  == STATUS_INSUFFICIENT_RESOURCES) ||
        (status2 == STATUS_INSUFFICIENT_RESOURCES)) {
-        // try to recover insufficient resources
+        /* Out-of-resources recovery: no flat bitmap buffer available in chunked design,
+           so pass NULL to skip the data payload and write only the header/descriptor. */
         if (USl && USBMExtInfo.Mapping) {
             USl -= sizeof(SPACE_BITMAP_DESC);
-            status  = UDFWriteExtent(IrpContext, Vcb, &USBMExtInfo, sizeof(SPACE_BITMAP_DESC), USl, FALSE, new_bm, &WrittenBytes);
+            status  = UDFWriteExtent(IrpContext, Vcb, &USBMExtInfo, sizeof(SPACE_BITMAP_DESC), USl, FALSE, NULL, &WrittenBytes);
 #ifdef UDF_DBG
         } else {
             UDFPrint(("Can't update USBM\n"));
@@ -238,7 +233,7 @@ UDFUpdateXSpaceBitmaps(
 
         if (FSl && FSBMExtInfo.Mapping) {
             FSl -= sizeof(SPACE_BITMAP_DESC);
-            status2 = UDFWriteExtent(IrpContext, Vcb, &FSBMExtInfo, sizeof(SPACE_BITMAP_DESC), FSl, FALSE, new_bm, &WrittenBytes);
+            status2 = UDFWriteExtent(IrpContext, Vcb, &FSBMExtInfo, sizeof(SPACE_BITMAP_DESC), FSl, FALSE, NULL, &WrittenBytes);
         } else {
             status2 = status;
             UDFPrint(("Can't update FSBM\n"));
@@ -252,21 +247,21 @@ UDFUpdateXSpaceBitmaps(
 
         d=1;
         // if we have some bad bits, mark corresponding area as BAD
-        if (bad_bm) {
+        if (Vcb->BSBM_Chunked.Chunks) {
             for(i=pstart; i<pend; i++) {
-                if (UDFGetBadBit(bad_bm, i)) {
+                if (UDFChunkedGetBit(&Vcb->BSBM_Chunked, i)) {
                     // TODO: would be nice to add these blocks to unallocatable space
-                    UDFSetUsedBits(new_bm, i & ~(d-1), d);
+                    UDFChunkedClrBits(&Vcb->FSBM_Chunked, i & ~(d-1), d);
                 }
             }
         }
         j=0;
         for(i=pstart; i<pend; i+=d) {
-            if (UDFGetUsedBit(old_bm, i) && UDFGetFreeBit(new_bm, i)) {
+            if (!UDFChunkedGetBit(&Vcb->FSBM_OldChunked, i) && UDFChunkedGetBit(&Vcb->FSBM_Chunked, i)) {
                 // sector was deallocated during last session
                 if (USBM) UDFSetFreeBit(upart_bm, j);
                 if (FSBM) UDFSetFreeBit(fpart_bm, j);
-            } else if (UDFGetUsedBit(new_bm, i)) {
+            } else if (!UDFChunkedGetBit(&Vcb->FSBM_Chunked, i)) {
                 // allocated
                 if (USBM) UDFSetUsedBit(upart_bm, j);
                 if (FSBM) UDFSetUsedBit(fpart_bm, j);
@@ -872,7 +867,6 @@ UDFUpdateNonAllocated(
     uint32 RefPartNum;
     uint32 i;
     uint32 plen, pstart, pend;
-    int8* bad_bm;
     EXTENT_AD Ext;
     PEXTENT_MAP Map = NULL;
     PEXTENT_INFO DataLoc;
@@ -881,8 +875,7 @@ UDFUpdateNonAllocated(
     if (!Vcb->NonAllocFileInfo) {
         return STATUS_SUCCESS;
     }
-    UDFEnsureBitmapDecompressed(Vcb);
-    if (!(bad_bm = Vcb->BSBM_Bitmap)) {
+    if (!Vcb->BSBM_Chunked.Chunks) {
         return STATUS_SUCCESS;
     }
 
@@ -899,7 +892,7 @@ UDFUpdateNonAllocated(
 
     //BrutePoint();
     for(i=pstart; i<pend; i++) {
-        if (!UDFGetBadBit(bad_bm, i))
+        if (!UDFChunkedGetBit(&Vcb->BSBM_Chunked, i))
             continue;
         // add BAD blocks to unallocatable space
         // if the block is already in NonAllocatable, ignore it
@@ -969,7 +962,7 @@ UDFUmount__(
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
     // check if we should update BM
-    if (Vcb->FSBM_ByteCount == RtlCompareMemory(Vcb->FSBM_Bitmap, Vcb->FSBM_OldBitmap, Vcb->FSBM_ByteCount)) {
+    if (UDFChunkedBitmapsEqual(Vcb, &Vcb->FSBM_Chunked, &Vcb->FSBM_OldChunked)) {
         flags &= ~1;
     } else {
         flags |= 1;
@@ -990,8 +983,11 @@ UDFUmount__(
         UDFUpdateLogicalVolInt(IrpContext, Vcb, TRUE);
     }
 
-    if (flags & 1)
-        RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
+    if (flags & 1) {
+        if (!NT_SUCCESS(UDFCopyChunkedBitmap(&Vcb->FSBM_OldChunked, &Vcb->FSBM_Chunked))) {
+            UDFPrint(("UDFUmount__: failed to copy FSBM snapshot\n"));
+        }
+    }
 
 //skip_update_bitmap:
 
@@ -1698,7 +1694,7 @@ err_addxsbm_1:
                 for (bit_idx = 0; bit_idx < 8 && i < lim; bit_idx++, i++) {
                     if (b & (1u << bit_idx)) {
                         // FREE block in on-disk bitmap
-                        UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
+                        UDFChunkedSetBit(&Vcb->FSBM_Chunked, i);
                         UDFSetFreeBitOwner(Vcb, i);
                     }
                 }
@@ -1983,12 +1979,13 @@ UDFBuildFreeSpaceBitmap(
     lb_addr locAddr;
     BOOLEAN UnallocSpaceExtent = FALSE;
 
-    if (!(Vcb->FSBM_Bitmap)) {
+    if (!(Vcb->FSBM_Chunked.Chunks)) {
         // init Bitmap buffer if necessary
-        Vcb->FSBM_Bitmap = (int8*)DbgAllocatePool(NonPagedPool, (i = (Vcb->LastPossibleLBA+1+7)>>3) );
-        if (!(Vcb->FSBM_Bitmap)) return STATUS_INSUFFICIENT_RESOURCES;
-
-        RtlZeroMemory(Vcb->FSBM_Bitmap, i);
+        i = (Vcb->LastPossibleLBA+1+7)>>3;
+        if (!NT_SUCCESS(UDFInitChunkedBitmap(Vcb, &Vcb->FSBM_Chunked, i))) {
+            UDFFreeChunkedBitmap(&Vcb->FSBM_Chunked);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
 
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
         Vcb->FSBM_Bitmap_owners = (uint32*)DbgAllocatePool(NonPagedPool, (Vcb->LastPossibleLBA+1)*sizeof(uint32));
@@ -2991,9 +2988,11 @@ UDFGetDiskInfoAndVerify(
 
         UDFLoadFileset(Vcb,FileSetDesc, &(Vcb->RootLbAddr), &(Vcb->SysStreamLbAddr));
 
-        Vcb->FSBM_OldBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
-        if (!(Vcb->FSBM_OldBitmap)) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-        RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
+        if (!NT_SUCCESS(UDFInitChunkedBitmap(Vcb, &Vcb->FSBM_OldChunked, Vcb->FSBM_ByteCount)) ||
+            !NT_SUCCESS(UDFCopyChunkedBitmap(&Vcb->FSBM_OldChunked, &Vcb->FSBM_Chunked))) {
+            UDFFreeChunkedBitmap(&Vcb->FSBM_OldChunked);
+            try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        }
 
 try_exit:   NOTHING;
     } _SEH2_FINALLY {

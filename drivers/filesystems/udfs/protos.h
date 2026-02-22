@@ -649,6 +649,19 @@ extern NTSTATUS UDFGetVolumeBitmap(IN PIRP_CONTEXT IrpContext,
 extern NTSTATUS UDFDecompressBitmaps(IN PVCB Vcb);
 extern VOID     UDFCompressBitmaps(IN PVCB Vcb);
 extern NTSTATUS UDFEnsureBitmapDecompressed(IN PVCB Vcb);
+extern NTSTATUS UDFInitChunkedBitmap(IN PVCB Vcb, IN OUT PUDF_CHUNKED_BITMAP bm, IN ULONG byteCount);
+extern VOID     UDFFreeChunkedBitmap(IN OUT PUDF_CHUNKED_BITMAP bm);
+extern VOID     UDFCompressAllDirtyChunks(IN OUT PUDF_CHUNKED_BITMAP bm);
+extern BOOLEAN  UDFChunkedGetBit(IN PUDF_CHUNKED_BITMAP bm, IN uint32 bit);
+extern VOID     UDFChunkedSetBit(IN PUDF_CHUNKED_BITMAP bm, IN uint32 bit);
+extern VOID     UDFChunkedClrBit(IN PUDF_CHUNKED_BITMAP bm, IN uint32 bit);
+extern VOID     UDFChunkedSetBits(IN PUDF_CHUNKED_BITMAP bm, IN uint32 start, IN uint32 count);
+extern VOID     UDFChunkedClrBits(IN PUDF_CHUNKED_BITMAP bm, IN uint32 start, IN uint32 count);
+extern SIZE_T   UDFChunkedGetBitmapLen(IN PUDF_CHUNKED_BITMAP bm, IN uint32 offs, IN uint32 lim);
+extern uint32   UDFChunkedCountFreeBits(IN PUDF_CHUNKED_BITMAP bm, IN uint32 start, IN uint32 end);
+extern NTSTATUS UDFCopyChunkedBitmap(IN PUDF_CHUNKED_BITMAP dst, IN PUDF_CHUNKED_BITMAP src);
+extern BOOLEAN  UDFChunkedBitmapsEqual(IN PVCB Vcb, IN PUDF_CHUNKED_BITMAP a, IN PUDF_CHUNKED_BITMAP b);
+extern VOID     UDFChunkedMarkBadSpaceAsUsed(IN PUDF_CHUNKED_BITMAP fsbm, IN PUDF_CHUNKED_BITMAP bsbm, IN lba_t lba, IN ULONG len);
 
 extern NTSTATUS UDFGetRetrievalPointers(IN PIRP_CONTEXT IrpContext,
                                         IN PIRP Irp);

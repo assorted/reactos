@@ -1674,9 +1674,9 @@ UDFAllocateFESpace(
                 Extent.extLocation = Ext->Mapping[i].extLocation;
 
                 UDFEnsureBitmapDecompressed(Vcb);
-                if (Vcb->BSBM_Bitmap) {
+                if (Vcb->BSBM_Chunked.Chunks) {
                     uint32 lba = Ext->Mapping[i].extLocation;
-                    if (UDFGetBadBit((uint32*)(Vcb->BSBM_Bitmap), lba)) {
+                    if (UDFChunkedGetBit(&Vcb->BSBM_Chunked, lba)) {
                         UDFPrint(("Remove BB @ %x from FE charge\n", lba));
                         Ext->Mapping[i].extLength |= (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
                         Ext->Mapping[i].extLocation = 0;
@@ -2395,8 +2395,8 @@ UDFResizeExtent(
                     // how many sectors we should add
                     req_s = lim - s;
                     ASSERT(req_s);
-                    if ((lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, lba)) {
-                        s += UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s));
+                    if ((lba < pe) && UDFChunkedGetBit(&Vcb->FSBM_Chunked, lba)) {
+                        s += UDFChunkedGetBitmapLen(&Vcb->FSBM_Chunked, lba, min(pe, lba+req_s));
                     }
 /*                    for(s1=lba; (s<lim) && (s1<pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, s1); s1++) {
                         s++;
@@ -2470,8 +2470,8 @@ UDFResizeExtent(
                         UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
                         UDFDecompressBitmaps(Vcb);
                         //ASSERT(req_s);
-                        if ((lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, lba)) {
-                            s += (d = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s)));
+                        if ((lba < pe) && UDFChunkedGetBit(&Vcb->FSBM_Chunked, lba)) {
+                            s += (d = UDFChunkedGetBitmapLen(&Vcb->FSBM_Chunked, lba, min(pe, lba+req_s)));
                         }
     /*                    for(s1=lba; (s<lim) && (s1<pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, s1); s1++) {
                             s++;
