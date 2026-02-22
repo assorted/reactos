@@ -615,6 +615,10 @@ UDFCompressAllDirtyChunks(
                 chunk->CompressedSize = (ULONG)xrle_compress(
                     chunk->Compressed, chunk->Decompressed, UDF_BITMAP_CHUNK_BYTES);
                 chunk->Dirty = FALSE;
+            } else {
+                /* Compression buffer allocation failed; keep Decompressed alive */
+                UDFPrint(("UDFCompressAllDirtyChunks: failed to alloc compressed buffer\n"));
+                continue;
             }
         }
         DbgFreePool(chunk->Decompressed);
