@@ -1911,7 +1911,7 @@ UDFPrepareForRenameMoveLink(
     // There is a pair of objects among input dirs &
     // one of them is a parent of another. Sequential resource
     // acquisition may lead to deadlock due to concurrent
-    // cleanup operations or UDFTeardownStructures()
+    // CleanUpFcbChain() or UDFCloseFileInfoChain()
     InterlockedIncrement((PLONG)&Vcb->VcbReference);
 
 
@@ -1922,6 +1922,10 @@ UDFPrepareForRenameMoveLink(
         InterlockedDecrement((PLONG)&Vcb->VcbReference);
     } else {
         InterlockedDecrement((PLONG)&Vcb->VcbReference);
+
+        UDF_CHECK_PAGING_IO_RESOURCE(Dir1->Fcb);
+        UDFAcquireResourceExclusive(&Dir1->Fcb->FcbNonpaged->FcbResource, TRUE);
+        (*AcquiredDir1) = TRUE;
 
         // Child-first lock ordering
         // File1 (child) first, Dir1 (parent) second
@@ -2215,8 +2219,10 @@ post_rename:
             }
         }
 
-        // this will prevent structure release before cleanup
+        // this will prevent structutre release before call to
+        // UDFCleanUpFcbChain()
         InterlockedIncrement((PLONG)&DirInfo->Fcb->FcbReference);
+        ASSERT(DirInfo->Fcb->FcbReference >= DirInfo->RefCount);
 
         // Switch LCBs from old parent to new parent for each CCB
         // With LCB model, each CCB has one LCB linking to its immediate parent.
@@ -2231,18 +2237,22 @@ post_rename:
                 Link = Link->Flink;
                 UseClose = (CurCcb->Flags & UDF_CCB_CLEANED) ? FALSE : TRUE;
 
-                AdPrint(("  Ccb:%x:%s\n", CurCcb, UseClose ? "Close" : ""));
-
-                //
-                // Release old LCB and acquire new one from TargetDir
-                // UDFReleasePrefixImmediate will decrement old parent's refs
-                // when the last CCB releases (LCB->Reference becomes 0).
-                // UDFAcquirePrefix will increment new parent's refs when
-                // creating a new LCB (or just increment LCB->Reference if exists).
-                //
-                if (CurCcb->Lcb) {
-                    UDFReleasePrefixImmediate(IrpContext, CurCcb->Lcb, UseClose);
-                    CurCcb->Lcb = NULL;
+                AdPrint(("  Ccb:%x:%s:i:%x\n", CurCcb, UseClose ? "Close" : "",i));
+                // cleanup old parent chain
+                for(; i && NextFileInfo; i--) {
+                    // remember parent file now
+                    // it will prevent us from data losses
+                    // due to eventual structure release
+                    fi = NextFileInfo->ParentFile;
+                    if (UseClose) {
+                        ASSERT(NextFileInfo->Fcb->FcbReference >= NextFileInfo->RefCount);
+                        UDFCloseFile__(IrpContext, Vcb, NextFileInfo);
+                    }
+                    ASSERT(NextFileInfo->Fcb->FcbReference > NextFileInfo->RefCount);
+                    ASSERT(NextFileInfo->Fcb->FcbReference);
+                    InterlockedDecrement((PLONG)&NextFileInfo->Fcb->FcbReference);
+                    ASSERT(NextFileInfo->Fcb->FcbReference >= NextFileInfo->RefCount);
+                    NextFileInfo = fi;
                 }
 
                 // Acquire new LCB from TargetDir
@@ -2257,6 +2267,11 @@ post_rename:
 
             // Update parent pointer
             Fcb->ParentFcb = TargetDirInfo->Fcb;
+            // move references to TargetDir
+            InterlockedExchangeAdd((PLONG)&TargetDirInfo->Fcb->FcbReference, DirRefCount);
+            ASSERT(TargetDirInfo->Fcb->FcbReference > TargetDirInfo->RefCount);
+            UDFReferenceFileEx__(TargetDirInfo, FileInfoRefCount);
+            ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);
         }
         ASSERT(TargetDirInfo->RefCount);
 

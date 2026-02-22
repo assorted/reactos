@@ -41,98 +41,14 @@ UDFNormalizeFileNames(
     _Inout_ PUNICODE_STRING RemainingName
 );
 
-NTSTATUS
-UDFSupersedeOrOverwriteFile(
-    IN PIRP_CONTEXT IrpContext,
-    IN PFILE_OBJECT FileObject,
-    IN PVCB Vcb,
-    IN PFCB Fcb,
-    IN PUDF_FILE_INFO FileInfo,
-    IN LONGLONG AllocationSize,
-    IN ULONG FileAttributes,
-    IN BOOLEAN Supersede
-    )
-{
-    NTSTATUS RC;
-    ULONG NewFileAttributes;
-
-    UDFAcquirePagingIoExclusive(IrpContext, Fcb);
-
-    _SEH2_TRY {
-
-        if (!MmCanFileBeTruncated(&Fcb->FcbNonpaged->SegmentObject, &UdfData.UDFLargeZero)) {
-
-            AdPrint(("    Can't truncate. File is mapped\n"));
-            try_return(RC = STATUS_USER_MAPPED_FILE);
-        }
-
-        // Truncate file to zero
-        RC = UDFResizeFile__(IrpContext, Vcb, FileInfo, 0);
-
-        if (!NT_SUCCESS(RC)) {
-
-            AdPrint(("    Error during resize operation\n"));
-            try_return(RC);
-        }
-
-        // Set file sizes
-        Fcb->Header.AllocationSize.QuadPart = UDFSysGetAllocSize(Vcb, AllocationSize);
-        Fcb->Header.FileSize.QuadPart = 0;
-        Fcb->Header.ValidDataLength.QuadPart = 0;
-        Fcb->FcbState &= ~UDF_FCB_DELAY_CLOSE;
-
-        MmPrint(("    CcSetFileSizes()\n"));
-        CcSetFileSizes(FileObject, (PCC_FILE_SIZES)&Fcb->Header.AllocationSize);
-        Fcb->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
-
-        // Set attributes
-        NewFileAttributes = FileAttributes | FILE_ATTRIBUTE_ARCHIVE;
-        if (!Supersede) {
-            // For Overwrite, combine with current attributes (get from FileInfo)
-            NewFileAttributes |= UDFAttributesToNT(
-                UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo), FileInfo->Index),
-                FileInfo->Dloc->FileEntry);
-        }
-        UDFAttributesToUDF(UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo), FileInfo->Index),
-                           FileInfo->Dloc->FileEntry, NewFileAttributes);
-
-try_exit: NOTHING;
-
-    } _SEH2_FINALLY {
-
-        UDFReleasePagingIo(IrpContext, Fcb);
-    } _SEH2_END;
-
-    return RC;
-} // end UDFSupersedeOrOverwriteFile()
-
-
-/*************************************************************************
-*
-* Function: UDFOpenExistingFcb()
-*
-* Description:
-*   Open an existing FCB. Determines the type of open, sets CCB flags,
-*   and calls UDFCompleteFcbOpen.
-*
-*   Opens an existing FCB with proper type detection.
-*
-* Expected Interrupt Level (for execution) :
-*
-*  IRQL_PASSIVE_LEVEL
-*
-* Return Value: STATUS_SUCCESS/Error
-*
-*************************************************************************/
-NTSTATUS
-UDFOpenExistingFcb(
-    IN PIRP_CONTEXT IrpContext,
-    IN PIO_STACK_LOCATION IrpSp,
-    IN PVCB Vcb,
-    IN OUT PFCB *CurrentFcb,
-    IN BOOLEAN IgnoreCase,
-    IN BOOLEAN OpenByFileId,
-    IN ULONG CreateDisposition
+/*
+ */
+VOID
+__fastcall
+UDFReleaseResFromCreate(
+    IN PERESOURCE* PagingIoRes,
+    IN PERESOURCE* Res1,
+    IN PERESOURCE* Res2
     )
 {
     ULONG CcbFlags = 0;
@@ -167,6 +83,10 @@ UDFOpenExistingFcb(
 
 } // end UDFOpenExistingFcb()
 
+    InterlockedIncrement((PLONG)&RelatedFileInfo->Fcb->FcbReference);
+    UDFReferenceFile__(RelatedFileInfo);
+    ASSERT(RelatedFileInfo->Fcb->FcbReference >= RelatedFileInfo->RefCount);
+} // end UDFAcquireParent()
 
 /*************************************************************************
 *
@@ -1195,47 +1115,15 @@ UDFCommonCreate(
                             try_return(RC = STATUS_ACCESS_DENIED);
                         }
                     }
+                    // Acquire newly opened File...
+                    Res2 = Res1;
+                    UDF_CHECK_PAGING_IO_RESOURCE(NewFileInfo->Fcb);
+                    UDFAcquireResourceExclusive(Res1 = &NewFileInfo->Fcb->FcbNonpaged->FcbResource, TRUE);
+                    // ...and reference it
+                    InterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
 
-                    // Acquire FCB lock for tree traversal (try-lock to prevent deadlock)
-                    {
-                        PFCB NewFcb = NewFileInfo->Fcb;
-                        if (NewFcb != CurrentFcb) {
-                            UDF_CHECK_PAGING_IO_RESOURCE(NewFcb);
-                            if (!UDFAcquireFcbExclusive(IrpContext, NewFcb, TRUE)) {
-                                // Try-lock failed - rollback and reacquire in order
-                                UDFLockVcb(IrpContext, Vcb);
-                                NewFcb->FcbCleanup++;
-                                UDFUnlockVcb(IrpContext, Vcb);
-
-                                if (PreviousFcb && PreviousFcb != CurrentFcb) {
-                                    UDFReleaseResource(&PreviousFcb->FcbNonpaged->FcbResource);
-                                }
-                                PFCB OldCurrentFcb = CurrentFcb;
-                                UDF_CHECK_PAGING_IO_RESOURCE(OldCurrentFcb);
-                                UDFReleaseResource(&OldCurrentFcb->FcbNonpaged->FcbResource);
-
-                                UDFAcquireFcbExclusive(IrpContext, NewFcb, FALSE);
-                                UDFAcquireFcbExclusive(IrpContext, OldCurrentFcb, FALSE);
-                                PreviousFcb = OldCurrentFcb;
-
-                                UDFLockVcb(IrpContext, Vcb);
-                                NewFcb->FcbCleanup--;
-                                UDFUnlockVcb(IrpContext, Vcb);
-                            } else {
-                                if (PreviousFcb && PreviousFcb != CurrentFcb) {
-                                    UDFReleaseResource(&PreviousFcb->FcbNonpaged->FcbResource);
-                                }
-                                PreviousFcb = CurrentFcb;
-                            }
-                            CurrentFcb = NewFcb;
-                        }
-                    }
-
-                    // FCB references are handled by LCB in UDFCompleteFcbOpen
-                    // Note: FcbReference may be 0 here during path traversal;
-                    // it will be incremented when CCB is created
-
-                    // Update state
+                    ASSERT(PtrNewFcb->FcbReference >= NewFileInfo->RefCount);
+                    // update unwind information
                     LastGoodFileInfo = NewFileInfo;
                     LastGoodName = CurName;
 
@@ -1342,8 +1230,8 @@ UDFCommonCreate(
                     // ... and exit with error
                     try_return(RC);
                 }
-                // Note: With LCB model, FcbReference is not incremented during path traversal,
-                // so no decrement is needed here (removed the old InterlockedDecrement).
+                // discard changes for last successfully opened file
+                InterlockedDecrement((PLONG)&PtrNewFcb->FcbReference);
                 RC = STATUS_SUCCESS;
                 ASSERT(!OpenTargetDirectory);
                 // break open loop and continue with Open
@@ -1407,9 +1295,7 @@ UDFCommonCreate(
             //  to reflect the fact that the parent directory of the
             //  target has been opened
             PtrNewFcb = NewFileInfo->Fcb;
-            // Note: Removed FcbReference decrement - no longer needed with LCB model.
-            // The old TreeLength model incremented parent FcbReference during path traversal,
-            // but LCB model handles parent references differently (via UDFAcquirePrefix).
+            InterlockedDecrement((PLONG)&PtrNewFcb->FcbReference);
 
             RC = UDFCompleteFcbOpen(IrpContext, IrpSp, Vcb, &PtrNewFcb, UserDirectoryOpen, 0, CreateDisposition);
             if (!NT_SUCCESS(RC)) {
@@ -1577,10 +1463,10 @@ UDFCommonCreate(
                 RC = MyAppendUnicodeToString(&LocalPath, L"\\");
                 if (!NT_SUCCESS(RC)) try_return(RC);
                 RC = MyAppendUnicodeStringToStringTag(&LocalPath, &LastGoodTail, MEM_USLOC_TAG);
-                if (!NT_SUCCESS(RC)) {
-                    try_return(RC);
-                }
-                // Note: FcbReference will be set when CCB is created in UDFCompleteFcbOpen
+                if (!NT_SUCCESS(RC))
+                    goto Creation_Err_1;
+                InterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
+                ASSERT(PtrNewFcb->FcbReference >= NewFileInfo->RefCount);
                 PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                 PtrNewFcb->FcbState |= UDF_FCB_VALID;
 
@@ -1646,7 +1532,8 @@ UDFCommonCreate(
                     BrutePoint();
                     try_return(RC);
                 }
-                // Note: FcbReference will be set when CCB is created in UDFCompleteFcbOpen
+                InterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
+                ASSERT(PtrNewFcb->FcbReference >= NewFileInfo->RefCount);
                 PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                 PtrNewFcb->FcbState |= UDF_FCB_VALID;
 
@@ -2053,6 +1940,9 @@ try_exit:   NOTHING;
 
                 UDFUnlockVcb(IrpContext, Vcb);
 
+
+                if (FileObject->Flags & FO_CACHE_SUPPORTED)
+                    InterlockedIncrement((PLONG)&PtrNewFcb->CachedOpenHandleCount);
                 // Store some flags in CCB
                 if (PtrNewCcb) {
                     // delete on close

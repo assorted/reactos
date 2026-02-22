@@ -239,6 +239,224 @@ try_exit: NOTHING;
     return STATUS_SUCCESS;
 } // end UDFCommonClose()
 
+/*
+    This routine walks through the tree to RootDir & kills all unreferenced
+    structures....
+    imho, Useful feature
+ */
+_Requires_lock_held_(_Global_critical_region_)
+VOID
+UDFTeardownStructures(
+    _In_ PIRP_CONTEXT IrpContext,
+    _Inout_ PFCB StartingFcb,
+    _In_ ULONG TreeLength,
+    _Out_ PBOOLEAN RemovedStartingFcb
+    )
+{
+    PVCB Vcb = StartingFcb->Vcb;
+    PFCB CurrentFcb = StartingFcb;
+    PFCB ParentFcb = NULL;
+
+    LONG RefCount;
+    BOOLEAN Delete = FALSE;
+
+    ValidateFileInfo(CurrentFcb->FileInfo);
+    AdPrint(("UDFCleanUpFcbChain\n"));
+
+    ASSERT(TreeLength);
+    //TODO:
+    //ASSERT_EXCLUSIVE_FCB(StartingFcb);
+    //ASSERT_SHARED_VCB(Vcb);
+
+    if (RemovedStartingFcb) {
+        *RemovedStartingFcb = FALSE;
+    }
+
+    // Use a try-finally to safely clear the top-level field.
+ 
+    _SEH2_TRY {
+
+        //  Loop until we find an Fcb we can't remove.
+        do {
+
+            // If the reference count is non-zero then break.
+
+            if (CurrentFcb->FcbReference != 0) {
+
+                break;
+            }
+
+            ParentFcb = CurrentFcb->ParentFcb;
+
+            // acquire parent
+            if (ParentFcb != NULL) {
+
+                UDFAcquireFcbExclusive(IrpContext, ParentFcb, FALSE);
+            }
+
+            // acquire current file/dir
+            // we must assure that no more threads try to re-use this object
+    #ifdef UDF_DBG
+            _SEH2_TRY {
+    #endif // UDF_DBG
+                UDFAcquireResourceExclusive(&CurrentFcb->FcbNonpaged->FcbResource,TRUE);
+    #ifdef UDF_DBG
+            } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+                BrutePoint();
+                if (ParentFcb) {
+                    UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+                }
+                break;
+            } _SEH2_END;
+    #endif // UDF_DBG
+            ASSERT((CurrentFcb->FcbReference > CurrentFcb->FileInfo->RefCount) || !TreeLength);
+            // If we haven't pass through all files opened
+            // in UDFCommonCreate before target file (TreeLength specfies
+            // the number of such files) dereference them.
+            // Otherwise we'll just check if the file has no references.
+    #ifdef UDF_DBG
+            if (CurrentFcb) {
+                if (TreeLength) {
+                    ASSERT(CurrentFcb->FcbReference);
+                    RefCount = InterlockedDecrement((PLONG)&CurrentFcb->FcbReference);
+                }
+            } else {
+                BrutePoint();
+            }
+            if (TreeLength)
+                TreeLength--;
+            ASSERT(CurrentFcb->FcbCleanup <= CurrentFcb->FcbReference);
+    #else
+            if (TreeLength) {
+                RefCount = InterlockedDecrement((PLONG)&CurrentFcb->FcbReference);
+                TreeLength--;
+            }
+    #endif
+
+            // ...and delete if it has gone
+
+            if (!RefCount && !CurrentFcb->FcbCleanup) {
+
+                // no more references... current file/dir MUST DIE!!!
+                if (Delete) {
+    /*                if (!(Fcb->FCBFlags & UDF_FCB_DIRECTORY)) {
+                        // set file size to zero (for UdfInfo package)
+                        // we should not do this for directories
+                        UDFResizeFile__(Vcb, fi, 0);
+                    }*/
+                    UDFReferenceFile__(CurrentFcb->FileInfo);
+                    ASSERT(CurrentFcb->FcbReference < CurrentFcb->FileInfo->RefCount);
+                    UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
+                    UDFUnlinkFile__(IrpContext, Vcb, CurrentFcb->FileInfo, TRUE);
+                    UDFCloseFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
+                    ASSERT(CurrentFcb->FcbReference == CurrentFcb->FileInfo->RefCount);
+                    CurrentFcb->FcbState |= UDF_FCB_DELETED;
+                    Delete = FALSE;
+                }
+                else if (!(CurrentFcb->FcbState & UDF_FCB_DELETED)) {
+                    UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
+                } else {
+    //                BrutePoint();
+                }
+
+                // check if we should try to delete Parent for the next time
+                if (CurrentFcb->FcbState & UDF_FCB_DELETE_PARENT)
+                    Delete = TRUE;
+
+                // remove references to OS-specific structures
+                // to let UDF_INFO release FI & Co
+                CurrentFcb->FileInfo->Fcb = NULL;
+                CurrentFcb->FileInfo->Dloc->CommonFcb = NULL;
+
+                if (UDFCleanUpFile__(Vcb, CurrentFcb->FileInfo) == (UDF_FREE_FILEINFO | UDF_FREE_DLOC)) {
+                    // Check, if we can uninitialize & deallocate CommonFcb part
+                    // kill some cross links
+                    // release allocated resources
+                    // Obviously, it is a good time & place to release
+                    // CommonFcb structure
+
+    //                NtReqFcb->NtReqFCBFlags &= ~UDF_NTREQ_FCB_VALID;
+                    // Unitialize byte-range locks support structure
+                    if (CurrentFcb->FileLock != NULL) {
+
+                        FsRtlFreeFileLock(CurrentFcb->FileLock);
+                    }
+
+                    FsRtlTeardownPerStreamContexts(&CurrentFcb->Header);
+
+                    // Remove resources
+                    UDF_CHECK_PAGING_IO_RESOURCE(CurrentFcb);
+                    UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+                    if (CurrentFcb->Header.Resource) {
+                        UDFDeleteResource(&CurrentFcb->FcbNonpaged->FcbResource);
+                        UDFDeleteResource(&CurrentFcb->FcbNonpaged->FcbPagingIoResource);
+                    }
+
+                    CurrentFcb->Header.Resource =
+                    CurrentFcb->Header.PagingIoResource = NULL;
+
+                    UDFPrint(("UDFRelease Fcb: %x\n", CurrentFcb));
+
+                    // remove some references & free Fcb structure
+                    CurrentFcb->ParentFcb = NULL;
+                    UDFCleanUpFCB(CurrentFcb);
+                    MyFreePool__(CurrentFcb->FileInfo);
+                    CurrentFcb->FileInfo = NULL;
+
+                    // get pointer to parent FCB
+                    CurrentFcb = ParentFcb;
+                    // free old parent's resource...
+                    if (CurrentFcb) {
+                        UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+                    }
+                } else {
+                    // Stop cleaning up
+
+                    // Restore pointers
+                    CurrentFcb->FileInfo->Fcb = CurrentFcb;
+                    CurrentFcb->FileInfo->Dloc->CommonFcb = CurrentFcb;
+                    // free all acquired resources
+                    UDF_CHECK_PAGING_IO_RESOURCE(CurrentFcb);
+                    UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+                    CurrentFcb = ParentFcb;
+                    if (CurrentFcb) {
+                        UDF_CHECK_PAGING_IO_RESOURCE(ParentFcb);
+                        UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+                    }
+                    // If we have dereferenced all parents 'associated'
+                    // with input file & current file is still in use
+                    // then it isn't worth walking down the tree
+                    // 'cause in this case all the rest files are also used
+                    if (!TreeLength)
+                        break;
+    //                AdPrint(("Stop on referenced File/Dir\n"));
+                }
+            } else {
+                // we get to referenced file/dir. Stop search & release resource
+
+                UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+                if (ParentFcb) {
+
+                    UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+                }
+                Delete = FALSE;
+                if (!TreeLength)
+                    break;
+                CurrentFcb = ParentFcb;
+            }
+
+        } while (CurrentFcb != NULL);
+
+    } _SEH2_FINALLY {
+
+    } _SEH2_END;
+
+    if (RemovedStartingFcb) {
+        *RemovedStartingFcb = (CurrentFcb != StartingFcb);
+    }
+
+} // end UDFCleanUpFcbChain()
+
 PIRP_CONTEXT
 UDFRemoveClose(
     _In_opt_ PVCB Vcb

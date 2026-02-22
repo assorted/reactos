@@ -1630,12 +1630,7 @@ UDFAddXSpaceBitmap(
     uint32 flags;
     SIZE_T Length;
     ULONG ReadBytes;
-    uint32 numOfBits;
-    uint32 sector_byte;
-    uint32 bitmap_lba, data_start, read_len;
-    uint64 bitmap_offset;
-    SIZE_T bytes_remaining;
-    uint8 b;
+    BOOLEAN bit_set;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
     UDFPrint(("UDFAddXSpaceBitmap: at block=%x, partition=%d\n",

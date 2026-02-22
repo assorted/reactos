@@ -506,6 +506,9 @@ UDFMountVolume(
 
         Vcb->VcbCondition = VcbMounted;
 
+        Vcb->TotalAllocUnits = UDFGetTotalSpace(Vcb);
+        Vcb->FreeAllocUnits = UDFGetFreeSpace(Vcb);
+
         //  The new mount is complete.
         UDFReleaseResource( &(Vcb->VcbResource) );
         VcbAcquired = FALSE;
@@ -677,8 +680,15 @@ UDFCleanupVCB(
     MyFreeMemoryAndPointer(Vcb->Vat);
     MyFreeMemoryAndPointer(Vcb->SparingTable);
 
-    UDFFreeChunkedBitmap(&Vcb->FSBM_Chunked);
-    UDFFreeChunkedBitmap(&Vcb->BSBM_Chunked);
+    if (Vcb->FSBM_Bitmap) {
+        DbgFreePool(Vcb->FSBM_Bitmap);
+        Vcb->FSBM_Bitmap = NULL;
+    }
+
+    if (Vcb->BSBM_Bitmap) {
+        DbgFreePool(Vcb->BSBM_Bitmap);
+        Vcb->BSBM_Bitmap = NULL;
+    }
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
     if (Vcb->FSBM_Bitmap_owners) {
         DbgFreePool(Vcb->FSBM_Bitmap_owners);
@@ -1266,6 +1276,7 @@ UDFGetVolumeBitmap(
     LARGE_INTEGER StartingLcn;
     PVOLUME_BITMAP_BUFFER OutputBuffer;
     ULONG i, lim;
+    PULONG FSBM;
     BOOLEAN VcbAcquired = FALSE;
 
     ASSERT_VCB(Vcb);
@@ -1368,12 +1379,13 @@ UDFGetVolumeBitmap(
 
         RtlZeroMemory( &OutputBuffer->Buffer[0], BytesToCopy );
         lim = BytesToCopy * 8;
+        FSBM = (PULONG)(Vcb->FSBM_Bitmap);
 
 //        Dest = (PULONG)(&OutputBuffer->Buffer[0]);
 
         for(i=StartingCluster & ~7; i<lim; i++) {
-            if (UDFChunkedGetBit(&Vcb->FSBM_Chunked, i << Vcb->SectorShift))
-                UDFChunkedSetBit(&Vcb->FSBM_Chunked, i);
+            if (UDFGetFreeBit(FSBM, i << Vcb->SectorShift))
+                UDFSetFreeBit(FSBM, i);
         }
 
         Irp->IoStatus.Information = FIELD_OFFSET(VOLUME_BITMAP_BUFFER, Buffer) + BytesToCopy;

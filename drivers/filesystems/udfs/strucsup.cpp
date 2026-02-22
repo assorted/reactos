@@ -1155,6 +1155,64 @@ UDFInitializeVCB(
     } _SEH2_END;
 } // end UDFInitializeVCB()
 
+VOID
+UDFCleanUpFCB(
+    PFCB Fcb
+    )
+{
+    UDFPrint(("UDFCleanUpFCB: %x\n", Fcb));
+    if (!Fcb) return;
+
+    ASSERT_FCB(Fcb);
+
+    _SEH2_TRY {
+        // Deinitialize FCBName field
+        if (Fcb->FCBName) {
+            if (Fcb->FCBName->ObjectName.Buffer) {
+                MyFreePool__(Fcb->FCBName->ObjectName.Buffer);
+                Fcb->FCBName->ObjectName.Buffer = NULL;
+#ifdef UDF_DBG
+                Fcb->FCBName->ObjectName.Length =
+                Fcb->FCBName->ObjectName.MaximumLength = 0;
+#endif
+            }
+#ifdef UDF_DBG
+            else {
+                UDFPrint(("UDF: Fcb has invalid FCBName Buffer\n"));
+                BrutePoint();
+            }
+#endif
+            UDFReleaseObjectName(Fcb->FCBName);
+            Fcb->FCBName = NULL;
+        }
+#ifdef UDF_DBG
+        else {
+            UDFPrint(("UDF: Fcb has invalid FCBName field\n"));
+            BrutePoint();
+        }
+#endif
+
+
+        // begin transaction {
+
+        UDFLockVcb(IrpContext, Fcb->Vcb);
+
+        if (FlagOn(Fcb->FcbState, FCB_STATE_IN_FCB_TABLE)) {
+
+            FsRtlNotifyUninitializeSync(&Vcb->NotifySync);
+        }
+
+        UDFUnlockVcb(IrpContext, Fcb->Vcb);
+
+        // } end transaction
+
+        // Free memory
+        UDFDeleteFcb(0, Fcb);
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        BrutePoint();
+    } _SEH2_END;
+} // end UDFInitializeVCB()
+
 NTSTATUS
 UDFCompleteMount(
     IN PIRP_CONTEXT IrpContext,

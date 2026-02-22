@@ -62,6 +62,9 @@ UDFCommonWrite(
     BOOLEAN                 MainResourceAcquired = FALSE;
     BOOLEAN                 VcbAcquired = FALSE;
 
+    BOOLEAN                 MainResourceAcquiredExclusive = FALSE;
+    BOOLEAN                 MainResourceCanDemoteToShared = FALSE;
+
     BOOLEAN                 Wait = FALSE;
     BOOLEAN                 PagingIo = FALSE;
     BOOLEAN                 NonCachedIo = FALSE;
@@ -72,14 +75,6 @@ UDFCommonWrite(
     BOOLEAN                 RecursiveWriteThrough = FALSE;
     BOOLEAN                 ZeroBlock = FALSE;
     BOOLEAN                 ZeroBlockDone = FALSE;
-
-    // Examine our input parameters to determine if this is noncached and/or
-    // a paging io operation.
-
-    Wait = BooleanFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
-    PagingIo = FlagOn(Irp->Flags, IRP_PAGING_IO);
-    NonCachedIo = FlagOn(Irp->Flags, IRP_NOCACHE);
-    SynchronousIo = FlagOn(IrpSp->FileObject->Flags, FO_SYNCHRONOUS_IO);
 
     FileObject = IrpSp->FileObject;
 
@@ -100,6 +95,14 @@ UDFCommonWrite(
     ASSERT_CCB(Ccb);
     ASSERT_FCB(Fcb);
     ASSERT_VCB(Vcb);
+
+    // Examine our input parameters to determine if this is noncached and/or
+    // a paging io operation.
+
+    Wait = BooleanFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
+    PagingIo = FlagOn(Irp->Flags, IRP_PAGING_IO);
+    NonCachedIo = FlagOn(Irp->Flags, IRP_NOCACHE);
+    SynchronousIo = FlagOn(IrpSp->FileObject->Flags, FO_SYNCHRONOUS_IO);
 
     // Check if this volume has already been shut down.  If it has, fail
     // this write request.
@@ -138,7 +141,6 @@ UDFCommonWrite(
 
     StartingOffset = IrpSp->Parameters.Write.ByteOffset.QuadPart;
     ByteCount = IrpSp->Parameters.Write.Length;
-    ByteRange = StartingOffset + ByteCount;
 
     Irp->IoStatus.Information = 0;
 
@@ -419,6 +421,19 @@ UDFCommonWrite(
                 if (!Wait)
                     try_return(Status = STATUS_PENDING);
 //                CanWait = TRUE;
+
+                // Try to acquire the FCB MainResource exclusively
+                if (!MainResourceAcquiredExclusive) {
+
+                    UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
+                    MainResourceAcquired = FALSE;
+
+                    UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+                    if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, Wait)) {
+                        try_return(Status = STATUS_PENDING);
+                    }
+                    MainResourceAcquired = TRUE;
+                }
 
                 UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
                 PagingIoResourceAcquired = TRUE;
