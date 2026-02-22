@@ -1627,15 +1627,19 @@ UDFAddXSpaceBitmap(
     )
 {
     int8* tmp;
-    int8* tmp_bm;
-    uint32 i, lim, j, lba, l, lim2, l2, k;
+    uint32 i, lim, lba;
     lb_addr locAddr;
     NTSTATUS status;
     uint16 Ident;
     uint32 flags;
     SIZE_T Length;
     ULONG ReadBytes;
-    BOOLEAN bit_set;
+    uint32 numOfBits;
+    uint32 sector_byte, bit_idx;
+    uint32 bitmap_lba, data_start, read_len;
+    uint64 bitmap_offset;
+    SIZE_T bytes_remaining;
+    uint8 b;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
     UDFPrint(("UDFAddXSpaceBitmap: at block=%x, partition=%d\n",
@@ -1646,11 +1650,13 @@ UDFAddXSpaceBitmap(
     i=UDFPartStart(Vcb, RefPartNum);
     flags = bm->extLength >> 30;
     if (!flags /*|| flags == EXTENT_NOT_RECORDED_ALLOCATED*/) {
-        tmp = (int8*)DbgAllocatePool(NonPagedPool, max(Length, Vcb->SectorSize));
+        /* Allocate only one sector-sized buffer to avoid large temporary
+           allocations that coexist with the 64 MB FSBM_Bitmap. */
+        tmp = (int8*)DbgAllocatePool(NonPagedPool, Vcb->SectorSize);
         if (!tmp) return STATUS_INSUFFICIENT_RESOURCES;
         locAddr.partitionReferenceNum = (uint16)RefPartNum;
         locAddr.logicalBlockNum = bm->extPosition;
-        // read header of the Bitmap
+        // read header of the Bitmap (one sector)
         if (!NT_SUCCESS(status = UDFReadTagged(IrpContext, Vcb, tmp, lba = UDFPartLbaToPhys(Vcb, &locAddr),
                              locAddr.logicalBlockNum, &Ident))) {
 err_addxsbm_1:
@@ -1662,35 +1668,47 @@ err_addxsbm_1:
             goto err_addxsbm_1;
         }
 
-        // read the whole Bitmap
-        if (!NT_SUCCESS(status = UDFReadData(IrpContext, Vcb, FALSE, ((uint64)lba)<<Vcb->SectorShift, Length, FALSE, tmp, &ReadBytes)))
-            goto err_addxsbm_1;
+        numOfBits = ((PSPACE_BITMAP_DESC)tmp)->numOfBits;
+        lim = min(i + numOfBits, Vcb->FSBM_BitCount);
 
-        lim = min(i + (lim2 = ((PSPACE_BITMAP_DESC)tmp)->numOfBits), Vcb->FSBM_BitCount);
-        tmp_bm = tmp + sizeof(SPACE_BITMAP_DESC);
-        j = 0;
-        for(;(l = UDFGetBitmapLen((uint32*)tmp_bm, j, lim2)) && (i<lim);) {
-            // expand LBlocks to Sectors...
-            l2 = l;
-            // ...and mark them
-            bit_set = UDFGetFreeBit(tmp_bm, j);
-            for(k=0;(k<l2) && (i<lim);k++) {
-                if (bit_set) {
-                    // FREE block
-                    UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
-                    UDFSetFreeBitOwner(Vcb, i);
-                }
-                i++;
+        /* Process the on-disk bitmap one sector at a time.
+           The first sector was already read above (header + start of bitmap data).
+           Walk through the bitmap area: the header occupies sizeof(SPACE_BITMAP_DESC)
+           bytes of the first sector, so we start the bit-copy from after the header.
+           We re-read each sector (including the first) to avoid indexing complexity. */
+        bitmap_lba = lba;  // physical LBA of first bitmap sector
+        bitmap_offset = 0; // byte offset within the on-disk bitmap file
+        bytes_remaining = Length;
+
+        while (bytes_remaining > 0 && i < lim) {
+            read_len = (uint32)min((SIZE_T)Vcb->SectorSize, bytes_remaining);
+
+            if (!NT_SUCCESS(status = UDFReadData(IrpContext, Vcb, FALSE,
+                    ((uint64)bitmap_lba) << Vcb->SectorShift,
+                    read_len, FALSE, tmp, &ReadBytes))) {
+                goto err_addxsbm_1;
             }
-            j += l;
+
+            /* Determine start of actual bitmap bytes within this sector.
+               The SPACE_BITMAP_DESC header is only at offset 0 of the extent. */
+            data_start = (bitmap_offset == 0) ? (uint32)sizeof(SPACE_BITMAP_DESC) : 0;
+
+            for (sector_byte = data_start; sector_byte < read_len && i < lim; sector_byte++) {
+                b = (uint8)tmp[sector_byte];
+                for (bit_idx = 0; bit_idx < 8 && i < lim; bit_idx++, i++) {
+                    if (b & (1u << bit_idx)) {
+                        // FREE block in on-disk bitmap
+                        UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
+                        UDFSetFreeBitOwner(Vcb, i);
+                    }
+                }
+            }
+
+            bitmap_offset += read_len;
+            bytes_remaining -= read_len;
+            bitmap_lba++;
         }
         DbgFreePool(tmp);
-/*    } else if ((bm->extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED) {
-        i=Vcb->Partitions[RefPartNum].PartitionRoot;
-        lim = i + Vcb->Partitions[RefPartNum].PartitionLen;
-        for(;i<lim;i++) {
-            UDFSetUsedBit(Vcb->FSBM_Bitmap, i);
-        }*/
     }
     return STATUS_SUCCESS;
 } // end UDFAddXSpaceBitmap()
