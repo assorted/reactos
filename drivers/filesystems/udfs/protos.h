@@ -653,6 +653,7 @@ extern NTSTATUS UDFInitChunkedBitmap(IN PVCB Vcb, IN OUT PUDF_CHUNKED_BITMAP bm,
 extern VOID     UDFFreeChunkedBitmap(IN OUT PUDF_CHUNKED_BITMAP bm);
 extern VOID     UDFCompressAllDirtyChunks(IN OUT PUDF_CHUNKED_BITMAP bm);
 extern VOID     UDFCompressAndFreeChunk(IN OUT PUDF_CHUNKED_BITMAP bm, IN ULONG chunkIdx);
+extern PCHAR    UDFEnsureChunkDecompressed(IN PUDF_CHUNKED_BITMAP bm, IN ULONG chunkIdx);
 extern BOOLEAN  UDFChunkedGetBit(IN PUDF_CHUNKED_BITMAP bm, IN uint32 bit);
 extern VOID     UDFChunkedSetBit(IN PUDF_CHUNKED_BITMAP bm, IN uint32 bit);
 extern VOID     UDFChunkedClrBit(IN PUDF_CHUNKED_BITMAP bm, IN uint32 bit);
