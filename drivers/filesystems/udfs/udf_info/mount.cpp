@@ -1679,7 +1679,17 @@ err_addxsbm_1:
         bitmap_offset = 0; // byte offset within the on-disk bitmap file
         bytes_remaining = Length;
 
+        /* lastCompressedChunk tracks the first chunk that has not yet been
+           compressed.  After each 64 KB read we compress all fully-processed
+           chunks (those strictly before the chunk containing bit 'i') so that
+           only one decompressed 64 KB buffer exists at a time.  This limits
+           peak NonPagedPool usage to ~128 KB (read buffer + one chunk) instead
+           of the full 64 MB bitmap size. */
+        {
+        ULONG lastCompressedChunk = i / UDF_BITMAP_CHUNK_BITS;
+
         while (bytes_remaining > 0 && i < lim) {
+            ULONG curChunk;
             /* Read up to UDF_BITMAP_CHUNK_BYTES at a time (sector-aligned). */
             read_len = (uint32)min((SIZE_T)UDF_BITMAP_CHUNK_BYTES, bytes_remaining);
             /* Truncate to a whole number of sectors (never less than one). */
@@ -1707,10 +1717,22 @@ err_addxsbm_1:
                 }
             }
 
+            /* Compress and free all fully-processed chunks (those whose last
+               bit < i).  This keeps only one decompressed chunk alive at a
+               time. */
+            curChunk = i / UDF_BITMAP_CHUNK_BITS;
+            while (lastCompressedChunk < curChunk) {
+                UDFCompressAndFreeChunk(&Vcb->FSBM_Chunked, lastCompressedChunk);
+                lastCompressedChunk++;
+            }
+
             bitmap_offset += read_len;
             bytes_remaining -= read_len;
             bitmap_lba += read_len >> Vcb->SectorShift;
         }
+        /* Compress the last (partially-processed) chunk. */
+        UDFCompressAndFreeChunk(&Vcb->FSBM_Chunked, lastCompressedChunk);
+        } /* lastCompressedChunk scope */
         DbgFreePool(tmp);
     }
     return STATUS_SUCCESS;
