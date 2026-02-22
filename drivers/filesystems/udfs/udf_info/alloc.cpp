@@ -548,6 +548,8 @@ UDFInitChunkedBitmap(
         RtlZeroMemory(bm->Chunks[i].Decompressed, UDF_BITMAP_CHUNK_BYTES);
         bm->Chunks[i].Dirty = TRUE;
     }
+    UDFPrint(("UDFInitChunkedBitmap: %u bytes, %u chunks of %u KB\n",
+              byteCount, bm->ChunkCount, UDF_BITMAP_CHUNK_BYTES / 1024));
     return STATUS_SUCCESS;
 } // end UDFInitChunkedBitmap()
 
@@ -561,6 +563,7 @@ UDFFreeChunkedBitmap(
 {
     ULONG i;
     if (!bm->Chunks) return;
+    UDFPrint(("UDFFreeChunkedBitmap: freeing %u chunks\n", bm->ChunkCount));
     for (i = 0; i < bm->ChunkCount; i++) {
         if (bm->Chunks[i].Compressed)   DbgFreePool(bm->Chunks[i].Compressed);
         if (bm->Chunks[i].Decompressed) DbgFreePool(bm->Chunks[i].Decompressed);
@@ -582,6 +585,12 @@ UDFEnsureChunkDecompressed(
     PUDF_BITMAP_CHUNK chunk = &bm->Chunks[chunkIdx];
     if (chunk->Decompressed) return chunk->Decompressed;
     /* Chunk is compressed; decompress it */
+#ifdef UDF_DBG
+    UDFPrint(("UDFEnsureChunkDecompressed: chunk %u (%u bytes compressed -> %u KB)\n",
+              chunkIdx,
+              (chunk->Compressed && chunk->CompressedSize) ? chunk->CompressedSize : 0U,
+              UDF_BITMAP_CHUNK_BYTES / 1024));
+#endif // UDF_DBG
     chunk->Decompressed = (PCHAR)DbgAllocatePool(NonPagedPool, UDF_BITMAP_CHUNK_BYTES);
     if (!chunk->Decompressed) return NULL;
     if (chunk->Compressed && chunk->CompressedSize > 0) {
@@ -602,7 +611,17 @@ UDFCompressAllDirtyChunks(
     )
 {
     ULONG i;
+#ifdef UDF_DBG
+    ULONG dirtyCount = 0;
+#endif // UDF_DBG
     if (!bm->Chunks) return;
+#ifdef UDF_DBG
+    for (i = 0; i < bm->ChunkCount; i++) {
+        if (bm->Chunks[i].Decompressed && bm->Chunks[i].Dirty) dirtyCount++;
+    }
+    UDFPrint(("UDFCompressAllDirtyChunks: %u dirty chunks of %u total\n",
+              dirtyCount, bm->ChunkCount));
+#endif // UDF_DBG
     for (i = 0; i < bm->ChunkCount; i++) {
         PUDF_BITMAP_CHUNK chunk = &bm->Chunks[i];
         if (!chunk->Decompressed) continue;  /* already compressed */
@@ -615,6 +634,13 @@ UDFCompressAllDirtyChunks(
                 chunk->CompressedSize = (ULONG)xrle_compress(
                     chunk->Compressed, chunk->Decompressed, UDF_BITMAP_CHUNK_BYTES);
                 chunk->Dirty = FALSE;
+#ifdef UDF_DBG
+                UDFPrint(("  chunk %u: %u KB -> %u bytes (%u%%)\n",
+                          i,
+                          UDF_BITMAP_CHUNK_BYTES / 1024,
+                          chunk->CompressedSize,
+                          (chunk->CompressedSize * 100) / UDF_BITMAP_CHUNK_BYTES));
+#endif // UDF_DBG
             } else {
                 /* Compression buffer allocation failed; keep Decompressed alive */
                 UDFPrint(("UDFCompressAllDirtyChunks: failed to alloc compressed buffer\n"));
@@ -831,6 +857,7 @@ UDFCopyChunkedBitmap(
     ULONG i;
     if (!dst->Chunks || !src->Chunks || dst->ChunkCount != src->ChunkCount)
         return STATUS_INVALID_PARAMETER;
+    UDFPrint(("UDFCopyChunkedBitmap: copying %u chunks\n", src->ChunkCount));
     for (i = 0; i < src->ChunkCount; i++) {
         PUDF_BITMAP_CHUNK sc = &src->Chunks[i];
         PUDF_BITMAP_CHUNK dc = &dst->Chunks[i];
@@ -867,6 +894,7 @@ UDFChunkedBitmapsEqual(
     )
 {
     ULONG i;
+    BOOLEAN result;
     if (!a->Chunks || !b->Chunks) return (BOOLEAN)(a->Chunks == b->Chunks);
     if (a->ChunkCount != b->ChunkCount) return FALSE;
     for (i = 0; i < a->ChunkCount; i++) {
@@ -876,10 +904,14 @@ UDFChunkedBitmapsEqual(
             UDFPrint(("UDFChunkedBitmapsEqual: OOM decompressing chunk %u\n", i));
             return FALSE;
         }
-        if (RtlCompareMemory(da, db, UDF_BITMAP_CHUNK_BYTES) != UDF_BITMAP_CHUNK_BYTES)
+        if (RtlCompareMemory(da, db, UDF_BITMAP_CHUNK_BYTES) != UDF_BITMAP_CHUNK_BYTES) {
+            UDFPrint(("UDFChunkedBitmapsEqual: bitmaps differ at chunk %u\n", i));
             return FALSE;
+        }
     }
-    return TRUE;
+    result = TRUE;
+    UDFPrint(("UDFChunkedBitmapsEqual: bitmaps are identical (%u chunks)\n", a->ChunkCount));
+    return result;
 } // end UDFChunkedBitmapsEqual()
 
 /*
@@ -924,7 +956,10 @@ UDFDecompressBitmaps(
     IN PVCB Vcb
     )
 {
-    InterlockedIncrement(&Vcb->FSBM_LockDepth);
+    LONG depth = InterlockedIncrement(&Vcb->FSBM_LockDepth);
+#ifdef UDF_DBG
+    UDFPrint(("UDFDecompressBitmaps: LockDepth now %d (chunks decompressed lazily on access)\n", depth));
+#endif // UDF_DBG
     return STATUS_SUCCESS;
 } // end UDFDecompressBitmaps()
 
@@ -937,7 +972,12 @@ UDFCompressBitmaps(
     IN PVCB Vcb
     )
 {
-    if (InterlockedDecrement(&Vcb->FSBM_LockDepth) > 0) return;
+    LONG depth = InterlockedDecrement(&Vcb->FSBM_LockDepth);
+#ifdef UDF_DBG
+    UDFPrint(("UDFCompressBitmaps: LockDepth now %d%s\n",
+              depth, (depth > 0) ? " (nested; skipping compress)" : " (compressing)"));
+#endif // UDF_DBG
+    if (depth > 0) return;
     UDFCompressAllDirtyChunks(&Vcb->FSBM_Chunked);
     UDFCompressAllDirtyChunks(&Vcb->FSBM_OldChunked);
     UDFCompressAllDirtyChunks(&Vcb->BSBM_Chunked);
