@@ -529,7 +529,6 @@ UDFInitChunkedBitmap(
     IN ULONG byteCount
     )
 {
-    ULONG i;
     bm->ByteCount  = byteCount;
     bm->BitCount   = byteCount * 8;
     bm->ChunkCount = (byteCount + UDF_BITMAP_CHUNK_BYTES - 1) / UDF_BITMAP_CHUNK_BYTES;
@@ -537,17 +536,10 @@ UDFInitChunkedBitmap(
                      bm->ChunkCount * sizeof(UDF_BITMAP_CHUNK));
     if (!bm->Chunks) return STATUS_INSUFFICIENT_RESOURCES;
     RtlZeroMemory(bm->Chunks, bm->ChunkCount * sizeof(UDF_BITMAP_CHUNK));
-    /* Pre-allocate decompressed buffers zero-initialized (bit=0 means used in chunked design) */
-    for (i = 0; i < bm->ChunkCount; i++) {
-        bm->Chunks[i].Decompressed = (PCHAR)DbgAllocatePool(NonPagedPool,
-                                           UDF_BITMAP_CHUNK_BYTES);
-        if (!bm->Chunks[i].Decompressed) {
-            /* partial init; caller should free on failure */
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-        RtlZeroMemory(bm->Chunks[i].Decompressed, UDF_BITMAP_CHUNK_BYTES);
-        bm->Chunks[i].Dirty = TRUE;
-    }
+    /* Chunks start as NULL/NULL: represents all-zeros (all blocks used).
+       Decompressed buffers are allocated lazily on first access via
+       UDFEnsureChunkDecompressed.  This avoids a 64 MB upfront allocation
+       for a 256 GB drive's bitmap. */
     UDFPrint(("UDFInitChunkedBitmap: %u bytes, %u chunks of %u KB\n",
               byteCount, bm->ChunkCount, UDF_BITMAP_CHUNK_BYTES / 1024));
     return STATUS_SUCCESS;
@@ -637,34 +629,64 @@ UDFCompressAllDirtyChunks(
               dirtyCount, bm->ChunkCount));
 #endif // UDF_DBG
     for (i = 0; i < bm->ChunkCount; i++) {
-        PUDF_BITMAP_CHUNK chunk = &bm->Chunks[i];
-        if (!chunk->Decompressed) continue;  /* already compressed */
-        if (chunk->Dirty) {
-            if (!chunk->Compressed) {
-                chunk->Compressed = (PCHAR)DbgAllocatePool(NonPagedPool,
-                    xrle_max_out(UDF_BITMAP_CHUNK_BYTES));
-            }
-            if (chunk->Compressed) {
-                chunk->CompressedSize = (ULONG)xrle_compress(
-                    chunk->Compressed, chunk->Decompressed, UDF_BITMAP_CHUNK_BYTES);
-                chunk->Dirty = FALSE;
-#ifdef UDF_DBG
-                UDFPrint(("  chunk %u: %u KB -> %u bytes (%u%%)\n",
-                          i,
-                          UDF_BITMAP_CHUNK_BYTES / 1024,
-                          chunk->CompressedSize,
-                          (chunk->CompressedSize * 100) / UDF_BITMAP_CHUNK_BYTES));
-#endif // UDF_DBG
-            } else {
-                /* Compression buffer allocation failed; keep Decompressed alive */
-                UDFPrint(("UDFCompressAllDirtyChunks: failed to alloc compressed buffer\n"));
-                continue;
-            }
-        }
-        DbgFreePool(chunk->Decompressed);
-        chunk->Decompressed = NULL;
+        UDFCompressAndFreeChunk(bm, i);
     }
 } // end UDFCompressAllDirtyChunks()
+
+/*
+    Compress a single dirty chunk and free its decompressed buffer.
+    If the chunk is not decompressed this is a no-op.
+    Always frees the old Compressed buffer before allocating a fresh one so
+    that a previously-shrunk buffer cannot cause an overflow on re-compression.
+    After compressing, shrinks the Compressed allocation to CompressedSize to
+    avoid wasting NonPagedPool.
+*/
+VOID
+UDFCompressAndFreeChunk(
+    IN OUT PUDF_CHUNKED_BITMAP bm,
+    IN ULONG chunkIdx
+    )
+{
+    PUDF_BITMAP_CHUNK chunk;
+    if (!bm->Chunks || chunkIdx >= bm->ChunkCount) return;
+    chunk = &bm->Chunks[chunkIdx];
+    if (!chunk->Decompressed) return;  /* nothing to do */
+    if (chunk->Dirty) {
+        /* Always allocate a fresh max-size compression buffer so we never
+           try to compress into a previously-shrunk (undersized) buffer. */
+        PCHAR newBuf = (PCHAR)DbgAllocatePool(NonPagedPool,
+                           xrle_max_out(UDF_BITMAP_CHUNK_BYTES));
+        if (newBuf) {
+            ULONG newSize = (ULONG)xrle_compress(
+                newBuf, chunk->Decompressed, UDF_BITMAP_CHUNK_BYTES);
+            /* Shrink to the actual compressed size to conserve NonPagedPool */
+            if (newSize > 0) {
+                PCHAR shrunk = NULL;
+                if (MyReallocPool__(newBuf, xrle_max_out(UDF_BITMAP_CHUNK_BYTES),
+                                    &shrunk, newSize))
+                    newBuf = shrunk;
+            }
+            if (chunk->Compressed) DbgFreePool(chunk->Compressed);
+            chunk->Compressed = newBuf;
+            chunk->CompressedSize = newSize;
+            chunk->Dirty = FALSE;
+#ifdef UDF_DBG
+            UDFPrint(("  chunk %u: %u KB -> %u bytes (%u%%)\n",
+                      chunkIdx,
+                      UDF_BITMAP_CHUNK_BYTES / 1024,
+                      chunk->CompressedSize,
+                      (chunk->CompressedSize * 100) / UDF_BITMAP_CHUNK_BYTES));
+#endif // UDF_DBG
+        } else {
+            /* Compression buffer allocation failed; keep Decompressed alive */
+            UDFPrint(("UDFCompressAndFreeChunk: failed to alloc compressed buffer for chunk %u\n",
+                      chunkIdx));
+            return;
+        }
+    }
+    DbgFreePool(chunk->Decompressed);
+    chunk->Decompressed = NULL;
+} // end UDFCompressAndFreeChunk()
 
 /* --- Chunk-aware bit access functions --- */
 
@@ -886,8 +908,10 @@ UDFCopyChunkedBitmap(
             RtlCopyMemory(dc->Decompressed, sc->Decompressed, UDF_BITMAP_CHUNK_BYTES);
             dc->Dirty = TRUE;
         } else if (sc->Compressed && sc->CompressedSize) {
+            /* Allocate only the actual compressed data size, not the
+               worst-case xrle_max_out size, to avoid wasting NonPagedPool. */
             dc->Compressed = (PCHAR)DbgAllocatePool(NonPagedPool,
-                                xrle_max_out(UDF_BITMAP_CHUNK_BYTES));
+                                sc->CompressedSize);
             if (!dc->Compressed) return STATUS_INSUFFICIENT_RESOURCES;
             RtlCopyMemory(dc->Compressed, sc->Compressed, sc->CompressedSize);
             dc->CompressedSize = sc->CompressedSize;
@@ -908,24 +932,35 @@ UDFChunkedBitmapsEqual(
     )
 {
     ULONG i;
-    BOOLEAN result;
     if (!a->Chunks || !b->Chunks) return (BOOLEAN)(a->Chunks == b->Chunks);
     if (a->ChunkCount != b->ChunkCount) return FALSE;
     for (i = 0; i < a->ChunkCount; i++) {
+        BOOLEAN equal;
         PCHAR da = UDFEnsureChunkDecompressed(a, i);
         PCHAR db = UDFEnsureChunkDecompressed(b, i);
         if (!da || !db) {
             UDFPrint(("UDFChunkedBitmapsEqual: OOM decompressing chunk %u\n", i));
-            return FALSE;
+            equal = FALSE;
+        } else {
+            equal = (BOOLEAN)(RtlCompareMemory(da, db, UDF_BITMAP_CHUNK_BYTES) == UDF_BITMAP_CHUNK_BYTES);
         }
-        if (RtlCompareMemory(da, db, UDF_BITMAP_CHUNK_BYTES) != UDF_BITMAP_CHUNK_BYTES) {
+        /* Free clean decompressed buffers immediately after comparison to
+           limit peak memory to 2 chunks at a time instead of 2*ChunkCount. */
+        if (!a->Chunks[i].Dirty && a->Chunks[i].Decompressed) {
+            DbgFreePool(a->Chunks[i].Decompressed);
+            a->Chunks[i].Decompressed = NULL;
+        }
+        if (!b->Chunks[i].Dirty && b->Chunks[i].Decompressed) {
+            DbgFreePool(b->Chunks[i].Decompressed);
+            b->Chunks[i].Decompressed = NULL;
+        }
+        if (!equal) {
             UDFPrint(("UDFChunkedBitmapsEqual: bitmaps differ at chunk %u\n", i));
             return FALSE;
         }
     }
-    result = TRUE;
     UDFPrint(("UDFChunkedBitmapsEqual: bitmaps are identical (%u chunks)\n", a->ChunkCount));
-    return result;
+    return TRUE;
 } // end UDFChunkedBitmapsEqual()
 
 /*
