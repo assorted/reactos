@@ -356,6 +356,11 @@ typedef struct _UDF_BITMAP_CHUNK {
     ULONG   CompressedSize;   /* bytes used in Compressed buffer */
     PCHAR   Decompressed;     /* raw UDF_BITMAP_CHUNK_BYTES data; NULL if compressed */
     BOOLEAN Dirty;            /* Decompressed was modified; needs recompression */
+    /* AllBits fast-path: valid only when Decompressed == NULL (chunk is compressed).
+       0x00 = all bits 0 (all blocks used); 0x01 = all bits 1 (all blocks free);
+       0x02 = mixed.  Initialised to 0x00 by RtlZeroMemory; updated in
+       UDFCompressAndFreeChunk.  Only consulted when Decompressed == NULL. */
+    uint8   AllBits;
 } UDF_BITMAP_CHUNK, *PUDF_BITMAP_CHUNK;
 
 /* A bitmap stored as an array of independently-compressible chunks */
