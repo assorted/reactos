@@ -677,6 +677,10 @@ UDFCleanupVCB(
         DbgFreePool(Vcb->BSBM_Bitmap);
         Vcb->BSBM_Bitmap = NULL;
     }
+    if (Vcb->BSBM_CompressedBitmap) {
+        DbgFreePool(Vcb->BSBM_CompressedBitmap);
+        Vcb->BSBM_CompressedBitmap = NULL;
+    }
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
     if (Vcb->FSBM_Bitmap_owners) {
         DbgFreePool(Vcb->FSBM_Bitmap_owners);

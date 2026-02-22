@@ -3959,6 +3959,7 @@ retry_flush_FE:
 
         // if FE is located in remapped block, place it to reliable space
         lba = FileInfo->Dloc->FELoc.Mapping[0].extLocation;
+        UDFEnsureBitmapDecompressed(Vcb);
         if (Vcb->BSBM_Bitmap) {
             if (UDFGetBadBit((uint32*)(Vcb->BSBM_Bitmap), lba)) {
                 AdPrint(("  bad block under FE @%x\n", lba));
