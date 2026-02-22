@@ -583,7 +583,13 @@ UDFEnsureChunkDecompressed(
     )
 {
     PUDF_BITMAP_CHUNK chunk = &bm->Chunks[chunkIdx];
-    if (chunk->Decompressed) return chunk->Decompressed;
+    PCHAR existing;
+    PCHAR newBuf;
+
+    existing = (PCHAR)InterlockedCompareExchangePointer(
+                   (volatile PVOID*)&chunk->Decompressed, NULL, NULL);
+    if (existing) return existing;
+
     /* Chunk is compressed; decompress it */
 #ifdef UDF_DBG
     UDFPrint(("UDFEnsureChunkDecompressed: chunk %u (%u bytes compressed -> %u KB)\n",
@@ -591,14 +597,22 @@ UDFEnsureChunkDecompressed(
               (chunk->Compressed && chunk->CompressedSize) ? chunk->CompressedSize : 0U,
               UDF_BITMAP_CHUNK_BYTES / 1024));
 #endif // UDF_DBG
-    chunk->Decompressed = (PCHAR)DbgAllocatePool(NonPagedPool, UDF_BITMAP_CHUNK_BYTES);
-    if (!chunk->Decompressed) return NULL;
+    newBuf = (PCHAR)DbgAllocatePool(NonPagedPool, UDF_BITMAP_CHUNK_BYTES);
+    if (!newBuf) return NULL;
     if (chunk->Compressed && chunk->CompressedSize > 0) {
-        xrle_decompress(chunk->Decompressed, chunk->Compressed, chunk->CompressedSize);
+        xrle_decompress(newBuf, chunk->Compressed, chunk->CompressedSize);
     } else {
-        RtlZeroMemory(chunk->Decompressed, UDF_BITMAP_CHUNK_BYTES);
+        RtlZeroMemory(newBuf, UDF_BITMAP_CHUNK_BYTES);
     }
-    return chunk->Decompressed;
+    /* Atomically publish.  If another thread beat us, use theirs and free ours. */
+    existing = (PCHAR)InterlockedCompareExchangePointer(
+                   (volatile PVOID*)&chunk->Decompressed, newBuf, NULL);
+    if (existing != NULL) {
+        /* Lost the race; the winner's buffer is already in chunk->Decompressed */
+        DbgFreePool(newBuf);
+        return existing;
+    }
+    return newBuf;
 } // end UDFEnsureChunkDecompressed()
 
 /*
@@ -1317,9 +1331,12 @@ UDFGetPartFreeSpace(
     IN uint32 partNum
     )
 {
-    UDFEnsureBitmapDecompressed(Vcb);
-    return UDFChunkedCountFreeBits(&Vcb->FSBM_Chunked,
+    uint32 s;
+    UDFAcquireResourceShared(&(Vcb->BitMapResource1), TRUE);
+    s = UDFChunkedCountFreeBits(&Vcb->FSBM_Chunked,
                UDFPartStart(Vcb, partNum), UDFPartEnd(Vcb, partNum));
+    UDFReleaseResource(&(Vcb->BitMapResource1));
+    return s;
 } // end UDFGetPartFreeSpace()
 
 int64
