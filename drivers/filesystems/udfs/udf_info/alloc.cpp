@@ -674,12 +674,30 @@ UDFCompressAndFreeChunk(
             chunk->Compressed = newBuf;
             chunk->CompressedSize = newSize;
             chunk->Dirty = FALSE;
+            /* Compute AllBits fast-path hint while Decompressed is still live.
+               0x00 = all-zeros (all used), 0x01 = all-ones (all free), 0x02 = mixed.
+               Only scan the full chunk when the first word is uniform (likely). */
+            {
+                uint32 *words = (uint32*)chunk->Decompressed;
+                uint32 first = words[0];
+                if (first == 0 || first == 0xFFFFFFFF) {
+                    ULONG k;
+                    BOOLEAN allSame = TRUE;
+                    for (k = 1; k < UDF_BITMAP_CHUNK_BYTES / sizeof(uint32); k++) {
+                        if (words[k] != first) { allSame = FALSE; break; }
+                    }
+                    chunk->AllBits = allSame ? (uint8)(first ? 0x01 : 0x00) : 0x02;
+                } else {
+                    chunk->AllBits = 0x02; /* mixed: first word is non-uniform */
+                }
+            }
 #ifdef UDF_DBG
-            UDFPrint(("  chunk %u: %u KB -> %u bytes (%u%%)\n",
+            UDFPrint(("  chunk %u: %u KB -> %u bytes (%u%%) AllBits=%u\n",
                       chunkIdx,
                       UDF_BITMAP_CHUNK_BYTES / 1024,
                       chunk->CompressedSize,
-                      (chunk->CompressedSize * 100) / UDF_BITMAP_CHUNK_BYTES));
+                      (chunk->CompressedSize * 100) / UDF_BITMAP_CHUNK_BYTES,
+                      (unsigned)chunk->AllBits));
 #endif // UDF_DBG
         } else {
             /* Compression buffer allocation failed; keep Decompressed alive */
@@ -703,11 +721,20 @@ UDFChunkedGetBit(
     uint32 chunkIdx = bit / UDF_BITMAP_CHUNK_BITS;
     uint32 bitInChunk = bit % UDF_BITMAP_CHUNK_BITS;
     PCHAR data;
+    PUDF_BITMAP_CHUNK chunk;
     if (!bm->Chunks || chunkIdx >= bm->ChunkCount) return FALSE;
-    data = UDFEnsureChunkDecompressed(bm, chunkIdx);
+    chunk = &bm->Chunks[chunkIdx];
+    data = (PCHAR)InterlockedCompareExchangePointer(
+               (volatile PVOID*)&chunk->Decompressed, NULL, NULL);
     if (!data) {
-        UDFPrint(("UDFChunkedGetBit: OOM decompressing chunk %u\n", chunkIdx));
-        return FALSE;
+        /* Fast path: avoid decompression for all-same chunks */
+        if (chunk->AllBits != 0x02)
+            return (BOOLEAN)(chunk->AllBits != 0);
+        data = UDFEnsureChunkDecompressed(bm, chunkIdx);
+        if (!data) {
+            UDFPrint(("UDFChunkedGetBit: OOM decompressing chunk %u\n", chunkIdx));
+            return FALSE;
+        }
     }
     return (BOOLEAN)UDFGetBit((uint32*)data, bitInChunk);
 } // end UDFChunkedGetBit()
@@ -809,6 +836,13 @@ UDFChunkedClrBits(
 /*
     Find the length of a consecutive run of same-valued bits starting at offs,
     up to (but not including) lim. Handles chunk boundaries transparently.
+
+    Uses a single private 64 KB buffer reused for every mixed chunk; all-same
+    chunks (AllBits != 0x02) are handled without any decompression at all.
+    Chunks that are already decompressed (live/dirty) are used directly.
+    No chunk is cached in chunk->Decompressed by this function, so
+    UDFCompressAllDirtyChunks after a full-partition scan costs nothing
+    (no decompressed buffers to free).
 */
 SIZE_T
 UDFChunkedGetBitmapLen(
@@ -819,10 +853,18 @@ UDFChunkedGetBitmapLen(
 {
     SIZE_T total = 0;
     uint32 cur;
-    BOOLEAN startBit;
+    BOOLEAN startBit = FALSE;
+    BOOLEAN startBitSet = FALSE;
+    PCHAR tempBuf;
     if (!bm->Chunks || offs >= lim || offs >= bm->BitCount) return 0;
     if (lim > bm->BitCount) lim = bm->BitCount;
-    startBit = UDFChunkedGetBit(bm, offs);
+    /* One private 64 KB buffer reused across all mixed chunks. */
+    tempBuf = (PCHAR)DbgAllocatePool(NonPagedPool, UDF_BITMAP_CHUNK_BYTES);
+    if (!tempBuf) {
+        UDFPrint(("UDFChunkedGetBitmapLen: OOM allocating %u byte temp buffer\n",
+                  UDF_BITMAP_CHUNK_BYTES));
+        return 0;
+    }
     cur = offs;
     while (cur < lim) {
         uint32 chunkIdx  = cur / UDF_BITMAP_CHUNK_BITS;
@@ -831,14 +873,42 @@ UDFChunkedGetBitmapLen(
         uint32 relLim    = (uint32)min((SIZE_T)(lim - chunkBase), (SIZE_T)UDF_BITMAP_CHUNK_BITS);
         SIZE_T len;
         PCHAR data;
+        PUDF_BITMAP_CHUNK chunk;
         if (chunkIdx >= bm->ChunkCount) break;
-        data = UDFEnsureChunkDecompressed(bm, chunkIdx);
+        chunk = &bm->Chunks[chunkIdx];
+        /* Use already-live decompressed buffer (written by current exclusive
+           lock holder); otherwise use AllBits fast path or temp buffer. */
+        data = (PCHAR)InterlockedCompareExchangePointer(
+                   (volatile PVOID*)&chunk->Decompressed, NULL, NULL);
         if (!data) {
-            UDFPrint(("UDFChunkedGetBitmapLen: OOM decompressing chunk %u\n", chunkIdx));
+            /* Fast path: all-same chunk — no decompression needed. */
+            if (chunk->AllBits != 0x02) {
+                BOOLEAN chunkBit = (BOOLEAN)(chunk->AllBits != 0);
+                if (!startBitSet) {
+                    startBit = chunkBit;
+                    startBitSet = TRUE;
+                } else if (chunkBit != startBit) {
+                    break;
+                }
+                /* All bits [relCur, relLim) match startBit */
+                total += relLim - relCur;
+                cur = chunkBase + relLim;
+                continue;
+            }
+            /* Mixed chunk: decompress into reusable private buffer, no caching. */
+            if (chunk->Compressed && chunk->CompressedSize > 0)
+                xrle_decompress(tempBuf, chunk->Compressed, chunk->CompressedSize);
+            else
+                RtlZeroMemory(tempBuf, UDF_BITMAP_CHUNK_BYTES);
+            data = tempBuf;
+        }
+        /* Determine or verify startBit from decompressed data */
+        if (!startBitSet) {
+            startBit = (BOOLEAN)UDFGetBit((uint32*)data, relCur);
+            startBitSet = TRUE;
+        } else if ((BOOLEAN)UDFGetBit((uint32*)data, relCur) != startBit) {
             break;
         }
-        /* If this chunk's bit at relCur doesn't match startBit, the run ended */
-        if ((BOOLEAN)UDFGetBit((uint32*)data, relCur) != startBit) break;
         len = UDFGetBitmapLen((uint32*)data, relCur, relLim);
         total += len;
         /* Run ended within this chunk segment */
@@ -846,6 +916,7 @@ UDFChunkedGetBitmapLen(
         /* Advance to next chunk */
         cur = chunkBase + relLim;
     }
+    DbgFreePool(tempBuf);
     return total;
 } // end UDFChunkedGetBitmapLen()
 
@@ -893,12 +964,18 @@ UDFChunkedCountFreeBits(
         data = (PCHAR)InterlockedCompareExchangePointer(
                    (volatile PVOID*)&chunk->Decompressed, NULL, NULL);
         if (!data) {
-            /* Decompress into our private buffer WITHOUT storing the result in
-               chunk->Decompressed.  This is the key: we never cache, so the
-               64 KB tempBuf is reused for every chunk, keeping peak NonPagedPool
-               usage at 64 KB instead of ChunkCount*64 KB (64 MB for 256 GB drive).
-               Note: if data == NULL here then chunk->Compressed is the sole stable
-               copy; it cannot be freed while we hold BitMapResource1 shared. */
+            /* AllBits fast path: avoid decompression for all-same chunks.
+               AllBits=0x00 (all-used) contributes 0 free bits; skip immediately.
+               AllBits=0x01 (all-free) contributes relEnd-relCur free bits. */
+            if (chunk->AllBits != 0x02) {
+                if (chunk->AllBits == 0x01)
+                    s += relEnd - relCur;
+                cur = chunkBase + relEnd;
+                continue;
+            }
+            /* Mixed chunk: decompress into our private buffer WITHOUT storing
+               the result in chunk->Decompressed.  The 64 KB tempBuf is reused
+               for every chunk; peak NonPagedPool stays at 64 KB. */
             if (chunk->Compressed && chunk->CompressedSize > 0) {
                 xrle_decompress(tempBuf, chunk->Compressed, chunk->CompressedSize);
             } else {
@@ -941,11 +1018,13 @@ UDFCopyChunkedBitmap(
         if (dc->Compressed)   { DbgFreePool(dc->Compressed);   dc->Compressed   = NULL; }
         dc->CompressedSize = 0;
         dc->Dirty = FALSE;
+        dc->AllBits = 0x00;
         if (sc->Decompressed) {
             dc->Decompressed = (PCHAR)DbgAllocatePool(NonPagedPool, UDF_BITMAP_CHUNK_BYTES);
             if (!dc->Decompressed) return STATUS_INSUFFICIENT_RESOURCES;
             RtlCopyMemory(dc->Decompressed, sc->Decompressed, UDF_BITMAP_CHUNK_BYTES);
             dc->Dirty = TRUE;
+            dc->AllBits = 0x02; /* unknown until next UDFCompressAndFreeChunk */
         } else if (sc->Compressed && sc->CompressedSize) {
             /* Allocate only the actual compressed data size, not the
                worst-case xrle_max_out size, to avoid wasting NonPagedPool. */
@@ -954,6 +1033,7 @@ UDFCopyChunkedBitmap(
             if (!dc->Compressed) return STATUS_INSUFFICIENT_RESOURCES;
             RtlCopyMemory(dc->Compressed, sc->Compressed, sc->CompressedSize);
             dc->CompressedSize = sc->CompressedSize;
+            dc->AllBits = sc->AllBits; /* preserve known uniform-chunk hint */
         }
     }
     return STATUS_SUCCESS;
@@ -975,8 +1055,19 @@ UDFChunkedBitmapsEqual(
     if (a->ChunkCount != b->ChunkCount) return FALSE;
     for (i = 0; i < a->ChunkCount; i++) {
         BOOLEAN equal;
-        PCHAR da = UDFEnsureChunkDecompressed(a, i);
-        PCHAR db = UDFEnsureChunkDecompressed(b, i);
+        PUDF_BITMAP_CHUNK ca = &a->Chunks[i];
+        PUDF_BITMAP_CHUNK cb = &b->Chunks[i];
+        PCHAR da, db;
+        /* Fast path: both chunks compressed and all-same — compare without decompressing */
+        if (!ca->Decompressed && !cb->Decompressed &&
+            ca->AllBits != 0x02 && cb->AllBits != 0x02) {
+            if (ca->AllBits == cb->AllBits) continue; /* identical all-same chunks */
+            UDFPrint(("UDFChunkedBitmapsEqual: bitmaps differ at chunk %u (AllBits %u vs %u)\n",
+                      i, (unsigned)ca->AllBits, (unsigned)cb->AllBits));
+            return FALSE;
+        }
+        da = UDFEnsureChunkDecompressed(a, i);
+        db = UDFEnsureChunkDecompressed(b, i);
         if (!da || !db) {
             UDFPrint(("UDFChunkedBitmapsEqual: OOM decompressing chunk %u\n", i));
             equal = FALSE;
