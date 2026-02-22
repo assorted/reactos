@@ -847,6 +847,12 @@ UDFChunkedGetBitmapLen(
 
 /*
     Count free (set) bits in [start, end) across chunks.
+
+    Uses a single private 64 KB buffer reused for every chunk whose
+    Decompressed pointer is not already live.  This avoids accumulating
+    up to ChunkCount*64 KB (64 MB for a 256 GB drive) of NonPagedPool
+    by never caching decompressed data across loop iterations.
+    Peak memory is ONE extra 64 KB buffer for the entire operation.
 */
 uint32
 UDFChunkedCountFreeBits(
@@ -857,26 +863,55 @@ UDFChunkedCountFreeBits(
 {
     uint32 cur = start;
     uint32 s = 0;
+    PCHAR tempBuf;
     if (!bm->Chunks) return 0;
     if (end > bm->BitCount) end = bm->BitCount;
+    /* One private buffer reused per chunk – never stored in chunk->Decompressed. */
+    tempBuf = (PCHAR)DbgAllocatePool(NonPagedPool, UDF_BITMAP_CHUNK_BYTES);
+    if (!tempBuf) {
+        UDFPrint(("UDFChunkedCountFreeBits: OOM allocating %u byte temp buffer\n",
+                  UDF_BITMAP_CHUNK_BYTES));
+        return 0;
+    }
     while (cur < end) {
         uint32 chunkIdx  = cur / UDF_BITMAP_CHUNK_BITS;
         uint32 chunkBase = chunkIdx * UDF_BITMAP_CHUNK_BITS;
         uint32 relCur    = cur - chunkBase;
         uint32 relEnd    = (uint32)min((SIZE_T)(end - chunkBase), (SIZE_T)UDF_BITMAP_CHUNK_BITS);
+        PUDF_BITMAP_CHUNK chunk;
         PCHAR data;
         uint32 j;
         if (chunkIdx >= bm->ChunkCount) break;
-        data = UDFEnsureChunkDecompressed(bm, chunkIdx);
+        chunk = &bm->Chunks[chunkIdx];
+        /* Atomic read of chunk->Decompressed using the same interlocked pattern
+           as UDFEnsureChunkDecompressed.  We hold BitMapResource1 shared so no
+           exclusive writer can free this pointer while we read it. */
+        data = (PCHAR)InterlockedCompareExchangePointer(
+                   (volatile PVOID*)&chunk->Decompressed, NULL, NULL);
         if (!data) {
-            UDFPrint(("UDFChunkedCountFreeBits: OOM decompressing chunk %u\n", chunkIdx));
-            break;
+            /* Decompress into our private buffer WITHOUT storing the result in
+               chunk->Decompressed.  This is the key: we never cache, so the
+               64 KB tempBuf is reused for every chunk, keeping peak NonPagedPool
+               usage at 64 KB instead of ChunkCount*64 KB (64 MB for 256 GB drive).
+               Note: if data == NULL here then chunk->Compressed is the sole stable
+               copy; it cannot be freed while we hold BitMapResource1 shared. */
+            if (chunk->Compressed && chunk->CompressedSize > 0) {
+                xrle_decompress(tempBuf, chunk->Compressed, chunk->CompressedSize);
+            } else {
+                /* NULL/NULL = all-zeros = all blocks used; no free bits here. */
+                RtlZeroMemory(tempBuf, UDF_BITMAP_CHUNK_BYTES);
+            }
+            data = tempBuf;
         }
         for (j = relCur / 8; j < (relEnd + 7) / 8; j++) {
             s += bit_count_tab[(uint8)data[j]];
         }
         cur = chunkBase + relEnd;
     }
+    /* tempBuf is always freed here whether the loop ran to completion or broke
+       early (e.g. chunkIdx >= bm->ChunkCount) — break exits the while loop
+       and falls through to this line.  No leak on any exit path. */
+    DbgFreePool(tempBuf);
     return s;
 } // end UDFChunkedCountFreeBits()
 
