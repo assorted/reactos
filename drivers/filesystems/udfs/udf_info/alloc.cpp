@@ -973,7 +973,10 @@ UDFGetPartFreeSpace(
     uint32 lim/*, len=1*/;
     uint32 s=0;
     uint32 j;
+
+    UDFEnsureBitmapDecompressed(Vcb);
     PUCHAR cur = (PUCHAR)(Vcb->FSBM_Bitmap);
+    if (!cur) return 0;
 
     lim = (UDFPartEnd(Vcb,partNum)+7)/8;
     for(j=(UDFPartStart(Vcb,partNum)+7)/8; j<lim/* && len*/; j++) {

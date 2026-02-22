@@ -466,6 +466,10 @@ UDFMountVolume(
             UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
             UDFDecompressBitmaps(Vcb);
             RC = UDFCompleteMount(IrpContext, Vcb);
+            if (NT_SUCCESS(RC)) {
+                Vcb->TotalAllocUnits = UDFGetTotalSpace(Vcb);
+                Vcb->FreeAllocUnits = UDFGetFreeSpace(Vcb);
+            }
             UDFCompressBitmaps(Vcb);
             UDFReleaseResource(&(Vcb->BitMapResource1));
             if (!NT_SUCCESS(RC)) {
@@ -501,9 +505,6 @@ UDFMountVolume(
         NT_ASSERT(Vcb->VcbReference == Vcb->VcbResidualReference);
 
         Vcb->VcbCondition = VcbMounted;
-
-        Vcb->TotalAllocUnits = UDFGetTotalSpace(Vcb);
-        Vcb->FreeAllocUnits = UDFGetFreeSpace(Vcb);
 
         //  The new mount is complete.
         UDFReleaseResource( &(Vcb->VcbResource) );
