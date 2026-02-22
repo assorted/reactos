@@ -528,9 +528,10 @@ UDFMarkBadSpaceAsUsed(
 } // UDFMarkBadSpaceAsUsed()
 
 /*
-    This routine decompresses the xrle-compressed FSBM_Bitmap in a way that
-    is safe for concurrent shared read access (using interlocked compare-exchange).
-    Does NOT affect FSBM_LockDepth; must only be used with shared BitMapResource1.
+    This routine decompresses the xrle-compressed FSBM_Bitmap and BSBM_Bitmap
+    in a way that is safe for concurrent shared read access (using interlocked
+    compare-exchange).  Does NOT affect FSBM_LockDepth; must only be used
+    without exclusive BitMapResource1 ownership.
  */
 NTSTATUS
 UDFEnsureBitmapDecompressed(
@@ -541,17 +542,25 @@ UDFEnsureBitmapDecompressed(
         int8* newBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
         if (!newBitmap) return STATUS_INSUFFICIENT_RESOURCES;
         xrle_decompress(newBitmap, Vcb->FSBM_CompressedBitmap, Vcb->FSBM_CompressedByteCount);
-        /* Use interlocked exchange so concurrent shared readers don't double-allocate */
+        /* Use interlocked exchange so concurrent readers don't double-allocate */
         if (InterlockedCompareExchangePointer((PVOID*)&Vcb->FSBM_Bitmap, newBitmap, NULL) != NULL) {
             DbgFreePool(newBitmap);
+        }
+    }
+    if (Vcb->BSBM_CompressedBitmap && !Vcb->BSBM_Bitmap) {
+        int8* newBadBlockBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
+        if (!newBadBlockBitmap) return STATUS_INSUFFICIENT_RESOURCES;
+        xrle_decompress(newBadBlockBitmap, Vcb->BSBM_CompressedBitmap, Vcb->BSBM_CompressedByteCount);
+        if (InterlockedCompareExchangePointer((PVOID*)&Vcb->BSBM_Bitmap, newBadBlockBitmap, NULL) != NULL) {
+            DbgFreePool(newBadBlockBitmap);
         }
     }
     return STATUS_SUCCESS;
 } // end UDFEnsureBitmapDecompressed()
 
 /*
-    This routine decompresses the xrle-compressed free space bitmaps
-    into the active decompressed fields, enabling direct bit-level access.
+    This routine decompresses all xrle-compressed bitmaps into the active
+    decompressed fields, enabling direct bit-level access.
     Must be called after acquiring exclusive BitMapResource1.
     Uses a depth counter to handle recursive exclusive acquisitions.
  */
@@ -581,12 +590,20 @@ UDFDecompressBitmaps(
             Vcb->FSBM_OldBitmap = newOldBitmap;
         }
     }
+    /* Decompress BSBM_Bitmap if stored compressed */
+    if (Vcb->BSBM_CompressedBitmap && !Vcb->BSBM_Bitmap) {
+        int8* newBadBlockBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
+        if (newBadBlockBitmap) {
+            xrle_decompress(newBadBlockBitmap, Vcb->BSBM_CompressedBitmap, Vcb->BSBM_CompressedByteCount);
+            Vcb->BSBM_Bitmap = newBadBlockBitmap;
+        }
+    }
     return STATUS_SUCCESS;
 } // end UDFDecompressBitmaps()
 
 /*
-    This routine compresses the active free space bitmaps using xrle and
-    frees the decompressed copies to reduce NonPagedPool usage.
+    This routine compresses all active bitmaps using xrle and frees the
+    decompressed copies to reduce NonPagedPool usage.
     Must be called before releasing exclusive BitMapResource1.
     Compression occurs only at the outermost (last) exclusive release.
  */
@@ -621,6 +638,19 @@ UDFCompressBitmaps(
                 Vcb->FSBM_OldCompressedBitmap, Vcb->FSBM_OldBitmap, Vcb->FSBM_ByteCount);
             DbgFreePool(Vcb->FSBM_OldBitmap);
             Vcb->FSBM_OldBitmap = NULL;
+        }
+    }
+    /* Allocate compressed buffer on first use and then compress BSBM_Bitmap */
+    if (Vcb->BSBM_Bitmap) {
+        if (!Vcb->BSBM_CompressedBitmap) {
+            Vcb->BSBM_CompressedBitmap = (int8*)DbgAllocatePool(NonPagedPool,
+                xrle_max_out(Vcb->FSBM_ByteCount));
+        }
+        if (Vcb->BSBM_CompressedBitmap) {
+            Vcb->BSBM_CompressedByteCount = (ULONG)xrle_compress(
+                Vcb->BSBM_CompressedBitmap, Vcb->BSBM_Bitmap, Vcb->FSBM_ByteCount);
+            DbgFreePool(Vcb->BSBM_Bitmap);
+            Vcb->BSBM_Bitmap = NULL;
         }
     }
 } // end UDFCompressBitmaps()

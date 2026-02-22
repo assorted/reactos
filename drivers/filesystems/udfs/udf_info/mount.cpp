@@ -881,6 +881,7 @@ UDFUpdateNonAllocated(
     if (!Vcb->NonAllocFileInfo) {
         return STATUS_SUCCESS;
     }
+    UDFEnsureBitmapDecompressed(Vcb);
     if (!(bad_bm = Vcb->BSBM_Bitmap)) {
         return STATUS_SUCCESS;
     }

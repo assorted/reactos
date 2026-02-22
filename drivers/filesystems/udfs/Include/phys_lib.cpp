@@ -436,6 +436,7 @@ UDFPrepareForWriteOperation(
     )
 {
 #ifdef _UDF_STRUCTURES_H_
+    UDFEnsureBitmapDecompressed((PVCB)Vcb);
     if (Vcb->BSBM_Bitmap) {
         ULONG i;
         for(i=0; i<BCount; i++) {
@@ -1005,6 +1006,7 @@ UDFPrepareForReadOperation(
     uint32 i = Vcb->LastReadTrack;
 
 #ifdef _UDF_STRUCTURES_H_
+    UDFEnsureBitmapDecompressed((PVCB)Vcb);
     if (Vcb->BSBM_Bitmap) {
         ULONG i;
         for(i=0; i<BCount; i++) {

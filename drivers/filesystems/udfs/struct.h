@@ -611,7 +611,9 @@ struct VCB {
     PCHAR           FSBM_OldCompressedBitmap;   // xrle-compressed FSBM_OldBitmap
     ULONG           FSBM_OldCompressedByteCount; // size of FSBM_OldCompressedBitmap data
     ULONG           BitmapModified;
-    PCHAR           BSBM_Bitmap;     // 0 - normal, 1 - bad-block
+    PCHAR           BSBM_Bitmap;     // 0 - normal, 1 - bad-block (decompressed, NULL when compressed)
+    PCHAR           BSBM_CompressedBitmap;   // xrle-compressed BSBM_Bitmap
+    ULONG           BSBM_CompressedByteCount; // size of BSBM_CompressedBitmap data
 
     // pointers to Volume Descriptor Sequences
     ULONG VDS1;

@@ -1673,6 +1673,7 @@ UDFAllocateFESpace(
                 Extent.extLength = Vcb->SectorSize | (EXTENT_NOT_RECORDED_ALLOCATED << 30);
                 Extent.extLocation = Ext->Mapping[i].extLocation;
 
+                UDFEnsureBitmapDecompressed(Vcb);
                 if (Vcb->BSBM_Bitmap) {
                     uint32 lba = Ext->Mapping[i].extLocation;
                     if (UDFGetBadBit((uint32*)(Vcb->BSBM_Bitmap), lba)) {
