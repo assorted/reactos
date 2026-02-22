@@ -287,6 +287,10 @@ UDFGetBitmapLen(
         j=0;
 While_3:
         i++;
+        /* Guard: when lLim==0 the bit limit is a multiple of 32; word Lim has 0
+           bits to process and lies one past the end of an exactly-sized buffer.
+           When lLim>0, word Lim IS the valid last (partial) word -- don't break. */
+        if (i > Lim || (i == Lim && !lLim)) break;
         a = Bitmap[i];
 
         if (i<Lim) {
