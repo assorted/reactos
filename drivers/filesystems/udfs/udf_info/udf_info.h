@@ -833,7 +833,6 @@ NTSTATUS UDFReadFileLocation__(IN PVCB Vcb,
 */
 
 // zero data in file described by FileInfo
-__inline
 NTSTATUS
 UDFZeroFile__(
     IN PIRP_CONTEXT IrpContext,
@@ -846,7 +845,6 @@ UDFZeroFile__(
     );
 
 // make sparse area in file described by FileInfo
-__inline
 NTSTATUS UDFSparseFile__(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
