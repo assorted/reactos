@@ -1,0 +1,500 @@
+diff --git a/drivers/filesystems/udfs/CMakeLists.txt b/drivers/filesystems/udfs/CMakeLists.txt
+index 53ce00f..4332487 100644
+--- a/drivers/filesystems/udfs/CMakeLists.txt
++++ b/drivers/filesystems/udfs/CMakeLists.txt
+@@ -1,55 +1,51 @@
+-
+ include_directories(Include)
+ 
+ list(APPEND SOURCE
+-    udf_info/alloc.cpp
+-    udf_info/dirtree.cpp
+-    udf_info/extent.cpp
+-    udf_info/mount.cpp
+-    udf_info/phys_eject.cpp
+-    udf_info/physical.cpp
+-    udf_info/remap.cpp
+-    udf_info/udf_info.cpp
+-    cleanup.cpp
+-    close.cpp
+-    create.cpp
+-    devcntrl.cpp
+-    dircntrl.cpp
+-    env_spec.cpp
+-    fastio.cpp
+-    fileinfo.cpp
+-    flush.cpp
+-    fscntrl.cpp
+-    lockctrl.cpp
+-    mem.cpp
+-    misc.cpp
+-    namesup.cpp
+-    pnp.cpp
+-    read.cpp
+-    secursup.cpp
+-    shutdown.cpp
+-    sys_spec.cpp
+-    udf_dbg.cpp
+-    udfinit.cpp
+-    unload.cpp
+-    verfysup.cpp
+-    volinfo.cpp
+-    write.cpp
+-    strucsup.cpp
+-    filobsup.cpp
+-    udfdata.cpp
++    udf_info/alloc.c
++    udf_info/dirtree.c
++    udf_info/extent.c
++    udf_info/mount.c
++    udf_info/phys_eject.c
++    udf_info/physical.c
++    udf_info/remap.c
++    udf_info/udf_info.c
++    cleanup.c
++    close.c
++    create.c
++    devcntrl.c
++    dircntrl.c
++    env_spec.c
++    fastio.c
++    fileinfo.c
++    flush.c
++    fscntrl.c
++    lockctrl.c
++    mem.c
++    misc.c
++    namesup.c
++    pnp.c
++    read.c
++    secursup.c
++    shutdown.c
++    sys_spec.c
++    udf_dbg.c
++    udfinit.c
++    unload.c
++    verfysup.c
++    volinfo.c
++    write.c
++    strucsup.c
++    filobsup.c
++    udfdata.c
+     udffs.h)
+ 
+ add_library(udfs MODULE ${SOURCE} udffs.rc)
+ 
+ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+     target_compile_options(udfs PRIVATE -Wno-unused-but-set-variable)
+-    target_compile_options(udfs PRIVATE -Wno-invalid-offsetof)
+-    target_compile_options(udfs PRIVATE -Wno-error -fpermissive)
+ endif()
+ 
+ if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+-    target_compile_options(udfs PRIVATE -Wno-extern-c-compat -Wno-unused-value)
+     target_compile_options(udfs PRIVATE -Wno-tautological-constant-out-of-range-compare)
+     target_compile_options(udfs PRIVATE -Wno-tautological-unsigned-zero-compare -Wno-self-assign)
+     target_compile_options(udfs PRIVATE -Wno-sometimes-uninitialized -Wno-parentheses-equality)
+diff --git a/drivers/filesystems/udfs/Include/Sys_spec_lib.cpp b/drivers/filesystems/udfs/Include/Sys_spec_lib.c
+similarity index 100%
+rename from drivers/filesystems/udfs/Include/Sys_spec_lib.cpp
+rename to drivers/filesystems/udfs/Include/Sys_spec_lib.c
+diff --git a/drivers/filesystems/udfs/Include/mem_tools.cpp b/drivers/filesystems/udfs/Include/mem_tools.c
+similarity index 100%
+rename from drivers/filesystems/udfs/Include/mem_tools.cpp
+rename to drivers/filesystems/udfs/Include/mem_tools.c
+diff --git a/drivers/filesystems/udfs/Include/phys_lib.cpp b/drivers/filesystems/udfs/Include/phys_lib.c
+similarity index 100%
+rename from drivers/filesystems/udfs/Include/phys_lib.cpp
+rename to drivers/filesystems/udfs/Include/phys_lib.c
+diff --git a/drivers/filesystems/udfs/Include/regtools.cpp b/drivers/filesystems/udfs/Include/regtools.c
+similarity index 100%
+rename from drivers/filesystems/udfs/Include/regtools.cpp
+rename to drivers/filesystems/udfs/Include/regtools.c
+diff --git a/drivers/filesystems/udfs/Include/string_lib.cpp b/drivers/filesystems/udfs/Include/string_lib.c
+similarity index 98%
+rename from drivers/filesystems/udfs/Include/string_lib.cpp
+rename to drivers/filesystems/udfs/Include/string_lib.c
+index 1750feb..37bd1d8 100644
+--- a/drivers/filesystems/udfs/Include/string_lib.cpp
++++ b/drivers/filesystems/udfs/Include/string_lib.c
+@@ -4,7 +4,6 @@
+ // This file was released under the GPLv2 on June 2015.
+ ////////////////////////////////////////////////////////////////////
+ 
+-extern "C"
+ ULONG
+ MyRtlCompareMemory(
+     PVOID s1,
+@@ -26,7 +25,6 @@ MyRtlCompareMemory(
+ 
+ #ifndef NT_NATIVE_MODE
+ 
+-extern "C"
+ ULONG
+ RtlCompareUnicodeString(
+     PUNICODE_STRING s1,
+@@ -41,7 +39,6 @@ RtlCompareUnicodeString(
+     return i;
+ }
+ 
+-extern "C"
+ NTSTATUS
+ RtlUpcaseUnicodeString(
+     PUNICODE_STRING dst,
+@@ -57,7 +54,6 @@ RtlUpcaseUnicodeString(
+     return STATUS_SUCCESS;
+ }
+ 
+-extern "C"
+ NTSTATUS
+ RtlAppendUnicodeToString(
+     IN PUNICODE_STRING Str1,
+diff --git a/drivers/filesystems/udfs/cleanup.cpp b/drivers/filesystems/udfs/cleanup.c
+similarity index 100%
+rename from drivers/filesystems/udfs/cleanup.cpp
+rename to drivers/filesystems/udfs/cleanup.c
+diff --git a/drivers/filesystems/udfs/close.cpp b/drivers/filesystems/udfs/close.c
+similarity index 100%
+rename from drivers/filesystems/udfs/close.cpp
+rename to drivers/filesystems/udfs/close.c
+diff --git a/drivers/filesystems/udfs/create.cpp b/drivers/filesystems/udfs/create.c
+similarity index 100%
+rename from drivers/filesystems/udfs/create.cpp
+rename to drivers/filesystems/udfs/create.c
+diff --git a/drivers/filesystems/udfs/devcntrl.cpp b/drivers/filesystems/udfs/devcntrl.c
+similarity index 100%
+rename from drivers/filesystems/udfs/devcntrl.cpp
+rename to drivers/filesystems/udfs/devcntrl.c
+diff --git a/drivers/filesystems/udfs/dircntrl.cpp b/drivers/filesystems/udfs/dircntrl.c
+similarity index 100%
+rename from drivers/filesystems/udfs/dircntrl.cpp
+rename to drivers/filesystems/udfs/dircntrl.c
+diff --git a/drivers/filesystems/udfs/env_spec.cpp b/drivers/filesystems/udfs/env_spec.c
+similarity index 100%
+rename from drivers/filesystems/udfs/env_spec.cpp
+rename to drivers/filesystems/udfs/env_spec.c
+diff --git a/drivers/filesystems/udfs/fastio.cpp b/drivers/filesystems/udfs/fastio.c
+similarity index 100%
+rename from drivers/filesystems/udfs/fastio.cpp
+rename to drivers/filesystems/udfs/fastio.c
+diff --git a/drivers/filesystems/udfs/fileinfo.cpp b/drivers/filesystems/udfs/fileinfo.c
+similarity index 100%
+rename from drivers/filesystems/udfs/fileinfo.cpp
+rename to drivers/filesystems/udfs/fileinfo.c
+diff --git a/drivers/filesystems/udfs/filobsup.cpp b/drivers/filesystems/udfs/filobsup.c
+similarity index 100%
+rename from drivers/filesystems/udfs/filobsup.cpp
+rename to drivers/filesystems/udfs/filobsup.c
+diff --git a/drivers/filesystems/udfs/flush.cpp b/drivers/filesystems/udfs/flush.c
+similarity index 100%
+rename from drivers/filesystems/udfs/flush.cpp
+rename to drivers/filesystems/udfs/flush.c
+diff --git a/drivers/filesystems/udfs/fscntrl.cpp b/drivers/filesystems/udfs/fscntrl.c
+similarity index 100%
+rename from drivers/filesystems/udfs/fscntrl.cpp
+rename to drivers/filesystems/udfs/fscntrl.c
+diff --git a/drivers/filesystems/udfs/lockctrl.cpp b/drivers/filesystems/udfs/lockctrl.c
+similarity index 100%
+rename from drivers/filesystems/udfs/lockctrl.cpp
+rename to drivers/filesystems/udfs/lockctrl.c
+diff --git a/drivers/filesystems/udfs/mem.cpp b/drivers/filesystems/udfs/mem.c
+similarity index 93%
+rename from drivers/filesystems/udfs/mem.cpp
+rename to drivers/filesystems/udfs/mem.c
+index 072602c..301ead0 100644
+--- a/drivers/filesystems/udfs/mem.cpp
++++ b/drivers/filesystems/udfs/mem.c
+@@ -8,4 +8,4 @@
+ // define the file specific bug-check id
+ #define         UDF_BUG_CHECK_ID                UDF_FILE_MEM
+ 
+-#include "Include/mem_tools.cpp"
++#include "Include/mem_tools.c"
+diff --git a/drivers/filesystems/udfs/misc.cpp b/drivers/filesystems/udfs/misc.c
+similarity index 99%
+rename from drivers/filesystems/udfs/misc.cpp
+rename to drivers/filesystems/udfs/misc.c
+index c78f454..d9cf307 100644
+--- a/drivers/filesystems/udfs/misc.cpp
++++ b/drivers/filesystems/udfs/misc.c
+@@ -711,7 +711,7 @@ UDFCreateIrpContext(
+     }
+ 
+     // TODO: fix
+-    if (false && IrpSp->FileObject != NULL) {
++    if (FALSE && IrpSp->FileObject != NULL) {
+ 
+         PFILE_OBJECT FileObject = IrpSp->FileObject;
+ 
+@@ -2106,5 +2106,5 @@ UDFWaitForIoAtEof(
+     return TRUE;
+ }
+ 
+-#include "Include/regtools.cpp"
++#include "Include/regtools.c"
+ 
+diff --git a/drivers/filesystems/udfs/namesup.cpp b/drivers/filesystems/udfs/namesup.c
+similarity index 100%
+rename from drivers/filesystems/udfs/namesup.cpp
+rename to drivers/filesystems/udfs/namesup.c
+diff --git a/drivers/filesystems/udfs/pnp.cpp b/drivers/filesystems/udfs/pnp.c
+similarity index 100%
+rename from drivers/filesystems/udfs/pnp.cpp
+rename to drivers/filesystems/udfs/pnp.c
+diff --git a/drivers/filesystems/udfs/protos.h b/drivers/filesystems/udfs/protos.h
+index 59cb00c..7898d13 100644
+--- a/drivers/filesystems/udfs/protos.h
++++ b/drivers/filesystems/udfs/protos.h
+@@ -964,7 +964,7 @@ UDFCommonShutdown(
+ /*************************************************************************
+ * Prototypes for the file UDFinit.cpp
+ *************************************************************************/
+-extern "C" NTSTATUS NTAPI DriverEntry(
++NTSTATUS NTAPI DriverEntry(
+ PDRIVER_OBJECT              DriverObject,       // created by the I/O sub-system
+ PUNICODE_STRING             RegistryPath);      // path to the registry key
+ 
+@@ -1271,7 +1271,7 @@ UDFAcquireResource(
+ #define UDFReleasePagingIo(IC,F)                                                        \
+     ExReleaseResourceLite((F)->Header.PagingIoResource)
+ 
+-inline
++static inline
+ ULONG
+ UDFHighBit(
+     ULONG Word
+@@ -1295,7 +1295,7 @@ UDFHighBit(
+ 
+ #define SectorSize(V) ((V)->SectorSize)
+ 
+-inline
++static inline
+ ULONG
+ SectorAlign(
+     PVCB Vcb,
+@@ -1305,7 +1305,7 @@ SectorAlign(
+     return (Length + (Vcb->SectorSize - 1)) & ~(Vcb->SectorSize - 1);
+ }
+ 
+-inline
++static inline
+ ULONGLONG
+ LlSectorAlign( 
+     PVCB Vcb, 
+@@ -1327,7 +1327,7 @@ UDFSetThreadContext(
+     (IC)->ThreadContext = NULL
+ 
+ 
+-inline
++static inline
+ BOOLEAN UdfIsExtendedFESupported(
+     _In_ PVCB Vcb
+ )
+@@ -1335,7 +1335,7 @@ BOOLEAN UdfIsExtendedFESupported(
+     return Vcb->NSRDesc == VRS_NSR03_FOUND;
+ }
+ 
+-inline
++static inline
+ BOOLEAN UDFIsStreamsSupported(
+     _In_ PVCB Vcb
+ )
+diff --git a/drivers/filesystems/udfs/read.cpp b/drivers/filesystems/udfs/read.c
+similarity index 100%
+rename from drivers/filesystems/udfs/read.cpp
+rename to drivers/filesystems/udfs/read.c
+diff --git a/drivers/filesystems/udfs/secursup.cpp b/drivers/filesystems/udfs/secursup.c
+similarity index 100%
+rename from drivers/filesystems/udfs/secursup.cpp
+rename to drivers/filesystems/udfs/secursup.c
+diff --git a/drivers/filesystems/udfs/shutdown.cpp b/drivers/filesystems/udfs/shutdown.c
+similarity index 100%
+rename from drivers/filesystems/udfs/shutdown.cpp
+rename to drivers/filesystems/udfs/shutdown.c
+diff --git a/drivers/filesystems/udfs/strucsup.cpp b/drivers/filesystems/udfs/strucsup.c
+similarity index 99%
+rename from drivers/filesystems/udfs/strucsup.cpp
+rename to drivers/filesystems/udfs/strucsup.c
+index 6e00af7..7964ebb 100644
+--- a/drivers/filesystems/udfs/strucsup.cpp
++++ b/drivers/filesystems/udfs/strucsup.c
+@@ -29,7 +29,7 @@ typedef struct _FCB_TABLE_ELEMENT {
+      RtlDeleteElementGenericTable( &(F)->Vcb->FcbTable, &_Key );     \
+ }
+ 
+-inline
++static inline
+ PFCB_NONPAGED
+ UDFAllocateFcbNonpaged(
+ )
+@@ -37,7 +37,7 @@ UDFAllocateFcbNonpaged(
+     return (PFCB_NONPAGED)ExAllocateFromNPagedLookasideList(&UdfData.UDFNonPagedFcbLookasideList);
+ }
+ 
+-inline
++static inline
+ PFCB
+ UDFAllocateFcbIndex(
+ )
+@@ -45,7 +45,7 @@ UDFAllocateFcbIndex(
+     return (PFCB)ExAllocateFromPagedLookasideList(&UdfData.UDFFcbIndexLookasideList);
+ }
+ 
+-inline
++static inline
+ PFCB
+ UDFAllocateFcbData(
+ )
+@@ -53,7 +53,7 @@ UDFAllocateFcbData(
+     return (PFCB)ExAllocateFromPagedLookasideList(&UdfData.UDFFcbDataLookasideList);
+ }
+ 
+-inline
++static inline
+ PFCB
+ UDFAllocateFcb(
+ )
+@@ -61,7 +61,7 @@ UDFAllocateFcb(
+     return (PFCB)ExAllocatePoolWithTag(NonPagedPool, sizeof(FCB), TAG_FCB);
+ }
+ 
+-inline
++static inline
+ VOID
+ UDFDeallocateFcbNonpaged(
+     PFCB_NONPAGED FcbNonpaged
+@@ -70,7 +70,7 @@ UDFDeallocateFcbNonpaged(
+     ExFreeToNPagedLookasideList(&UdfData.UDFNonPagedFcbLookasideList, FcbNonpaged);
+ }
+ 
+-inline
++static inline
+ VOID
+ UDFDeallocateFcbIndex(
+     PFCB Fcb
+@@ -79,7 +79,7 @@ UDFDeallocateFcbIndex(
+     ExFreeToPagedLookasideList(&UdfData.UDFFcbIndexLookasideList, Fcb);
+ }
+ 
+-inline
++static inline
+ VOID
+ UDFDeallocateFcbData(
+     PFCB Fcb
+diff --git a/drivers/filesystems/udfs/sys_spec.cpp b/drivers/filesystems/udfs/sys_spec.c
+similarity index 91%
+rename from drivers/filesystems/udfs/sys_spec.cpp
+rename to drivers/filesystems/udfs/sys_spec.c
+index e9a11ab..82f2665 100644
+--- a/drivers/filesystems/udfs/sys_spec.cpp
++++ b/drivers/filesystems/udfs/sys_spec.c
+@@ -20,6 +20,6 @@
+ // define the file specific bug-check id
+ #define         UDF_BUG_CHECK_ID        UDF_FILE_SYS_SPEC
+ 
+-#include "Include/Sys_spec_lib.cpp"
++#include "Include/Sys_spec_lib.c"
+ 
+-//#include "Include/tools.cpp"
++//#include "Include/tools.c"
+diff --git a/drivers/filesystems/udfs/udf_dbg.cpp b/drivers/filesystems/udfs/udf_dbg.c
+similarity index 100%
+rename from drivers/filesystems/udfs/udf_dbg.cpp
+rename to drivers/filesystems/udfs/udf_dbg.c
+diff --git a/drivers/filesystems/udfs/udf_info/alloc.cpp b/drivers/filesystems/udfs/udf_info/alloc.c
+similarity index 100%
+rename from drivers/filesystems/udfs/udf_info/alloc.cpp
+rename to drivers/filesystems/udfs/udf_info/alloc.c
+diff --git a/drivers/filesystems/udfs/udf_info/dirtree.cpp b/drivers/filesystems/udfs/udf_info/dirtree.c
+similarity index 100%
+rename from drivers/filesystems/udfs/udf_info/dirtree.cpp
+rename to drivers/filesystems/udfs/udf_info/dirtree.c
+diff --git a/drivers/filesystems/udfs/udf_info/extent.cpp b/drivers/filesystems/udfs/udf_info/extent.c
+similarity index 100%
+rename from drivers/filesystems/udfs/udf_info/extent.cpp
+rename to drivers/filesystems/udfs/udf_info/extent.c
+diff --git a/drivers/filesystems/udfs/udf_info/mount.cpp b/drivers/filesystems/udfs/udf_info/mount.c
+similarity index 100%
+rename from drivers/filesystems/udfs/udf_info/mount.cpp
+rename to drivers/filesystems/udfs/udf_info/mount.c
+diff --git a/drivers/filesystems/udfs/udf_info/phys_eject.cpp b/drivers/filesystems/udfs/udf_info/phys_eject.c
+similarity index 100%
+rename from drivers/filesystems/udfs/udf_info/phys_eject.cpp
+rename to drivers/filesystems/udfs/udf_info/phys_eject.c
+diff --git a/drivers/filesystems/udfs/udf_info/physical.cpp b/drivers/filesystems/udfs/udf_info/physical.c
+similarity index 95%
+rename from drivers/filesystems/udfs/udf_info/physical.cpp
+rename to drivers/filesystems/udfs/udf_info/physical.c
+index 1ba8a14..9468996 100644
+--- a/drivers/filesystems/udfs/udf_info/physical.cpp
++++ b/drivers/filesystems/udfs/udf_info/physical.c
+@@ -17,5 +17,5 @@
+ // define the file specific bug-check id
+ #define         UDF_BUG_CHECK_ID        UDF_FILE_PHYSICAL
+ 
+-#include "Include/phys_lib.cpp"
++#include "Include/phys_lib.c"
+ 
+diff --git a/drivers/filesystems/udfs/udf_info/remap.cpp b/drivers/filesystems/udfs/udf_info/remap.c
+similarity index 100%
+rename from drivers/filesystems/udfs/udf_info/remap.cpp
+rename to drivers/filesystems/udfs/udf_info/remap.c
+diff --git a/drivers/filesystems/udfs/udf_info/udf_info.cpp b/drivers/filesystems/udfs/udf_info/udf_info.c
+similarity index 100%
+rename from drivers/filesystems/udfs/udf_info/udf_info.cpp
+rename to drivers/filesystems/udfs/udf_info/udf_info.c
+diff --git a/drivers/filesystems/udfs/udfdata.cpp b/drivers/filesystems/udfs/udfdata.c
+similarity index 100%
+rename from drivers/filesystems/udfs/udfdata.cpp
+rename to drivers/filesystems/udfs/udfdata.c
+diff --git a/drivers/filesystems/udfs/udffs.h b/drivers/filesystems/udfs/udffs.h
+index 5eff0e0..770bbcc 100644
+--- a/drivers/filesystems/udfs/udffs.h
++++ b/drivers/filesystems/udfs/udffs.h
+@@ -161,7 +161,7 @@ extern UDFData              UdfData;
+ 
+ //  Encapsulate safe pool freeing
+ 
+-inline
++static inline
+ VOID
+ UDFFreePool(
+     _Inout_ _At_(*Pool, __drv_freesMem(Mem) _Post_null_) PVOID *Pool
+@@ -180,7 +180,7 @@ UDFFreePool(
+ 
+ // small check for illegal open mode (desired access) if volume is
+ // read only (on standard CD-ROM device or another like this)
+-inline
++static inline
+ BOOLEAN
+ UDFIllegalFcbAccess(
+     IN PVCB Vcb,
+@@ -426,7 +426,7 @@ UDFIllegalFcbAccess(
+ 
+ #define FID_DIR_MASK  0x80000000            // high order bit means directory.
+ 
+-inline
++static inline
+ FILE_ID
+ UdfGetFidFromLbAddr(lb_addr lbAddr)
+ {
+diff --git a/drivers/filesystems/udfs/udfinit.cpp b/drivers/filesystems/udfs/udfinit.c
+similarity index 100%
+rename from drivers/filesystems/udfs/udfinit.cpp
+rename to drivers/filesystems/udfs/udfinit.c
+diff --git a/drivers/filesystems/udfs/unload.cpp b/drivers/filesystems/udfs/unload.c
+similarity index 100%
+rename from drivers/filesystems/udfs/unload.cpp
+rename to drivers/filesystems/udfs/unload.c
+diff --git a/drivers/filesystems/udfs/verfysup.cpp b/drivers/filesystems/udfs/verfysup.c
+similarity index 100%
+rename from drivers/filesystems/udfs/verfysup.cpp
+rename to drivers/filesystems/udfs/verfysup.c
+diff --git a/drivers/filesystems/udfs/volinfo.cpp b/drivers/filesystems/udfs/volinfo.c
+similarity index 100%
+rename from drivers/filesystems/udfs/volinfo.cpp
+rename to drivers/filesystems/udfs/volinfo.c
+diff --git a/drivers/filesystems/udfs/write.cpp b/drivers/filesystems/udfs/write.c
+similarity index 100%
+rename from drivers/filesystems/udfs/write.cpp
+rename to drivers/filesystems/udfs/write.c
