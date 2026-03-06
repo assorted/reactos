@@ -779,7 +779,6 @@ typedef EXTENDED_FILE_ENTRY ExtendedFileEntry;
 typedef struct VolStructDesc VolStructDesc;
 typedef struct BeginningExtendedAreaDesc BeginningExtendedAreaDesc;
 typedef struct TerminatingExtendedAreaDesc TerminatingExtendedAreaDesc;
-typedef struct NSRDesc NSRDesc;
 typedef struct PrimaryVolDesc PrimaryVolDesc;
 typedef struct AnchorVolDescPtr AnchorVolDescPtr;
 typedef struct VolDescPtr VolDescPtr;

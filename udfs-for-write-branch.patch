@@ -335,7 +335,7 @@ similarity index 100%
 rename from drivers/filesystems/udfs/pnp.cpp
 rename to drivers/filesystems/udfs/pnp.c
 diff --git a/drivers/filesystems/udfs/protos.h b/drivers/filesystems/udfs/protos.h
-index 59cb00c..584c9e4 100644
+index 59cb00c..108b1ea 100644
 --- a/drivers/filesystems/udfs/protos.h
 +++ b/drivers/filesystems/udfs/protos.h
 @@ -531,7 +531,7 @@ ULONG UDFFlushAFile(
@@ -382,6 +382,23 @@ index 59cb00c..584c9e4 100644
  
  VOID
  UDFDeleteVCB(
+@@ -964,7 +964,7 @@ UDFCommonShutdown(
+ /*************************************************************************
+ * Prototypes for the file UDFinit.cpp
+ *************************************************************************/
+-extern "C" NTSTATUS NTAPI DriverEntry(
++NTSTATUS NTAPI DriverEntry(
+ PDRIVER_OBJECT              DriverObject,       // created by the I/O sub-system
+ PUNICODE_STRING             RegistryPath);      // path to the registry key
+ 
+@@ -1224,6 +1224,7 @@ enum TYPE_OF_ACQUIRE {
+     AcquireSharedStarveExclusive
+ 
+ };
++typedef enum TYPE_OF_ACQUIRE TYPE_OF_ACQUIRE;
+ 
+ _Requires_lock_held_(_Global_critical_region_)
+ _When_(Type == AcquireExclusive && return != FALSE, _Acquires_exclusive_lock_(*Resource))
 diff --git a/drivers/filesystems/udfs/read.cpp b/drivers/filesystems/udfs/read.c
 similarity index 100%
 rename from drivers/filesystems/udfs/read.cpp
@@ -411,7 +428,7 @@ similarity index 100%
 rename from drivers/filesystems/udfs/strucsup.cpp
 rename to drivers/filesystems/udfs/strucsup.c
 diff --git a/drivers/filesystems/udfs/struct.h b/drivers/filesystems/udfs/struct.h
-index fb48f5e..efd97d9 100644
+index fb48f5e..be78aa7 100644
 --- a/drivers/filesystems/udfs/struct.h
 +++ b/drivers/filesystems/udfs/struct.h
 @@ -37,6 +37,21 @@ struct IRP_CONTEXT_LITE;
@@ -463,6 +480,20 @@ index fb48f5e..efd97d9 100644
  
  /**************************************************************************
      each open file/directory/volume is represented by a file control block.
+@@ -193,11 +208,11 @@ using PFCB_NONPAGED = FCB_NONPAGED*;
+ /***************************************************/
+ 
+ struct FCB_DATA {
+-
++    UCHAR Pad;
+ };
+ 
+ struct FCB_INDEX {
+-
++    UCHAR Pad;
+ };
+ 
+ struct FCB {
 @@ -284,7 +299,7 @@ struct FCB {
          FCB_INDEX FcbIndex;
      };
@@ -472,7 +503,23 @@ index fb48f5e..efd97d9 100644
  
  #define SIZEOF_FCB_DATA     \
      (FIELD_OFFSET(FCB, FcbType) + sizeof(FCB_DATA))
-@@ -608,7 +623,7 @@ struct VCB {
+@@ -336,6 +351,7 @@ enum UDFFSD_MEDIA_TYPE {
+     MediaDvdr,
+     MediaDvdrw
+ };
++typedef enum UDFFSD_MEDIA_TYPE UDFFSD_MEDIA_TYPE;
+ 
+ enum VCB_CONDITION {
+ 
+@@ -345,6 +361,7 @@ enum VCB_CONDITION {
+     VcbInvalid,
+     VcbDismountInProgress
+ };
++typedef enum VCB_CONDITION VCB_CONDITION;
+ 
+ struct VCB {
+ 
+@@ -608,7 +625,7 @@ struct VCB {
      PVPB SwapVpb;
  };
  
@@ -481,7 +528,7 @@ index fb48f5e..efd97d9 100644
  
  // One for root
  #define UDFS_BASE_RESIDUAL_REFERENCE                (4)//(6)
-@@ -682,7 +697,7 @@ struct THREAD_CONTEXT {
+@@ -682,7 +699,7 @@ struct THREAD_CONTEXT {
      //  will store the IrpContext for the request in this stack location.
      IRP_CONTEXT* TopLevelIrpContext;
  };
@@ -490,7 +537,7 @@ index fb48f5e..efd97d9 100644
  
  /**************************************************************************
      The IRP context encapsulates the current request. This structure is
-@@ -727,7 +742,7 @@ struct IRP_CONTEXT {
+@@ -727,7 +744,7 @@ struct IRP_CONTEXT {
  
      VCB*      Vcb;
  };
@@ -499,7 +546,7 @@ index fb48f5e..efd97d9 100644
  
  #define IRP_CONTEXT_FLAG_ON_STACK               (0x00000001)
  #define IRP_CONTEXT_FLAG_MORE_PROCESSING        (0x00000002)
-@@ -794,7 +809,7 @@ struct IRP_CONTEXT_LITE {
+@@ -794,7 +811,7 @@ struct IRP_CONTEXT_LITE {
      PDEVICE_OBJECT                  RealDevice;
      ULONG                           TreeLength;
  };
@@ -538,10 +585,10 @@ similarity index 100%
 rename from drivers/filesystems/udfs/udf_info/dirtree.cpp
 rename to drivers/filesystems/udfs/udf_info/dirtree.c
 diff --git a/drivers/filesystems/udfs/udf_info/ecma_167.h b/drivers/filesystems/udfs/udf_info/ecma_167.h
-index 6ca06a7..0c60fd3 100644
+index 6ca06a7..8343008 100644
 --- a/drivers/filesystems/udfs/udf_info/ecma_167.h
 +++ b/drivers/filesystems/udfs/udf_info/ecma_167.h
-@@ -774,3 +774,36 @@ typedef EXTENDED_FILE_ENTRY ExtendedFileEntry;
+@@ -774,3 +774,35 @@ typedef EXTENDED_FILE_ENTRY ExtendedFileEntry;
  
  #endif /* __ECMA_167_H__ */
  
@@ -550,7 +597,6 @@ index 6ca06a7..0c60fd3 100644
 +typedef struct VolStructDesc VolStructDesc;
 +typedef struct BeginningExtendedAreaDesc BeginningExtendedAreaDesc;
 +typedef struct TerminatingExtendedAreaDesc TerminatingExtendedAreaDesc;
-+typedef struct NSRDesc NSRDesc;
 +typedef struct PrimaryVolDesc PrimaryVolDesc;
 +typedef struct AnchorVolDescPtr AnchorVolDescPtr;
 +typedef struct VolDescPtr VolDescPtr;
