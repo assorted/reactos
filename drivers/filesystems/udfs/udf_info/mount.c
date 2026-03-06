@@ -2850,7 +2850,7 @@ UDFFindLastFileSet(
     uint16 Ident;
     uint32 relPrevExt, prevExt;
 
-    relPrevExt, prevExt = NULL;
+    relPrevExt = prevExt = 0;
     FileSetDesc->nextExt.extLength = 1;  // ;)
     // walk through FileSet chain
     // we've just pre-init'd extent length to read 1st FileSet
