@@ -2449,6 +2449,7 @@ UDFReadVDS(
                 }
                 break;
             case TID_VOL_DESC_PTR: // ISO 13346 3/10.3
+            {
                 struct VolDescPtr* pVDP;
                 if (vdsn >= vds[VDS_POS_VOL_DESC_PTR].volDescSeqNum)
                 {
@@ -2466,6 +2467,7 @@ UDFReadVDS(
                                          vds, Buf);
                 }
                 break;
+            }
             case TID_IMP_USE_VOL_DESC: // ISO 13346 3/10.4
                 if (vdsn >= vds[VDS_POS_IMP_USE_VOL_DESC].volDescSeqNum)
                 {
