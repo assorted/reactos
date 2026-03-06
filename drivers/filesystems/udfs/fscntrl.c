@@ -1006,7 +1006,7 @@ Return Value:
     //  remaining after the purge then we can allow the volume to be locked.
     //
 
-    UDFFlushVolume(IrpContext, Vcb);
+    UDFFlushVolume(IrpContext, Vcb, 0);
     //CdPurgeVolume( IrpContext, Vcb, FALSE );
 
     //
@@ -1190,7 +1190,7 @@ UDFDismountVolume(
 
     } else {
 
-        UDFFlushVolume(IrpContext, Vcb);
+        UDFFlushVolume(IrpContext, Vcb, 0);
 
         // Invalidate the volume right now.
         //
@@ -1821,7 +1821,7 @@ UDFInvalidateVolumes(
 
             UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
-            UDFFlushVolume(IrpContext, Vcb);
+            UDFFlushVolume(IrpContext, Vcb, 0);
 
             UDFToggleMediaEjectDisable(Vcb, FALSE);
 

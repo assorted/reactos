@@ -940,7 +940,7 @@ UDFUpdateNonAllocated(
     }
     UDFPackMapping(Vcb, DataLoc);
     DataLoc->Length = UDFGetExtentLength(DataLoc->Mapping);
-    UDFFlushFile__(IrpContext, Vcb, Vcb->NonAllocFileInfo);
+    UDFFlushFile__(IrpContext, Vcb, Vcb->NonAllocFileInfo, 0);
 
     // ensure that BAD space is marked as USED
     UDFMarkSpaceAsXXX(Vcb, 0, &(DataLoc->Mapping[0]), AS_USED); // mark as used

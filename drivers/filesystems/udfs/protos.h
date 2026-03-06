@@ -496,7 +496,7 @@ ULONG UDFFlushAFile(
     IN PFCB Fcb,
     IN PCCB Ccb,
     OUT PIO_STATUS_BLOCK PtrIoStatus,
-    IN ULONG FlushFlags = 0
+    IN ULONG FlushFlags
     );
 
 ULONG
@@ -505,14 +505,14 @@ UDFFlushADirectory(
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FI,
     OUT PIO_STATUS_BLOCK PtrIoStatus,
-    ULONG FlushFlags = 0
+    ULONG FlushFlags
     );
 
 NTSTATUS
 UDFFlushVolume(
     PIRP_CONTEXT IrpContext,
     PVCB Vcb,
-    ULONG FlushFlags = 0
+    ULONG FlushFlags
     );
 
 extern NTSTATUS NTAPI UDFFlushCompletion(
@@ -522,7 +522,7 @@ PVOID                       Context);
 
 extern BOOLEAN UDFFlushIsBreaking(
 IN PVCB         Vcb,
-IN ULONG        FlushFlags = 0);
+IN ULONG        FlushFlags);
 
 extern VOID UDFFlushTryBreak(
 IN PVCB         Vcb);
@@ -950,7 +950,7 @@ UDFReadRegKeys(
 extern ULONG UDFGetRegParameter(
     IN PVCB Vcb,
     IN PCWSTR Name,
-    IN ULONG DefValue = 0);
+    IN ULONG DefValue);
 
 VOID
 UDFDeleteVCB(

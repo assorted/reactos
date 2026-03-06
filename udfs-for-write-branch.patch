@@ -102,9 +102,52 @@ similarity index 100%
 rename from drivers/filesystems/udfs/Include/mem_tools.cpp
 rename to drivers/filesystems/udfs/Include/mem_tools.c
 diff --git a/drivers/filesystems/udfs/Include/phys_lib.cpp b/drivers/filesystems/udfs/Include/phys_lib.c
-similarity index 100%
+similarity index 99%
 rename from drivers/filesystems/udfs/Include/phys_lib.cpp
 rename to drivers/filesystems/udfs/Include/phys_lib.c
+index bba91e8..944d35b 100644
+--- a/drivers/filesystems/udfs/Include/phys_lib.cpp
++++ b/drivers/filesystems/udfs/Include/phys_lib.c
+@@ -1036,7 +1036,7 @@ UDFReadSectors(
+     OUT PULONG ReadBytes
+     )
+ {
+-    return UDFTRead(IrpContext, Vcb, Buffer, BCount*Vcb->SectorSize, Lba, ReadBytes);
++    return UDFTRead(IrpContext, Vcb, Buffer, BCount*Vcb->SectorSize, Lba, ReadBytes, 0);
+ } // end UDFReadSectors()
+ 
+ /*
+@@ -1167,7 +1167,7 @@ UDFWriteSectors(
+             Vcb->LastLBA = Lba+BCount-1;
+     }
+ 
+-    status = UDFTWrite(IrpContext, Vcb, Buffer, BCount<<Vcb->SectorShift, Lba, WrittenBytes);
++    status = UDFTWrite(IrpContext, Vcb, Buffer, BCount<<Vcb->SectorShift, Lba, WrittenBytes, 0);
+     ASSERT(NT_SUCCESS(status));
+ 
+     return status;
+diff --git a/drivers/filesystems/udfs/Include/phys_lib.h b/drivers/filesystems/udfs/Include/phys_lib.h
+index 747b954..19203d2 100644
+--- a/drivers/filesystems/udfs/Include/phys_lib.h
++++ b/drivers/filesystems/udfs/Include/phys_lib.h
+@@ -15,7 +15,7 @@ UDFTRead(
+     SIZE_T Length,
+     ULONG LBA,
+     PULONG ReadBytes,
+-    ULONG Flags = 0
++    ULONG Flags
+     );
+ 
+ NTSTATUS
+@@ -26,7 +26,7 @@ UDFTWrite(
+     IN SIZE_T Length,
+     IN ULONG LBA,
+     OUT PSIZE_T WrittenBytes,
+-    IN ULONG Flags = 0
++    IN ULONG Flags
+     );
+ 
+ #define PH_TMP_BUFFER          1
 diff --git a/drivers/filesystems/udfs/Include/regtools.cpp b/drivers/filesystems/udfs/Include/regtools.c
 similarity index 100%
 rename from drivers/filesystems/udfs/Include/regtools.cpp
@@ -149,17 +192,68 @@ index 1750feb..37bd1d8 100644
  RtlAppendUnicodeToString(
      IN PUNICODE_STRING Str1,
 diff --git a/drivers/filesystems/udfs/cleanup.cpp b/drivers/filesystems/udfs/cleanup.c
-similarity index 100%
+similarity index 99%
 rename from drivers/filesystems/udfs/cleanup.cpp
 rename to drivers/filesystems/udfs/cleanup.c
+index 678dcb3..b85c16a 100644
+--- a/drivers/filesystems/udfs/cleanup.cpp
++++ b/drivers/filesystems/udfs/cleanup.c
+@@ -333,7 +333,7 @@ UDFCommonCleanup(
+                 Fcb->ParentFcb->FcbState |= UDF_FCB_DELETE_ON_CLOSE;
+             }
+             // flush file. It is required by UDFUnlinkFile__()
+-            RC = UDFFlushFile__(IrpContext, Vcb, NextFileInfo);
++            RC = UDFFlushFile__(IrpContext, Vcb, NextFileInfo, 0);
+             if (!NT_SUCCESS(RC)) {
+                 AdPrint(("Error flushing file !!!\n"));
+             }
 diff --git a/drivers/filesystems/udfs/close.cpp b/drivers/filesystems/udfs/close.c
 similarity index 100%
 rename from drivers/filesystems/udfs/close.cpp
 rename to drivers/filesystems/udfs/close.c
 diff --git a/drivers/filesystems/udfs/create.cpp b/drivers/filesystems/udfs/create.c
-similarity index 100%
+similarity index 99%
 rename from drivers/filesystems/udfs/create.cpp
 rename to drivers/filesystems/udfs/create.c
+index a7f63b1..ed77722 100644
+--- a/drivers/filesystems/udfs/create.cpp
++++ b/drivers/filesystems/udfs/create.c
+@@ -524,7 +524,7 @@ UDFCommonCreate(
+ 
+                     InterlockedDecrement((PLONG)&Vcb->VcbReference);
+ 
+-                    UDFFlushVolume(IrpContext, Vcb);
++                    UDFFlushVolume(IrpContext, Vcb, 0);
+                 }
+                 // Lock the volume
+                 if (!(ShareAccess & FILE_SHARE_READ)) {
+@@ -1428,7 +1428,7 @@ Undo_Create_1:
+                     if ((RC != STATUS_FILE_IS_A_DIRECTORY) &&
+                        (RC != STATUS_NOT_A_DIRECTORY) &&
+                        (RC != STATUS_ACCESS_DENIED)) {
+-                        UDFFlushFile__(IrpContext, Vcb, NewFileInfo);
++                        UDFFlushFile__(IrpContext, Vcb, NewFileInfo, 0);
+                         UDFUnlinkFile__(IrpContext, Vcb, NewFileInfo, TRUE);
+                     }
+                     UDFCloseFile__(IrpContext, Vcb, NewFileInfo);
+@@ -1608,7 +1608,7 @@ Undo_Create_1:
+             if (!NT_SUCCESS(RC)) {
+                 AdPrint(("    Can't set Access Rights on Create\n"));
+                 BrutePoint();
+-                UDFFlushFile__(IrpContext, Vcb, NewFileInfo);
++                UDFFlushFile__(IrpContext, Vcb, NewFileInfo, 0);
+                 UDFUnlinkFile__(IrpContext, Vcb, NewFileInfo, TRUE);
+                 try_return(RC);
+             }
+@@ -2368,7 +2368,7 @@ UDFCompleteFcbOpen(
+         // Flush the volume and make sure all of the user references
+         // are gone.
+ 
+-        Status = UDFFlushVolume(IrpContext, Vcb);
++        Status = UDFFlushVolume(IrpContext, Vcb, 0);
+ 
+         if (!NT_SUCCESS(Status)) {
+ 
 diff --git a/drivers/filesystems/udfs/devcntrl.cpp b/drivers/filesystems/udfs/devcntrl.c
 similarity index 100%
 rename from drivers/filesystems/udfs/devcntrl.cpp
@@ -185,13 +279,55 @@ similarity index 100%
 rename from drivers/filesystems/udfs/filobsup.cpp
 rename to drivers/filesystems/udfs/filobsup.c
 diff --git a/drivers/filesystems/udfs/flush.cpp b/drivers/filesystems/udfs/flush.c
-similarity index 100%
+similarity index 99%
 rename from drivers/filesystems/udfs/flush.cpp
 rename to drivers/filesystems/udfs/flush.c
+index 76357b7..ebe9dd1 100644
+--- a/drivers/filesystems/udfs/flush.cpp
++++ b/drivers/filesystems/udfs/flush.c
+@@ -127,7 +127,7 @@ UDFCommonFlush(
+ 
+             UDFVerifyVcb(IrpContext, Vcb);
+ 
+-            UDFFlushVolume(IrpContext, Vcb);
++            UDFFlushVolume(IrpContext, Vcb, 0);
+ 
+             UDFReleaseResource(&(Vcb->VcbResource));
+             AcquiredVCB = FALSE;
 diff --git a/drivers/filesystems/udfs/fscntrl.cpp b/drivers/filesystems/udfs/fscntrl.c
-similarity index 100%
+similarity index 99%
 rename from drivers/filesystems/udfs/fscntrl.cpp
 rename to drivers/filesystems/udfs/fscntrl.c
+index ab7c079..84a9e18 100644
+--- a/drivers/filesystems/udfs/fscntrl.cpp
++++ b/drivers/filesystems/udfs/fscntrl.c
+@@ -989,7 +989,7 @@ Return Value:
+     //  remaining after the purge then we can allow the volume to be locked.
+     //
+ 
+-    UDFFlushVolume(IrpContext, Vcb);
++    UDFFlushVolume(IrpContext, Vcb, 0);
+     //CdPurgeVolume( IrpContext, Vcb, FALSE );
+ 
+     //
+@@ -1174,7 +1174,7 @@ UDFDismountVolume(
+ 
+     } else {
+ 
+-        UDFFlushVolume(IrpContext, Vcb);
++        UDFFlushVolume(IrpContext, Vcb, 0);
+ 
+         // Invalidate the volume right now.
+         //
+@@ -1800,7 +1800,7 @@ UDFInvalidateVolumes(
+ 
+             UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
+ 
+-            UDFFlushVolume(IrpContext, Vcb);
++            UDFFlushVolume(IrpContext, Vcb, 0);
+ 
+             UDFDoDismountSequence(Vcb, FALSE);
+ 
 diff --git a/drivers/filesystems/udfs/lockctrl.cpp b/drivers/filesystems/udfs/lockctrl.c
 similarity index 100%
 rename from drivers/filesystems/udfs/lockctrl.cpp
@@ -241,7 +377,7 @@ similarity index 100%
 rename from drivers/filesystems/udfs/pnp.cpp
 rename to drivers/filesystems/udfs/pnp.c
 diff --git a/drivers/filesystems/udfs/protos.h b/drivers/filesystems/udfs/protos.h
-index 59cb00c..e911a28 100644
+index 59cb00c..c8d0637 100644
 --- a/drivers/filesystems/udfs/protos.h
 +++ b/drivers/filesystems/udfs/protos.h
 @@ -73,7 +73,7 @@ UDFDecodeFileObjectCcb(
@@ -316,7 +452,40 @@ index 59cb00c..e911a28 100644
  *************************************************************************/
  extern NTSTATUS NTAPI UDFFlushBuffers(
  PDEVICE_OBJECT    DeviceObject,       // the logical volume device object
-@@ -563,7 +563,7 @@ extern VOID UDFFlushTryBreak(
+@@ -531,7 +531,7 @@ ULONG UDFFlushAFile(
+     IN PFCB Fcb,
+     IN PCCB Ccb,
+     OUT PIO_STATUS_BLOCK PtrIoStatus,
+-    IN ULONG FlushFlags = 0
++    IN ULONG FlushFlags
+     );
+ 
+ ULONG
+@@ -540,14 +540,14 @@ UDFFlushADirectory(
+     IN PVCB Vcb,
+     IN PUDF_FILE_INFO FI,
+     OUT PIO_STATUS_BLOCK PtrIoStatus,
+-    ULONG FlushFlags = 0
++    ULONG FlushFlags
+     );
+ 
+ NTSTATUS
+ UDFFlushVolume(
+     PIRP_CONTEXT IrpContext,
+     PVCB Vcb,
+-    ULONG FlushFlags = 0
++    ULONG FlushFlags
+     );
+ 
+ extern NTSTATUS NTAPI UDFFlushCompletion(
+@@ -557,13 +557,13 @@ PVOID                       Context);
+ 
+ extern BOOLEAN UDFFlushIsBreaking(
+ IN PVCB         Vcb,
+-IN ULONG        FlushFlags = 0);
++IN ULONG        FlushFlags);
+ 
+ extern VOID UDFFlushTryBreak(
  IN PVCB         Vcb);
  
  /*************************************************************************
@@ -343,6 +512,15 @@ index 59cb00c..e911a28 100644
  *************************************************************************/
  extern NTSTATUS UDFInitializeZones(
  VOID);
+@@ -842,7 +842,7 @@ UDFReadRegKeys(
+ extern ULONG UDFGetRegParameter(
+     IN PVCB Vcb,
+     IN PCWSTR Name,
+-    IN ULONG DefValue = 0);
++    IN ULONG DefValue);
+ 
+ VOID
+ UDFDeleteVCB(
 @@ -882,13 +882,13 @@ UDFCreateFileLock(
  );
  
@@ -441,9 +619,21 @@ similarity index 100%
 rename from drivers/filesystems/udfs/secursup.cpp
 rename to drivers/filesystems/udfs/secursup.c
 diff --git a/drivers/filesystems/udfs/shutdown.cpp b/drivers/filesystems/udfs/shutdown.c
-similarity index 100%
+similarity index 99%
 rename from drivers/filesystems/udfs/shutdown.cpp
 rename to drivers/filesystems/udfs/shutdown.c
+index f8b0a7f..314b0e2 100644
+--- a/drivers/filesystems/udfs/shutdown.cpp
++++ b/drivers/filesystems/udfs/shutdown.c
+@@ -109,7 +109,7 @@ UDFCommonShutdown(
+ 
+             UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
+ 
+-            UDFFlushVolume(IrpContext, Vcb);
++            UDFFlushVolume(IrpContext, Vcb, 0);
+ 
+             ASSERT(CONTAINING_RECORD(IoGetCurrentIrpStackLocation(Irp)->DeviceObject,
+                                      VOLUME_DEVICE_OBJECT,
 diff --git a/drivers/filesystems/udfs/strucsup.cpp b/drivers/filesystems/udfs/strucsup.c
 similarity index 99%
 rename from drivers/filesystems/udfs/strucsup.cpp
@@ -684,6 +874,19 @@ diff --git a/drivers/filesystems/udfs/udf_dbg.cpp b/drivers/filesystems/udfs/udf
 similarity index 100%
 rename from drivers/filesystems/udfs/udf_dbg.cpp
 rename to drivers/filesystems/udfs/udf_dbg.c
+diff --git a/drivers/filesystems/udfs/udf_dbg.h b/drivers/filesystems/udfs/udf_dbg.h
+index 63fc430..d176b88 100644
+--- a/drivers/filesystems/udfs/udf_dbg.h
++++ b/drivers/filesystems/udfs/udf_dbg.h
+@@ -49,7 +49,7 @@
+   ULONG
+   _cdecl
+   DbgPrint(
+-      PCH Format,
++      PCSTR Format,
+       ...
+       );
+ 
 diff --git a/drivers/filesystems/udfs/udf_info/alloc.cpp b/drivers/filesystems/udfs/udf_info/alloc.c
 similarity index 100%
 rename from drivers/filesystems/udfs/udf_info/alloc.cpp
@@ -741,9 +944,21 @@ similarity index 100%
 rename from drivers/filesystems/udfs/udf_info/extent.cpp
 rename to drivers/filesystems/udfs/udf_info/extent.c
 diff --git a/drivers/filesystems/udfs/udf_info/mount.cpp b/drivers/filesystems/udfs/udf_info/mount.c
-similarity index 100%
+similarity index 99%
 rename from drivers/filesystems/udfs/udf_info/mount.cpp
 rename to drivers/filesystems/udfs/udf_info/mount.c
+index 3fc100a..cd60aa4 100644
+--- a/drivers/filesystems/udfs/udf_info/mount.cpp
++++ b/drivers/filesystems/udfs/udf_info/mount.c
+@@ -915,7 +915,7 @@ UDFUpdateNonAllocated(
+     }
+     UDFPackMapping(Vcb, DataLoc);
+     DataLoc->Length = UDFGetExtentLength(DataLoc->Mapping);
+-    UDFFlushFile__(IrpContext, Vcb, Vcb->NonAllocFileInfo);
++    UDFFlushFile__(IrpContext, Vcb, Vcb->NonAllocFileInfo, 0);
+ 
+     // ensure that BAD space is marked as USED
+     UDFMarkSpaceAsXXX(Vcb, 0, &(DataLoc->Mapping[0]), AS_USED); // mark as used
 diff --git a/drivers/filesystems/udfs/udf_info/osta_misc.h b/drivers/filesystems/udfs/udf_info/osta_misc.h
 index f9813bf..60b522c 100644
 --- a/drivers/filesystems/udfs/udf_info/osta_misc.h
@@ -767,9 +982,21 @@ index f9813bf..60b522c 100644
  
  #endif /* _OSTA_MISC_H */
 diff --git a/drivers/filesystems/udfs/udf_info/phys_eject.cpp b/drivers/filesystems/udfs/udf_info/phys_eject.c
-similarity index 100%
+similarity index 98%
 rename from drivers/filesystems/udfs/udf_info/phys_eject.cpp
 rename to drivers/filesystems/udfs/udf_info/phys_eject.c
+index 2a7a794..d07cced 100644
+--- a/drivers/filesystems/udfs/udf_info/phys_eject.cpp
++++ b/drivers/filesystems/udfs/udf_info/phys_eject.c
+@@ -28,7 +28,7 @@ UDFDoDismountSequence(
+     ULONG i;
+ 
+     // flush system cache
+-    UDFFlushVolume(NULL, Vcb);
++    UDFFlushVolume(NULL, Vcb, 0);
+     UDFPrint(("UDFDoDismountSequence:\n"));
+ 
+     delay.QuadPart = -1000000; // 0.1 sec
 diff --git a/drivers/filesystems/udfs/udf_info/physical.cpp b/drivers/filesystems/udfs/udf_info/physical.c
 similarity index 95%
 rename from drivers/filesystems/udfs/udf_info/physical.cpp
@@ -789,9 +1016,142 @@ similarity index 100%
 rename from drivers/filesystems/udfs/udf_info/remap.cpp
 rename to drivers/filesystems/udfs/udf_info/remap.c
 diff --git a/drivers/filesystems/udfs/udf_info/udf_info.cpp b/drivers/filesystems/udfs/udf_info/udf_info.c
-similarity index 100%
+similarity index 99%
 rename from drivers/filesystems/udfs/udf_info/udf_info.cpp
 rename to drivers/filesystems/udfs/udf_info/udf_info.c
+index e5d0b69..86f90dd 100644
+--- a/drivers/filesystems/udfs/udf_info/udf_info.cpp
++++ b/drivers/filesystems/udfs/udf_info/udf_info.c
+@@ -1835,7 +1835,7 @@ UDFUnlinkFile__(
+             PUDF_FILE_INFO SFileInfo;
+             // ... try to open it
+             if (Dloc->SDirInfo) {
+-                UDFFlushFile__(IrpContext, Vcb, FileInfo);
++                UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
+                 return STATUS_CANNOT_DELETE;
+             }
+             // open SDir
+@@ -1846,7 +1846,7 @@ UDFUnlinkFile__(
+ cleanup_SDir:
+                 UDFCleanUpFile__(Vcb, SFileInfo);
+                 if (SFileInfo) MyFreePool__(SFileInfo);
+-                UDFFlushFile__(IrpContext, Vcb, FileInfo);
++                UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
+                 return status;
+             }
+             SDirInfo = Dloc->SDirInfo;
+@@ -1860,7 +1860,7 @@ cleanup_SDir:
+                 goto cleanup_SDir;
+             }
+             // delete SDir
+-            UDFFlushFile__(IrpContext, Vcb, SDirInfo);
++            UDFFlushFile__(IrpContext, Vcb, SDirInfo, 0);
+             AdPrint(("  "));
+             UDFUnlinkFile__(IrpContext, Vcb, SDirInfo, TRUE);
+             // close SDir
+@@ -1881,7 +1881,7 @@ cleanup_SDir:
+             // do deltree for Streams
+             status = UDFUnlinkAllFilesInDir(IrpContext, Vcb, FileInfo);
+             if (!NT_SUCCESS(status)) {
+-                UDFFlushFile__(IrpContext, Vcb, FileInfo);
++                UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
+                 return status;
+             }
+             // update parent FileInfo
+@@ -1897,7 +1897,7 @@ cleanup_SDir:
+             UDFFlushFESpace(Vcb, Dloc, FLUSH_FE_FOR_DEL);
+         }
+         // flush file
+-        UDFFlushFile__(IrpContext, Vcb, FileInfo);
++        UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
+         UDFUnlinkDloc(Vcb, Dloc);
+         // free allocation
+         UDFFreeFileAllocation(Vcb, DirInfo, FileInfo);
+@@ -1952,7 +1952,7 @@ err_del_stream:
+             return status;
+         }
+ 
+-        UDFFlushFile__(IrpContext, Vcb, FileInfo);
++        UDFFlushFile__(IrpContext, Vcb, FileInfo, 0);
+         AdPrint(("    "));
+         UDFUnlinkFile__(IrpContext, Vcb, FileInfo, TRUE);
+         UDFCloseFile__(IrpContext, Vcb, FileInfo);
+@@ -2421,7 +2421,7 @@ UDFCleanUpFile__(
+                         MyFreePool__(DirNdx->FName.Buffer);
+                 }
+                 // The only place where we can free FE_Charge extent is here
+-                UDFFlushFESpace(Vcb, Dloc);
++                UDFFlushFESpace(Vcb, Dloc, FLUSH_FE_KEEP);
+                 UDFDirIndexFree(Dloc->DirIndex);
+                 Dloc->DirIndex = NULL;
+ #ifdef UDF_TRACK_ONDISK_ALLOCATION
+@@ -3099,7 +3099,7 @@ UDFCloseFile__(
+         if (FileInfo->Dloc &&
+            FileInfo->Dloc->DirIndex) {
+ 
+-            UDFFlushFESpace(Vcb, FileInfo->Dloc);
++            UDFFlushFESpace(Vcb, FileInfo->Dloc, FLUSH_FE_KEEP);
+             if (FileInfo->Dloc->DataLoc.Flags & EXTENT_FLAG_PREALLOCATED) {
+                 FileInfo->Dloc->DataLoc.Flags |= EXTENT_FLAG_CUT_PREALLOCATED;
+                 status = UDFResizeExtent(IrpContext, Vcb, PartNum, UDFGetFileSize(FileInfo), FALSE, &(FileInfo->Dloc->DataLoc));
+@@ -3276,7 +3276,7 @@ cleanup_and_abort_rename:
+     // unlink source FileIdent
+     if (!NT_SUCCESS(status = UDFUnlinkFile__(IrpContext, Vcb, FileInfo, FALSE))) {
+         // kill newly created entry
+-        UDFFlushFile__(IrpContext, Vcb, FileInfo2);
++        UDFFlushFile__(IrpContext, Vcb, FileInfo2, 0);
+         UDFUnlinkFile__(IrpContext, Vcb, FileInfo2, TRUE);
+         UDFCloseFile__(IrpContext, Vcb, FileInfo2);
+         UDFCleanUpFile__(Vcb, FileInfo2);
+@@ -4174,7 +4174,7 @@ UDFFlushFile__(
+         // if Lite Flush is used, keep preallocations
+         if (!(FlushFlags & UDF_FLUSH_FLAGS_LITE)) {
+ full_flush:
+-            UDFFlushFESpace(Vcb, FileInfo->Dloc);
++            UDFFlushFESpace(Vcb, FileInfo->Dloc, FLUSH_FE_KEEP);
+             if (FileInfo->Dloc->DataLoc.Flags & EXTENT_FLAG_PREALLOCATED) {
+                 FileInfo->Dloc->DataLoc.Flags |= EXTENT_FLAG_CUT_PREALLOCATED;
+                 status = UDFResizeExtent(IrpContext, Vcb, PartNum, UDFGetFileSize(FileInfo), FALSE, &(FileInfo->Dloc->DataLoc));
+@@ -4991,7 +4991,7 @@ UDFRecordVAT(
+             UDFPhysLbaToPart(Vcb, PartNum, VatFileInfo->Dloc->DataLoc.Mapping[0].extLocation);
+         // record data
+         if (NT_SUCCESS(status = UDFWriteFile__(IrpContext, Vcb, VatFileInfo, 0, VatLen + hdrLen, FALSE, New, &WrittenBytes))) {
+-            status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo);
++            status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo, 0);
+         }
+         return status;
+     }
+@@ -5097,7 +5097,7 @@ UDFRecordVAT(
+         UDFPhysLbaToPart(Vcb, PartNum, VatFileInfo->Dloc->FELoc.Mapping[0].extLocation);
+     VatFileInfo->Dloc->DataLoc.Modified = TRUE;
+ 
+-    status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo);
++    status = UDFFlushFile__(IrpContext, Vcb, VatFileInfo, 0);
+     if (!NT_SUCCESS(status))
+         return status;
+ 
+diff --git a/drivers/filesystems/udfs/udf_info/udf_info.h b/drivers/filesystems/udfs/udf_info/udf_info.h
+index c10108a..d284982 100644
+--- a/drivers/filesystems/udfs/udf_info/udf_info.h
++++ b/drivers/filesystems/udfs/udf_info/udf_info.h
+@@ -444,7 +444,7 @@ void UDFFreeFESpace(IN PVCB Vcb,
+ // flush FE charge
+ void UDFFlushFESpace(IN PVCB Vcb,
+                      IN PUDF_DATALOC_INFO Dloc,
+-                     IN BOOLEAN Discard = FLUSH_FE_KEEP);
++                     IN BOOLEAN Discard);
+ // discard file allocation
+ void UDFFreeFileAllocation(IN PVCB Vcb,
+                            IN PUDF_FILE_INFO DirInfo,
+@@ -1022,7 +1022,7 @@ UDFFlushFile__(
+     IN PIRP_CONTEXT IrpContext,
+     IN PVCB Vcb,
+     IN PUDF_FILE_INFO FileInfo,
+-    IN ULONG FlushFlags = 0
++    IN ULONG FlushFlags
+     );
+ 
+ // check if the file is flushed
 diff --git a/drivers/filesystems/udfs/udf_info/udf_rel.h b/drivers/filesystems/udfs/udf_info/udf_rel.h
 index 602a8f6..2b26348 100644
 --- a/drivers/filesystems/udfs/udf_info/udf_rel.h
@@ -857,6 +1217,27 @@ similarity index 100%
 rename from drivers/filesystems/udfs/volinfo.cpp
 rename to drivers/filesystems/udfs/volinfo.c
 diff --git a/drivers/filesystems/udfs/write.cpp b/drivers/filesystems/udfs/write.c
-similarity index 100%
+similarity index 99%
 rename from drivers/filesystems/udfs/write.cpp
 rename to drivers/filesystems/udfs/write.c
+index 5977f3e..1f236e6 100644
+--- a/drivers/filesystems/udfs/write.cpp
++++ b/drivers/filesystems/udfs/write.c
+@@ -237,7 +237,7 @@ UDFCommonWrite(
+             // I dislike the idea of writing to mounted media too, but M$ has another point of view...
+             if (Vcb->VcbCondition == VcbMounted) {
+                 // flush system cache
+-                UDFFlushVolume(IrpContext, Vcb);
++                UDFFlushVolume(IrpContext, Vcb, 0);
+             }
+ 
+             // Forward the request to the lower level driver
+@@ -255,7 +255,7 @@ UDFCommonWrite(
+             // Perform actual Write
+             Status = UDFTWrite(IrpContext, Vcb, SystemBuffer, ByteCount,
+                            (ULONG)(StartingOffset >> Vcb->SectorShift),
+-                           &NumberBytesWritten);
++                           &NumberBytesWritten, 0);
+             UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
+             try_return(Status);
+         }

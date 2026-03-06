@@ -109,7 +109,7 @@ UDFCommonShutdown(
 
             UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
-            UDFFlushVolume(IrpContext, Vcb);
+            UDFFlushVolume(IrpContext, Vcb, 0);
 
             ASSERT(CONTAINING_RECORD(IoGetCurrentIrpStackLocation(Irp)->DeviceObject,
                                      VOLUME_DEVICE_OBJECT,

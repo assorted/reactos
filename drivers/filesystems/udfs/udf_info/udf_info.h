@@ -11,6 +11,11 @@
 #include "osta_misc.h"
 #include "udf_rel.h"
 
+// memory re-allocation (returns new buffer size)
+uint32    UDFMemRealloc(IN int8* OldBuff,     // old buffer
+                       IN uint32 OldLength,   // old buffer size
+                       OUT int8** NewBuff,   // address to store new pointer
+                       IN uint32 NewLength);  // required size
 // convert offset in extent to Lba & calculate block parameters
 // it also returns pointer to last valid entry & flags
 uint32
@@ -57,16 +62,12 @@ UDFReadExtentLocation(IN PVCB Vcb,
                       );
 // calculate total length of extent
 int64 UDFGetExtentLength(IN PEXTENT_MAP Extent);  // Extent array
-
 // convert compressed Unicode to standard
-VOID
-UDFDecompressUnicode(
-    IN OUT PUNICODE_STRING UName,
-    IN uint8* CS0,
-    IN SIZE_T Length,
-    OUT uint16* valueCRC
-);
-
+void
+__fastcall UDFDecompressUnicode(IN OUT PUNICODE_STRING UName,
+                              IN uint8* CS0,
+                              IN SIZE_T Length,
+                              OUT uint16* valueCRC);
 // calculate hashes for directory search
 uint8    UDFBuildHashEntry(IN PVCB Vcb,
                            IN PUNICODE_STRING Name,
@@ -139,7 +140,7 @@ NTSTATUS UDFFindDirEntry(
     OUT PDIR_ENUM_CONTEXT DirContext);
 
 // Open file from directory context (after UDFFindDirEntry)
-NTSTATUS UDFOpenFileInfoFromDirContext(
+NTSTATUS UDFOpenObjectFromDirContext(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PDIR_ENUM_CONTEXT DirContext,
@@ -411,7 +412,8 @@ uint32 __fastcall
 UDFGetPartFreeSpace(IN PVCB Vcb,
                            IN uint32 partNum);
 
-#define UDF_PREALLOC_CLASS_DIR   0x00
+#define UDF_PREALLOC_CLASS_FE    0x00
+#define UDF_PREALLOC_CLASS_DIR   0x01
 
 // try to find cached allocation
 NTSTATUS
@@ -454,6 +456,13 @@ void UDFFreeFESpace(IN PVCB Vcb,
                     IN PUDF_FILE_INFO DirInfo,
                     IN PEXTENT_INFO FEExtInfo);
 
+#define FLUSH_FE_KEEP       FALSE
+#define FLUSH_FE_FOR_DEL    TRUE
+
+// flush FE charge
+void UDFFlushFESpace(IN PVCB Vcb,
+                     IN PUDF_DATALOC_INFO Dloc,
+                     IN BOOLEAN Discard);
 // discard file allocation
 void UDFFreeFileAllocation(IN PVCB Vcb,
                            IN PUDF_FILE_INFO DirInfo,
@@ -963,6 +972,13 @@ UDFRecordDirectory__(
     IN OUT PUDF_FILE_INFO DirInfo   // source (opened)
     );
 
+// remove all DELETED entries from Dir & resize it.
+NTSTATUS
+UDFPackDirectory__(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN OUT PUDF_FILE_INFO FileInfo   // source (opened)
+    );
 
 // rebuild tags for all entries from Dir.
 NTSTATUS
@@ -1032,7 +1048,7 @@ UDFFlushFile__(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PUDF_FILE_INFO FileInfo,
-    IN ULONG FlushFlags = 0
+    IN ULONG FlushFlags
     );
 
 // check if the file is flushed

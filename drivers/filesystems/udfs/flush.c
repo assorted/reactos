@@ -125,7 +125,7 @@ UDFCommonFlush(
 
             UDFVerifyVcb(IrpContext, Vcb);
 
-            UDFFlushVolume(IrpContext, Vcb);
+            UDFFlushVolume(IrpContext, Vcb, 0);
 
             UDFReleaseVcb(IrpContext, Vcb);
             AcquiredVCB = FALSE;
