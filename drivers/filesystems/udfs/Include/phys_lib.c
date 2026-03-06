@@ -4,7 +4,7 @@
 // This file was released under the GPLv2 on June 2015.
 ////////////////////////////////////////////////////////////////////
 /*
- Module Name: Phys_lib.c
+ Module Name: Phys_lib.cpp
 
  Execution: Kernel mode only
 

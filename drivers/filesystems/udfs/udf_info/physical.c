@@ -4,7 +4,7 @@
 // This file was released under the GPLv2 on June 2015.
 ////////////////////////////////////////////////////////////////////
 /*
- Module Name: Physical.c
+ Module Name: Physical.cpp
 
  Execution: Kernel mode only
 
@@ -17,5 +17,5 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID        UDF_FILE_PHYSICAL
 
-#include "Include/phys_lib.c"
+#include "Include/phys_lib.cpp"
 

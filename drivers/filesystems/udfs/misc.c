@@ -5,7 +5,7 @@
 ////////////////////////////////////////////////////////////////////
 /*
 
- File: Misc.c
+ File: Misc.cpp
 
  Module: UDF File System Driver (Kernel mode execution only)
 
@@ -29,6 +29,143 @@
                             TAG_IO_CONTEXT)
 
 #define UDFFreeIoContext(IO)     ExFreePool( (IO) )
+
+/*
+
+ Function: UDFInitializeZones()
+
+ Description:
+   Allocates some memory for global zones used to allocate FSD structures.
+   Either all memory will be allocated or we will back out gracefully.
+
+ Expected Interrupt Level (for execution) :
+
+  IRQL_PASSIVE_LEVEL
+
+ Return Value: STATUS_SUCCESS/Error
+
+*/
+NTSTATUS
+UDFInitializeZones(VOID)
+{
+    NTSTATUS RC = STATUS_UNSUCCESSFUL;
+
+    _SEH2_TRY {
+
+        // determine memory requirements
+        switch (MmQuerySystemSize()) {
+        case MmMediumSystem:
+            UdfData.MaxDelayedCloseCount = 32;
+            UdfData.MinDelayedCloseCount = 8;
+            break;
+        case MmLargeSystem:
+            UdfData.MaxDelayedCloseCount = 72;
+            UdfData.MinDelayedCloseCount = 18;
+            break;
+        case MmSmallSystem:
+        default:
+            UdfData.MaxDelayedCloseCount = 10;
+            UdfData.MinDelayedCloseCount = 2;
+        }
+
+        ExInitializeNPagedLookasideList(&UdfData.IrpContextLookasideList,
+                                        NULL,
+                                        NULL,
+                                        POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                        sizeof(IRP_CONTEXT),
+                                        TAG_IRP_CONTEXT,
+                                        0);
+
+        // TODO: move to Paged?
+        ExInitializeNPagedLookasideList(&UdfData.ObjectNameLookasideList,
+                                        NULL,
+                                        NULL,
+                                        POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                        sizeof(UDFObjectName),
+                                        TAG_OBJECT_NAME,
+                                        0);
+
+        ExInitializeNPagedLookasideList(&UdfData.NonPagedFcbLookasideList,
+                                        NULL,
+                                        NULL,
+                                        POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                        sizeof(FCB),
+                                        TAG_FCB_NONPAGED,
+                                        0);
+
+        ExInitializeNPagedLookasideList(&UdfData.UDFNonPagedFcbLookasideList,
+                                        NULL,
+                                        NULL,
+                                        POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                        sizeof(FCB_NONPAGED),
+                                        TAG_FCB_NONPAGED,
+                                        0);
+
+        ExInitializePagedLookasideList(&UdfData.UDFFcbIndexLookasideList,
+                                       NULL,
+                                       NULL,
+                                       POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                       sizeof(FCB), //TODO:
+                                       TAG_FCB_NONPAGED,
+                                       0);
+
+        ExInitializePagedLookasideList(&UdfData.UDFFcbDataLookasideList,
+                                       NULL,
+                                       NULL,
+                                       POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                       sizeof(FCB), //TODO:
+                                       TAG_FCB_NONPAGED,
+                                       0);
+
+        ExInitializePagedLookasideList(&UdfData.CcbLookasideList,
+                                        NULL,
+                                        NULL,
+                                        POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                        sizeof(CCB),
+                                        TAG_CCB,
+                                        0);
+
+        try_return(RC = STATUS_SUCCESS);
+
+try_exit:   NOTHING;
+
+    } _SEH2_FINALLY {
+        if (!NT_SUCCESS(RC)) {
+            // invoke the destroy routine now ...
+            UDFDestroyZones();
+        } else {
+            // mark the fact that we have allocated zones ...
+            SetFlag(UdfData.Flags, UDF_DATA_FLAGS_ZONES_INITIALIZED);
+        }
+    } _SEH2_END;
+
+    return(RC);
+}
+
+
+/*************************************************************************
+*
+* Function: UDFDestroyZones()
+*
+* Description:
+*   Free up the previously allocated memory. NEVER do this once the
+*   driver has been successfully loaded.
+*
+* Expected Interrupt Level (for execution) :
+*
+*  IRQL_PASSIVE_LEVEL
+*
+* Return Value: None
+*
+*************************************************************************/
+VOID UDFDestroyZones(VOID)
+{
+    ExDeleteNPagedLookasideList(&UdfData.IrpContextLookasideList);
+    ExDeleteNPagedLookasideList(&UdfData.ObjectNameLookasideList);
+    ExDeleteNPagedLookasideList(&UdfData.NonPagedFcbLookasideList);
+
+    ExDeletePagedLookasideList(&UdfData.CcbLookasideList);
+}
 
 /*************************************************************************
 *
@@ -422,6 +559,79 @@ UDFCreateCcb()
     return NewCcb;
 } // end UDFCreateCcb()
 
+
+/*************************************************************************
+*
+* Function: UDFReleaseCCB()
+*
+* Description:
+*   Deallocate a previously allocated structure.
+*
+* Expected Interrupt Level (for execution) :
+*
+*  IRQL_PASSIVE_LEVEL
+*
+* Return Value: None
+*
+*************************************************************************/
+VOID
+UDFReleaseCCB(
+    PCCB Ccb
+    )
+{
+    ASSERT(Ccb);
+
+    ExFreeToPagedLookasideList(&UdfData.CcbLookasideList, Ccb);
+
+} // end UDFReleaseCCB()
+
+/*
+  Function: UDFCleanupCCB()
+
+  Description:
+    Cleanup and deallocate a previously allocated structure.
+
+  Expected Interrupt Level (for execution) :
+
+   IRQL_PASSIVE_LEVEL
+
+  Return Value: None
+
+*/
+VOID
+UDFDeleteCcb(
+    PCCB Ccb
+)
+{
+    ASSERT(Ccb);
+    if (!Ccb) return; // probably, we havn't allocated it...
+    ASSERT(Ccb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_CCB);
+
+    _SEH2_TRY {
+        if (Ccb->Fcb) {
+            UDFAcquireResourceExclusive(&Ccb->Fcb->FcbNonpaged->CcbListResource, TRUE);
+            RemoveEntryList(&(Ccb->NextCCB));
+            UDFReleaseResource(&Ccb->Fcb->FcbNonpaged->CcbListResource);
+        } else {
+            BrutePoint();
+        }
+
+        if (Ccb->DirectorySearchPattern) {
+            if (Ccb->DirectorySearchPattern->Buffer) {
+                MyFreePool__(Ccb->DirectorySearchPattern->Buffer);
+                Ccb->DirectorySearchPattern->Buffer = NULL;
+            }
+
+            MyFreePool__(Ccb->DirectorySearchPattern);
+            Ccb->DirectorySearchPattern = NULL;
+        }
+
+        UDFReleaseCCB(Ccb);
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        BrutePoint();
+    } _SEH2_END;
+} // end UDFCleanUpCCB()
+
 /*************************************************************************
 *
 * Function: UDFCreateIrpContext()
@@ -501,7 +711,7 @@ UDFCreateIrpContext(
     }
 
     // TODO: fix
-    if (FALSE && IrpSp->FileObject != NULL) {
+    if (false && IrpSp->FileObject != NULL) {
 
         PFILE_OBJECT FileObject = IrpSp->FileObject;
 
@@ -1218,6 +1428,27 @@ UDFReadRegKeys(
 {
     ptrUDFGetParameter UDFGetParameter = UDFGetRegParameter;
 
+    // What type of AllocDescs should we use
+    Vcb->DefaultAllocMode = (USHORT)UDFGetParameter(Vcb, REG_DEFALLOCMODE_NAME,
+        Update ? Vcb->DefaultAllocMode : ICB_FLAG_AD_SHORT);
+    if (Vcb->DefaultAllocMode > ICB_FLAG_AD_LONG) Vcb->DefaultAllocMode = ICB_FLAG_AD_SHORT;
+
+    // FE allocation charge for plain Dirs
+    Vcb->FECharge = UDFGetParameter(Vcb, UDF_FE_CHARGE_NAME, Update ? Vcb->FECharge : 0);
+    if (!Vcb->FECharge)
+        Vcb->FECharge = UDF_DEFAULT_FE_CHARGE;
+    // FE allocation charge for Stream Dirs (SDir)
+    Vcb->FEChargeSDir = UDFGetParameter(Vcb, UDF_FE_CHARGE_SDIR_NAME,
+        Update ? Vcb->FEChargeSDir : 0);
+    if (!Vcb->FEChargeSDir)
+        Vcb->FEChargeSDir = UDF_DEFAULT_FE_CHARGE_SDIR;
+    // How many Deleted entries should contain Directory to make us
+    // start packing it.
+    Vcb->PackDirThreshold = UDFGetParameter(Vcb, UDF_DIR_PACK_THRESHOLD_NAME,
+        Update ? Vcb->PackDirThreshold : 0);
+    if (Vcb->PackDirThreshold == 0xffffffff)
+        Vcb->PackDirThreshold = UDF_DEFAULT_DIR_PACK_THRESHOLD;
+
     // Timeouts for FreeSpaceBitMap & TheWholeDirTree flushes
     Vcb->BM_FlushPriod = UDFGetParameter(Vcb, UDF_BM_FLUSH_PERIOD_NAME,
         Update ? Vcb->BM_FlushPriod : 0);
@@ -1260,10 +1491,17 @@ UDFReadRegKeys(
     UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_UPDATE_DIR_TIMES_ATTR_W, UDF_VCB_IC_UPDATE_DIR_WRITE, FALSE);
     // Should we update Dir's Times & Attrs on Access
     UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_UPDATE_DIR_TIMES_ATTR_R, UDF_VCB_IC_UPDATE_DIR_READ, FALSE);
+    // Should we allow user to write into Read-Only Directory
+    UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_ALLOW_WRITE_IN_RO_DIR, UDF_VCB_IC_WRITE_IN_RO_DIR, TRUE);
     // Should we allow user to change Access Time for unchanged Directory
     UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_ALLOW_UPDATE_TIMES_ACCS_UCHG_DIR, UDF_VCB_IC_UPDATE_UCHG_DIR_ACCESS_TIME, FALSE);
+    // Should we record Allocation Descriptors in W2k-compatible form
+    UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_W2K_COMPAT_ALLOC_DESCS, UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS, TRUE);
     // Should we read LONG_ADs with invalid PartitionReferenceNumber (generated by Nero Instant Burner)
     UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_INSTANT_COMPAT_ALLOC_DESCS, UDF_VCB_IC_INSTANT_COMPAT_ALLOC_DESCS, TRUE);
+    // Should we make a copy of VolumeLabel in LVD
+    // usually only PVD is updated
+    UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_W2K_COMPAT_VLABEL, UDF_VCB_IC_W2K_COMPAT_VLABEL, TRUE);
 
     // Should we ignore FO_SEQUENTIAL_ONLY
     UDFUpdateCompatOption(Vcb, Update, UseCfg, UDF_IGNORE_SEQUENTIAL_IO, UDF_VCB_IC_IGNORE_SEQUENTIAL_IO, FALSE);
@@ -1336,7 +1574,7 @@ UDFDeleteVCB(
         UDFPrint(("UDF: Delete resources\n"));
         UDFDeleteResource(&(Vcb->VcbResource));
         UDFDeleteResource(&(Vcb->BitMapResource1));
-
+        UDFDeleteResource(&(Vcb->FileIdResource));
         UDFDeleteResource(&(Vcb->DlocResource));
         UDFDeleteResource(&(Vcb->DlocResource2));
         UDFDeleteResource(&(Vcb->FlushResource));
@@ -1403,6 +1641,7 @@ UDFInitializeStackIrpContextFromLite(
     IrpContext->MajorFunction = IRP_MJ_CLOSE;
     IrpContext->Vcb = IrpContextLite->Fcb->Vcb;
     IrpContext->Fcb = IrpContextLite->Fcb;
+    IrpContext->TreeLength = IrpContextLite->TreeLength;
     IrpContext->RealDevice = IrpContextLite->RealDevice;
 
     // Note that this is from the stack.
@@ -1864,5 +2103,5 @@ UDFWaitForIoAtEof(
     return TRUE;
 }
 
-#include "Include/regtools.c"
+#include "Include/regtools.cpp"
 

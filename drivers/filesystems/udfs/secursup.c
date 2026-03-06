@@ -5,7 +5,7 @@
 ////////////////////////////////////////////////////////////////////
 /*************************************************************************
 *
-* File: SecurSup.c
+* File: SecurSup.cpp
 *
 * Module: UDF File System Driver (Kernel mode execution only)
 *

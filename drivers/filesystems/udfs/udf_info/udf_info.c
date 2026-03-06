@@ -6,7 +6,7 @@
 /*
         Module name:
 
-   udf_info.c
+   udf_info.cpp
 
         Abstract:
 
@@ -2150,178 +2150,6 @@ init_tree_entry:
 
 
 /*
-    Open file from directory context.
-    This is called after UDFFindDirEntry to open the found file.
- */
-NTSTATUS
-UDFOpenObjectFromDirContext(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN PDIR_ENUM_CONTEXT DirContext,
-    IN BOOLEAN NotDeleted,
-    OUT PUDF_FILE_INFO* _FileInfo
-    )
-{
-    NTSTATUS status;
-    EXTENT_AD FEExt;
-    uint16 Ident;
-    PDIR_INDEX_ITEM DirNdx = DirContext->DirNdx;
-    PUDF_FILE_INFO DirInfo = DirContext->ParentInfo;
-    PUDF_FILE_INFO FileInfo;
-    PUDF_FILE_INFO ParFileInfo;
-    ULONG ReadBytes;
-    uint_di i = DirContext->Index;
-
-    *_FileInfo = NULL;
-
-    if (!DirNdx) {
-        return STATUS_OBJECT_NAME_NOT_FOUND;
-    }
-
-    if ((FileInfo = DirNdx->FileInfo)) {
-        // file is already opened
-        if ((DirNdx->FileCharacteristics & FILE_DELETED) && NotDeleted) {
-            AdPrint(("  FILE_DELETED on open\n"));
-            return STATUS_FILE_DELETED;
-        }
-        if ((FileInfo->ParentFile != DirInfo) &&
-           (FileInfo->Index >= 2)) {
-            ParFileInfo = UDFLocateParallelFI(DirInfo, i, FileInfo);
-            BrutePoint();
-            if (ParFileInfo->ParentFile != DirInfo) {
-                FileInfo = (PUDF_FILE_INFO)MyAllocatePoolTag__(UDF_FILE_INFO_MT, sizeof(UDF_FILE_INFO), MEM_FINF_TAG);
-                *_FileInfo = FileInfo;
-                if (!FileInfo) return STATUS_INSUFFICIENT_RESOURCES;
-                RtlCopyMemory(FileInfo, DirNdx->FileInfo, sizeof(UDF_FILE_INFO));
-                UDFInsertLinkedFile(FileInfo, DirNdx->FileInfo);
-                DirNdx->FI_Flags |= UDF_FI_FLAG_LINKED;
-                FileInfo->RefCount = 0;
-                FileInfo->ParentFile = DirInfo;
-                FileInfo->Fcb = NULL;
-            } else {
-                FileInfo = ParFileInfo;
-            }
-        }
-        // Just increase some counters & exit
-        UDFReferenceFile__(FileInfo);
-
-        ASSERT(FileInfo->ParentFile == DirInfo);
-        ValidateFileInfo(FileInfo);
-
-        *_FileInfo = FileInfo;
-        return STATUS_SUCCESS;
-    }
-
-    // Check deleted for new open
-    if ((DirNdx->FileCharacteristics & FILE_DELETED) && NotDeleted) {
-        AdPrint(("  FILE_DELETED on open (2)\n"));
-        return STATUS_FILE_DELETED;
-    }
-
-    FileInfo = (PUDF_FILE_INFO)MyAllocatePoolTag__(UDF_FILE_INFO_MT, sizeof(UDF_FILE_INFO), MEM_FINF_TAG);
-    *_FileInfo = FileInfo;
-    if (!FileInfo) return STATUS_INSUFFICIENT_RESOURCES;
-    RtlZeroMemory(FileInfo, sizeof(UDF_FILE_INFO));
-    // init horizontal links
-    FileInfo->NextLinkedFile =
-    FileInfo->PrevLinkedFile = FileInfo;
-    // read FileIdent
-    FileInfo->FileIdent = (PFILE_IDENT_DESC)MyAllocatePoolTag__(NonPagedPool, DirNdx->Length, MEM_FID_TAG);
-    if (!(FileInfo->FileIdent)) return STATUS_INSUFFICIENT_RESOURCES;
-    FileInfo->FileIdentLen = DirNdx->Length;
-    if (!NT_SUCCESS(status = UDFReadExtent(IrpContext, Vcb, &DirInfo->Dloc->DataLoc, DirNdx->Offset,
-                             DirNdx->Length, FALSE, (int8*)(FileInfo->FileIdent), &ReadBytes)))
-        return status;
-    if (FileInfo->FileIdent->descTag.tagIdent != TID_FILE_IDENT_DESC) {
-        BrutePoint();
-        return STATUS_FILE_CORRUPT_ERROR;
-    }
-    // check for opened links
-    if (!NT_SUCCESS(status = UDFStoreDloc(Vcb, FileInfo, UDFPartLbaToPhys(Vcb, &(FileInfo->FileIdent->icb.extLocation)))))
-        return status;
-    // init pointer to parent object
-    FileInfo->Index = i;
-    FileInfo->ParentFile = DirInfo;
-    // init pointers to linked files (if any)
-    if (FileInfo->Dloc->LinkedFileInfo != FileInfo)
-        UDFInsertLinkedFile(FileInfo, FileInfo->Dloc->LinkedFileInfo);
-    if (FileInfo->Dloc->FileEntry)
-        goto init_tree_entry;
-    // read (Ex)FileEntry
-    FileInfo->Dloc->FileEntry = (tag*)MyAllocatePoolTag__(NonPagedPool, Vcb->SectorSize, MEM_FE_TAG);
-    if (!(FileInfo->Dloc->FileEntry)) return STATUS_INSUFFICIENT_RESOURCES;
-    if (!NT_SUCCESS(status = UDFReadFileEntry(IrpContext, Vcb, &FileInfo->FileIdent->icb, (PFILE_ENTRY)(FileInfo->Dloc->FileEntry), &Ident)))
-        return status;
-    // build mappings for Data & AllocDescs
-    if (!FileInfo->Dloc->AllocLoc.Mapping) {
-        FEExt.extLength = FileInfo->FileIdent->icb.extLength;
-        FEExt.extLocation = UDFPartLbaToPhys(Vcb, &(FileInfo->FileIdent->icb.extLocation));
-        if (FEExt.extLocation == LBA_OUT_OF_EXTENT)
-            return STATUS_FILE_CORRUPT_ERROR;
-        FileInfo->Dloc->AllocLoc.Mapping = UDFExtentToMapping(&FEExt);
-        if (!(FileInfo->Dloc->AllocLoc.Mapping))
-            return STATUS_INSUFFICIENT_RESOURCES;
-    }
-    // read location info
-    status = UDFLoadExtInfo(IrpContext, Vcb, (PFILE_ENTRY)(FileInfo->Dloc->FileEntry), &FileInfo->FileIdent->icb,
-                           &FileInfo->Dloc->DataLoc, &FileInfo->Dloc->AllocLoc);
-    if (!NT_SUCCESS(status))
-        return status;
-    // init (Ex)FileEntry mapping
-    FileInfo->Dloc->FELoc.Length = (FileInfo->Dloc->DataLoc.Offset) ? FileInfo->Dloc->DataLoc.Offset :
-                                                          FileInfo->Dloc->AllocLoc.Offset;
-    FileInfo->Dloc->FELoc.Mapping = UDFExtentToMapping(&FEExt);
-    FileInfo->Dloc->FileEntryLen = (uint32)(FileInfo->Dloc->FELoc.Length);
-    // we get here immediately when opened link encountered
-init_tree_entry:
-    // init back pointer from parent object
-    ASSERT(!DirNdx->FileInfo);
-    DirNdx->FileInfo = FileInfo;
-    // init DirIndex
-    if (UDFGetFileLinkCount(FileInfo) > 1) {
-        DirNdx->FI_Flags |= UDF_FI_FLAG_LINKED;
-    } else {
-        DirNdx->FI_Flags &= ~UDF_FI_FLAG_LINKED;
-    }
-    // resize FE cache
-    if (!MyReallocPool__((int8*)((FileInfo->Dloc->FileEntry)), Vcb->SectorSize,
-                     (int8**)&((FileInfo->Dloc->FileEntry)), FileInfo->Dloc->FileEntryLen))
-        return STATUS_INSUFFICIENT_RESOURCES;
-    // check if this file has a SDir
-    if ((FileInfo->Dloc->FileEntry->tagIdent == TID_EXTENDED_FILE_ENTRY) &&
-       ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->streamDirectoryICB.extLength)
-        FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_HAS_SDIR;
-    if (!(FileInfo->FileIdent->fileCharacteristics & FILE_DIRECTORY)) {
-        UDFReferenceFile__(FileInfo);
-        ASSERT(FileInfo->ParentFile == DirInfo);
-        UDFReleaseDloc(Vcb, FileInfo->Dloc);
-        return STATUS_SUCCESS;
-    }
-
-    UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->DataLoc.Mapping, AS_USED);
-
-    // build index for directories
-    if (!FileInfo->Dloc->DirIndex) {
-        status = UDFIndexDirectory(IrpContext, Vcb, FileInfo);
-        if (!NT_SUCCESS(status))
-            return status;
-
-        if ((FileInfo->Dloc->DirIndex->DelCount > Vcb->PackDirThreshold) &&
-           !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)) {
-            status = UDFPackDirectory__(IrpContext, Vcb, FileInfo);
-            if (!NT_SUCCESS(status))
-                return status;
-        }
-    }
-    UDFReferenceFile__(FileInfo);
-    UDFReleaseDloc(Vcb, FileInfo->Dloc);
-    ASSERT(FileInfo->ParentFile == DirInfo);
-
-    return status;
-} // end UDFOpenObjectFromDirContext()
-
-
-/*
     This routine inits UDF_FILE_INFO structure for root directory
  */
 NTSTATUS
@@ -3035,12 +2863,8 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
         if (!NT_SUCCESS(status)) {
-            if (FEAllocated && FileInfo->Dloc) {
-                // Free FE space first (needs Dloc->FELoc), then remove Dloc entry
+            if (FEAllocated)
                 UDFFreeFESpace(Vcb, DirInfo, &(FileInfo->Dloc->FELoc));
-                UDFRemoveDloc(Vcb, FileInfo->Dloc);
-                FileInfo->Dloc = NULL;
-            }
         }
     } _SEH2_END
     return status;
@@ -3794,8 +3618,6 @@ UDFLoadVAT(
 
     VatFileInfo = Vcb->VatFileInfo = (PUDF_FILE_INFO)MyAllocatePoolTag__(UDF_FILE_INFO_MT, sizeof(UDF_FILE_INFO), MEM_VATFINF_TAG);
     if (!VatFileInfo) return STATUS_INSUFFICIENT_RESOURCES;
-    RtlZeroMemory(VatFileInfo, sizeof(UDF_FILE_INFO));
-    VatFileInfo->NextLinkedFile = VatFileInfo->PrevLinkedFile = VatFileInfo;
     // load VAT FE (we know its location)
     VatFELoc.partitionReferenceNum = PartNum;
 retry_load_vat:

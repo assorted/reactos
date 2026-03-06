@@ -141,34 +141,38 @@ UDFFastLock (
     IN PDEVICE_OBJECT DeviceObject
     )
 {
-    BOOLEAN FcbAcquired = FALSE;
     BOOLEAN Results = FALSE;
+
+//    BOOLEAN             AcquiredFCB = FALSE;
     TYPE_OF_OPEN TypeOfOpen;
-    PFCB Fcb = NULL;
+    PFCB                  Fcb = NULL;
+
+    UDFPrint(("UDFFastLock\n"));
 
     // Decode the type of file object we're being asked to process and
     // make sure that is is only a user file open.
 
     TypeOfOpen = UDFFastDecodeFileObject(FileObject, &Fcb);
 
-    if (TypeOfOpen != UserFileOpen) {
+    ASSERT_FCB(Fcb);
+
+    // Validate the sent-in FCB
+    if ( (Fcb == Fcb->Vcb->VolumeDasdFcb) ||
+         (Fcb->FcbState & UDF_FCB_DIRECTORY)) {
 
         IoStatus->Status = STATUS_INVALID_PARAMETER;
+        IoStatus->Information = 0;
         return TRUE;
     }
 
-    ASSERT_FCB(Fcb);
+    //  Acquire exclusive access to the Fcb this operation can always wait
 
     FsRtlEnterFileSystem();
 
+    // BUGBUG: kenr
+    // (VOID) ExAcquireResourceShared( Fcb->Header.Resource, TRUE );
+
     _SEH2_TRY {
-
-        FcbAcquired = UDFAcquireFcbShared(NULL, Fcb, TRUE);
-
-        if (FcbAcquired == FALSE) {
-
-            try_return(NOTHING);
-        }
 
         //  If we don't have a file lock, then get one now.
         if ((Fcb->FileLock == NULL) && !UDFCreateFileLock(NULL, Fcb, FALSE)) {
@@ -200,13 +204,10 @@ UDFFastLock (
 try_exit:  NOTHING;
     } _SEH2_FINALLY {
 
-        // Release the Fcb, and return to our caller
+        //  Release the Fcb, and return to our caller
 
-        if (FcbAcquired) {
-
-            UDFReleaseFcb(NULL, Fcb);
-        }
-
+        // BUGBUG: kenr
+        //    UDFReleaseResource( (Fcb)->Header.Resource );
 
         FsRtlExitFileSystem();
 

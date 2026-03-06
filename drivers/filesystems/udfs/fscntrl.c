@@ -5,7 +5,7 @@
 ////////////////////////////////////////////////////////////////////
 /*
 
- Module Name: FsCntrl.c
+ Module Name: FsCntrl.cpp
 
  Abstract:
 
@@ -645,15 +645,7 @@ UDFCloseResidual(
         UDFCloseFile__(IrpContext, Vcb, Vcb->RootIndexFcb->FileInfo);
         if (Vcb->RootIndexFcb->FcbCleanup)
             Vcb->RootIndexFcb->FcbCleanup--;
-        {
-            BOOLEAN RemovedFcb = FALSE;
-            UDFAcquireFcbExclusive(IrpContext, Vcb->RootIndexFcb, FALSE);
-            // LCB-based teardown: walks ParentLcbQueue to find and remove LCBs
-            UDFTeardownStructures(IrpContext, Vcb->RootIndexFcb, FALSE, &RemovedFcb);
-            if (!RemovedFcb) {
-                UDFReleaseFcb(IrpContext, Vcb->RootIndexFcb);
-            }
-        }
+        UDFTeardownStructures(IrpContext, Vcb->RootIndexFcb, 1, NULL);
         // Remove root FCB reference in vcb
         if (Vcb->VcbReference)
             InterlockedDecrement((PLONG)&Vcb->VcbReference);

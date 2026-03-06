@@ -6,7 +6,7 @@
 /*
         Module name:
 
-   alloc.c
+   alloc.cpp
 
         Abstract:
 

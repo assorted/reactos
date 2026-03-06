@@ -5,7 +5,7 @@
 ////////////////////////////////////////////////////////////////////
 /*
     Module:
-            Namesup.c
+            Namesup.cpp
 
     Abstract: FileName support routines
 */

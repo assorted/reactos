@@ -6,7 +6,7 @@
 /*
         Module name:
 
-   remap.c
+   remap.cpp
 
         Abstract:
 

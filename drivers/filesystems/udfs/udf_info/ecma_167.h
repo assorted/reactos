@@ -770,6 +770,11 @@ typedef struct _EXTENDED_FILE_ENTRY {
 
 typedef EXTENDED_FILE_ENTRY ExtendedFileEntry;
 
+#pragma pack(pop)
+
+#endif /* __ECMA_167_H__ */
+
+
 /* C typedef aliases for all non-typedef struct declarations */
 typedef struct VolStructDesc VolStructDesc;
 typedef struct BeginningExtendedAreaDesc BeginningExtendedAreaDesc;
@@ -802,8 +807,3 @@ typedef struct UnallocatedSpaceEntry UnallocatedSpaceEntry;
 typedef struct PartitionIntegrityEntry PartitionIntegrityEntry;
 typedef struct LogicalVolHeaderDesc LogicalVolHeaderDesc;
 typedef struct PathComponent PathComponent;
-
-#pragma pack(pop)
-
-#endif /* __ECMA_167_H__ */
-

@@ -6,7 +6,7 @@
 /*
         Module name:
 
-   extent.c
+   extent.cpp
 
         Abstract:
 

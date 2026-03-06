@@ -5,7 +5,7 @@
 ////////////////////////////////////////////////////////////////////
 /*************************************************************************
 *
-* File: Flush.c
+* File: Flush.cpp
 *
 * Module: UDF File System Driver (Kernel mode execution only)
 *
@@ -112,9 +112,11 @@ UDFCommonFlush(
         // action we take.
         if ((Fcb == Fcb->Vcb->VolumeDasdFcb) || (Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY)) {
 
+#ifdef UDF_DELAYED_CLOSE
             UDFFspClose(Vcb);
+#endif //UDF_DELAYED_CLOSE
 
-            UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
+            UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE);
             AcquiredVCB = TRUE;
             // The caller wishes to flush all files for the mounted
             // logical volume. The flush volume routine below should simply
@@ -127,7 +129,7 @@ UDFCommonFlush(
 
             UDFFlushVolume(IrpContext, Vcb, 0);
 
-            UDFReleaseVcb(IrpContext, Vcb);
+            UDFReleaseResource(&(Vcb->VcbResource));
             AcquiredVCB = FALSE;
 
             try_return(Status);
@@ -137,17 +139,15 @@ UDFCommonFlush(
             Vcb = Fcb->Vcb;
             ASSERT(Vcb);
 
-            // Child-first lock ordering
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE);
-            AcquiredFCB = TRUE;
-
-            // Parent second (needed for DirIndex modification in UDFSetFileSizeInDirNdx)
             if (Fcb->FileInfo->ParentFile && Fcb->FileInfo->ParentFile->Fcb) {
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
-                UDFAcquireFcbExclusive(IrpContext, Fcb->FileInfo->ParentFile->Fcb, FALSE);
+                UDFAcquireResourceExclusive(&Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource, TRUE);
                 AcquiredParentFcb = TRUE;
             }
+
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
+            AcquiredFCB = TRUE;
 
             // Request the Cache Manager to perform a flush operation.
             // Further, instruct the Cache Manager that we wish to flush the
@@ -168,19 +168,20 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
-        // Release in reverse order of acquisition (parent first, then child)
-        if (AcquiredParentFcb) {
-            UDFReleaseFcb(IrpContext, Fcb->FileInfo->ParentFile->Fcb);
-            AcquiredParentFcb = FALSE;
-        }
-
         if (AcquiredFCB) {
-            UDFReleaseFcb(IrpContext, Fcb);
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
             AcquiredFCB = FALSE;
         }
 
+        if (AcquiredParentFcb) {
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
+            UDFReleaseResource(&Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource);
+            AcquiredParentFcb = FALSE;
+        }
+
         if (AcquiredVCB) {
-            UDFReleaseVcb(IrpContext, Vcb);
+            UDFReleaseResource(&Vcb->VcbResource);
             AcquiredVCB = FALSE;
         }
 

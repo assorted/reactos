@@ -7,7 +7,7 @@
 
 Module Name:
 
-    VolInfo.c
+    VolInfo.cpp
 
 Abstract:
 

@@ -5,7 +5,7 @@
 ////////////////////////////////////////////////////////////////////
 /*************************************************************************
 *
-* File: UDFinit.c
+* File: UDFinit.cpp
 *
 * Module: UDF File System Driver (Kernel mode execution only)
 *

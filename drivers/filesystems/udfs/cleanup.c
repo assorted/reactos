@@ -5,7 +5,7 @@
 ////////////////////////////////////////////////////////////////////
 /*
 
- Module name: Cleanup.c
+ Module name: Cleanup.cpp
 
  Abstract:
 
@@ -50,6 +50,7 @@ UDFCommonCleanup(
 {
     IO_STATUS_BLOCK         IoStatus;
     NTSTATUS                RC = STATUS_SUCCESS;
+    NTSTATUS                RC2;
     PFILE_OBJECT            FileObject = NULL;
     PFCB                    Fcb = NULL;
     PCCB                    Ccb = NULL;
@@ -77,13 +78,13 @@ UDFCommonCleanup(
         return STATUS_SUCCESS;
     }
 
-    // Get the file object out of the Irp and decode the type of open.
+   // Get the file object out of the Irp and decode the type of open.
 
     FileObject = IoGetCurrentIrpStackLocation(Irp)->FileObject;
 
     TypeOfOpen = UDFDecodeFileObject(FileObject, &Fcb, &Ccb);
 
-    // No work here for either an UnopenedFile object or a StreamFileObject.
+    //  No work here for either an UnopenedFile object or a StreamFileObject.
 
     if (TypeOfOpen <= StreamFileOpen) {
 
@@ -173,8 +174,15 @@ UDFCommonCleanup(
             AcquiredVcb = TRUE;
         }
 
-        // Acquire current object only
-        // Parent is acquired later only for delete operations (Child → Parent order)
+        // Acquire parent object
+        if (Fcb->FileInfo->ParentFile) {
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
+            UDFAcquireResourceExclusive(&(Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource), TRUE);
+        } else {
+            UDFAcquireResourceShared(&(Vcb->VcbResource), TRUE);
+        }
+        AcquiredParentFCB = TRUE;
+        // Acquire current object
         UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
         UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
         AcquiredFCB = TRUE;
@@ -234,12 +242,40 @@ UDFCommonCleanup(
                !UDFIsSDirDeleted(Fcb->FileInfo->Dloc->SDirInfo)) {
                 RC = UDFMarkStreamsForDeletion(IrpContext, Vcb, Fcb, TRUE); // Delete
             }
-            // Acquire parent for delete operation (after current - child first order)
+            // we can release these resources 'cause UDF_FCB_DELETE_ON_CLOSE
+            // flag is already set & the file can't be opened
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
+            AcquiredFCB = FALSE;
+            if (Fcb->FileInfo->ParentFile) {
+                UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
+                UDFReleaseResource(&Fcb->ParentFcb->FcbNonpaged->FcbResource);
+            } else {
+                UDFReleaseResource(&Vcb->VcbResource);
+            }
+            AcquiredParentFCB = FALSE;
+            UDFReleaseResource(&(Vcb->VcbResource));
+            AcquiredVcb = FALSE;
+
+            // Make system to issue last Close request
+            // for our Target ...
+
+#ifdef UDF_DELAYED_CLOSE
+            UDFFspClose(Fcb->Vcb);
+#endif //UDF_DELAYED_CLOSE
+
+            UDFAcquireResourceShared(&Vcb->VcbResource, TRUE);
+            AcquiredVcb = TRUE;
             if (Fcb->FileInfo->ParentFile) {
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb->ParentFcb);
                 UDFAcquireResourceExclusive(&(Fcb->ParentFcb->FcbNonpaged->FcbResource), TRUE);
-                AcquiredParentFCB = TRUE;
+            } else {
+                UDFAcquireResourceShared(&Vcb->VcbResource, TRUE);
             }
+            AcquiredParentFCB = TRUE;
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
+            AcquiredFCB = TRUE;
 
             // we should set file sizes to zero if there are no more
             // links to this file
@@ -255,6 +291,14 @@ UDFCommonCleanup(
                 UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
             }
         }
+
+#ifdef UDF_DELAYED_CLOSE
+        if ((Fcb->FcbReference == 1) &&
+         /*(Fcb->NodeIdentifier.NodeType != UDF_NODE_TYPE_VCB) &&*/ // see above
+            (!(Fcb->FcbState & UDF_FCB_DELETE_ON_CLOSE)) ) {
+            Fcb->FcbState |= UDF_FCB_DELAY_CLOSE;
+        }
+#endif //UDF_DELAYED_CLOSE
 
         NextFileInfo = Fcb->FileInfo;
 
@@ -416,7 +460,7 @@ DiscardDelete:
 /*                MmPrint(("    CcPurgeCacheSection()\n"));
                 CcPurgeCacheSection(&Fcb->SectionObject, NULL, 0, FALSE);*/
             }
-            // we needn't Flush here. It will be done in UDFCloseFile__
+            // we needn't Flush here. It will be done in UDFCloseFileInfoChain()
         }
 
         // Update FileTimes & Attrs
@@ -512,22 +556,23 @@ DiscardDelete:
         }
 
         // release resources now.
+        // they'll be acquired in UDFCloseFileInfoChain()
         UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
         UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
         AcquiredFCB = FALSE;
 
-        if (AcquiredParentFCB && Fcb->FileInfo->ParentFile) {
+        if (Fcb->FileInfo->ParentFile) {
             UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
             UDFReleaseResource(&Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource);
-            AcquiredParentFCB = FALSE;
+        } else {
+            UDFReleaseResource(&Vcb->VcbResource);
         }
-
-        // Close the target file's FileInfo - this decrements FileInfo->RefCount
-        // Parent FileInfo references are now handled by LCB mechanism in UDFTeardownStructures
+        AcquiredParentFCB = FALSE;
+        // close the chain
         ASSERT(AcquiredVcb);
-        if (NextFileInfo) {
-            UDFCloseFile__(IrpContext, Vcb, NextFileInfo);
-        }
+        RC2 = UDFCloseFileInfoChain(IrpContext, Vcb, NextFileInfo, Ccb->TreeLength, TRUE);
+        if (NT_SUCCESS(RC))
+            RC = RC2;
 
         Ccb->Flags |= UDF_CCB_CLEANED;
 
@@ -549,9 +594,13 @@ try_exit: NOTHING;
             UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
         }
 
-        if (AcquiredParentFCB && Fcb->FileInfo->ParentFile) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
-            UDFReleaseResource(&Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource);
+        if (AcquiredParentFCB) {
+            if (Fcb->FileInfo->ParentFile) {
+                UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
+                UDFReleaseResource(&Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource);
+            } else {
+                UDFReleaseResource(&Vcb->VcbResource);
+            }
         }
 
         if (AcquiredVcb) {
@@ -572,6 +621,85 @@ try_exit: NOTHING;
     } _SEH2_END; // end of "__finally" processing
     return(RC);
 } // end UDFCommonCleanup()
+
+/*
+    This routine walks through the tree to RootDir &
+    calls UDFCloseFile__() for each file instance
+    imho, Useful feature
+ */
+NTSTATUS
+UDFCloseFileInfoChain(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO fi,
+    IN ULONG TreeLength,
+    IN BOOLEAN VcbAcquired
+    )
+{
+    PUDF_FILE_INFO ParentFI;
+    PFCB Fcb;
+    PFCB ParentFcb = NULL;
+    NTSTATUS RC = STATUS_SUCCESS;
+    NTSTATUS RC2;
+
+    // we can't process Tree until we can acquire Vcb
+    if (!VcbAcquired)
+        UDFAcquireResourceShared(&(Vcb->VcbResource),TRUE);
+
+    AdPrint(("UDFCloseFileInfoChain\n"));
+    for(; TreeLength && fi; TreeLength--) {
+
+        // close parent chain (if any)
+        // if we started path parsing not from RootDir on Create,
+        // we would never get RootDir here
+        ValidateFileInfo(fi);
+
+        // acquire parent
+        if ((ParentFI = fi->ParentFile)) {
+            ParentFcb = fi->Fcb->ParentFcb;
+            ASSERT(ParentFcb);
+            UDF_CHECK_PAGING_IO_RESOURCE(ParentFcb);
+            UDFAcquireResourceExclusive(&ParentFcb->FcbNonpaged->FcbResource, TRUE);
+            ASSERT_FCB(ParentFcb);
+        } else {
+            AdPrint(("Acquiring VCB...\n"));
+            UDFAcquireResourceShared(&Vcb->VcbResource, TRUE);
+            AdPrint(("Done\n"));
+        }
+        // acquire current file/dir
+        // we must assure that no more threads try to reuse this object
+        if ((Fcb = fi->Fcb)) {
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
+            ASSERT(Fcb->FcbReference >= fi->RefCount);
+            RC2 = UDFCloseFile__(IrpContext, Vcb, fi);
+            if (!NT_SUCCESS(RC2))
+                RC = RC2;
+            ASSERT(Fcb->FcbReference > fi->RefCount);
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
+        } else {
+            BrutePoint();
+            RC2 = UDFCloseFile__(IrpContext, Vcb, fi);
+            if (!NT_SUCCESS(RC2))
+                RC = RC2;
+        }
+
+        if (ParentFI) {
+            UDF_CHECK_PAGING_IO_RESOURCE(ParentFcb);
+            UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+        } else {
+            UDFReleaseResource(&Vcb->VcbResource);
+        }
+        fi = ParentFI;
+    }
+
+    if (!VcbAcquired)
+        UDFReleaseResource(&Vcb->VcbResource);
+
+    return RC;
+
+} // end UDFCloseFileInfoChain()
 
 VOID
 UDFAutoUnlock (

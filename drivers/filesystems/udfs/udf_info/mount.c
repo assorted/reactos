@@ -6,7 +6,7 @@
 /*
         Module name:
 
-   mount.c
+   mount.cpp
 
         Abstract:
 

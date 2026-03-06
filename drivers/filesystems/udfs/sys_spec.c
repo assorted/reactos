@@ -5,7 +5,7 @@
 ////////////////////////////////////////////////////////////////////
 /*************************************************************************
 *
-* File: Sys_Spec.c
+* File: Sys_Spec.cpp
 *
 * Module: UDF File System Driver
 * (both User and Kernel mode execution)
@@ -20,6 +20,6 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID        UDF_FILE_SYS_SPEC
 
-#include "Include/Sys_spec_lib.c"
+#include "Include/Sys_spec_lib.cpp"
 
-//#include "Include/tools.c"
+//#include "Include/tools.cpp"
