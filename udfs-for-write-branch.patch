@@ -242,19 +242,314 @@ similarity index 100%
 rename from drivers/filesystems/udfs/pnp.cpp
 rename to drivers/filesystems/udfs/pnp.c
 diff --git a/drivers/filesystems/udfs/protos.h b/drivers/filesystems/udfs/protos.h
-index 59cb00c..7898d13 100644
+index 59cb00c..72a70d6 100644
 --- a/drivers/filesystems/udfs/protos.h
 +++ b/drivers/filesystems/udfs/protos.h
-@@ -964,7 +964,7 @@ UDFCommonShutdown(
+@@ -73,7 +73,7 @@ UDFDecodeFileObjectCcb(
+ 
+ 
  /*************************************************************************
- * Prototypes for the file UDFinit.cpp
+-* Prototypes for the file create.cpp
++* Prototypes for the file create.c
+ *************************************************************************/
+ extern NTSTATUS NTAPI UDFCreate(
+     IN PDEVICE_OBJECT          DeviceObject,       // the logical volume device object
+@@ -110,6 +110,17 @@ UDFCompleteFcbOpen(
+     _In_ ULONG CreateDisposition
+     );
+ 
++NTSTATUS
++UDFOpenExistingFcb(
++    _In_ PIRP_CONTEXT IrpContext,
++    _In_ PIO_STACK_LOCATION IrpSp,
++    _In_ PVCB Vcb,
++    _Inout_ PFCB *CurrentFcb,
++    _In_ BOOLEAN IgnoreCase,
++    _In_ BOOLEAN OpenByFileId,
++    _In_ ULONG CreateDisposition
++    );
++
+ NTSTATUS
+ UDFInitializeFCB(
+     IN PFCB                    PtrNewFcb,          // FCB structure to be initialized
+@@ -120,7 +131,7 @@ UDFInitializeFCB(
+     );
+ 
+ /*************************************************************************
+-* Prototypes for the file cleanup.cpp
++* Prototypes for the file cleanup.c
+ *************************************************************************/
+ extern NTSTATUS NTAPI UDFCleanup(
+ PDEVICE_OBJECT              DeviceObject,       // the logical volume device object
+@@ -130,17 +141,8 @@ extern NTSTATUS UDFCommonCleanup(
+ PIRP_CONTEXT IrpContext,
+ PIRP                        Irp);
+ 
+-NTSTATUS
+-UDFCloseFileInfoChain(
+-    IN PIRP_CONTEXT IrpContext,
+-    IN PVCB Vcb,
+-    IN PUDF_FILE_INFO fi,
+-    IN ULONG TreeLength,
+-    IN BOOLEAN VcbAcquired
+-    );
+-
+ /*************************************************************************
+-* Prototypes for the file close.cpp
++* Prototypes for the file close.c
+ *************************************************************************/
+ extern NTSTATUS NTAPI UDFClose(
+ PDEVICE_OBJECT              DeviceObject,       // the logical volume device object
+@@ -158,7 +160,7 @@ VOID
+ UDFTeardownStructures(
+     _In_ PIRP_CONTEXT IrpContext,
+     _Inout_ PFCB StartingFcb,
+-    _In_ ULONG TreeLength,
++    _In_ BOOLEAN Recursive,      // TRUE if this is a recursive call (for hard links)
+     _Out_ PBOOLEAN RemovedStartingFcb
+     );
+ 
+@@ -176,7 +178,7 @@ UDFFspClose(
+     UDFCloseAllSystemDelayedInDir((Fcb)->Vcb, (Fcb)->FileInfo)
+ 
+ /*************************************************************************
+-* Prototypes for the file dircntrl.cpp
++* Prototypes for the file dircntrl.c
+ *************************************************************************/
+ extern NTSTATUS NTAPI UDFDirControl(
+ PDEVICE_OBJECT          DeviceObject,       // the logical volume device object
+@@ -203,7 +205,7 @@ PFCB                    Fcb,
+ PCCB                    Ccb);
+ 
+ /*************************************************************************
+-* Prototypes for the file devcntrl.cpp
++* Prototypes for the file devcntrl.c
+ *************************************************************************/
+ extern NTSTATUS NTAPI UDFDeviceControl(
+ PDEVICE_OBJECT              DeviceObject,       // the logical volume device object
+@@ -224,7 +226,7 @@ extern NTSTATUS NTAPI UDFHandleQueryPath(
+ PVOID                       BufferPointer);
+ 
+ /*************************************************************************
+-* Prototypes for the file fastio.cpp
++* Prototypes for the file fastio.c
+ *************************************************************************/
+ extern BOOLEAN NTAPI UDFFastIoCheckIfPossible(
+ IN PFILE_OBJECT             FileObject,
+@@ -360,7 +362,7 @@ UDFFastIoCopyWrite(
+     );
+ 
+ /*************************************************************************
+-* Prototypes for the file fileinfo.cpp
++* Prototypes for the file fileinfo.c
+ *************************************************************************/
+ 
+ extern NTSTATUS UDFCommonQueryInfo(
+@@ -516,7 +518,7 @@ UDFHardLink(
+     );
+ 
+ /*************************************************************************
+-* Prototypes for the file flush.cpp
++* Prototypes for the file flush.c
+ *************************************************************************/
+ extern NTSTATUS NTAPI UDFFlushBuffers(
+ PDEVICE_OBJECT    DeviceObject,       // the logical volume device object
+@@ -563,7 +565,7 @@ extern VOID UDFFlushTryBreak(
+ IN PVCB         Vcb);
+ 
+ /*************************************************************************
+-* Prototypes for the file fscntrl.cpp
++* Prototypes for the file fscntrl.c
+ *************************************************************************/
+ 
+ extern NTSTATUS NTAPI UDFFSControl(
+@@ -659,7 +661,7 @@ UDFCommonPnp(
+     );
+ 
+ /*************************************************************************
+-* Prototypes for the file LockCtrl.cpp
++* Prototypes for the file LockCtrl.c
+ *************************************************************************/
+ 
+ extern NTSTATUS NTAPI UDFLockControl(
+@@ -670,7 +672,9 @@ extern NTSTATUS NTAPI UDFCommonLockControl(
+     IN PIRP_CONTEXT IrpContext,
+     IN PIRP             Irp);
+ 
+-extern BOOLEAN NTAPI UDFFastLock(
++BOOLEAN
++NTAPI
++UDFFastLock(
+     IN PFILE_OBJECT           FileObject,
+     IN PLARGE_INTEGER         FileOffset,
+     IN PLARGE_INTEGER         Length,
+@@ -707,7 +711,7 @@ UDFFastUnlockAllByKey(
+     );
+ 
+ /*************************************************************************
+-* Prototypes for the file misc.cpp
++* Prototypes for the file misc.c
+ *************************************************************************/
+ extern NTSTATUS UDFInitializeZones(
+ VOID);
+@@ -769,6 +773,49 @@ UDFDeleteCcb(
+     PCCB Ccb
+     );
+ 
++// prefxsup.c - LCB functions
++PLCB
++UDFInsertPrefix(
++    IN PIRP_CONTEXT IrpContext,
++    IN PFCB ParentFcb,
++    IN PFCB ChildFcb,
++    IN ULONG Index
++    );
++
++VOID
++UDFRemovePrefix(
++    IN PIRP_CONTEXT IrpContext,
++    IN PLCB Lcb
++    );
++
++PLCB
++UDFFindPrefix(
++    IN PIRP_CONTEXT IrpContext,
++    IN PFCB ParentFcb,
++    IN PFCB ChildFcb
++    );
++
++PLCB
++UDFAcquirePrefix(
++    IN PIRP_CONTEXT IrpContext,
++    IN PFCB ParentFcb,
++    IN PFCB ChildFcb,
++    IN ULONG Index
++    );
++
++VOID
++UDFReleasePrefix(
++    IN PIRP_CONTEXT IrpContext,
++    IN PLCB Lcb
++    );
++
++BOOLEAN
++UDFReleasePrefixImmediate(
++    IN PIRP_CONTEXT IrpContext,
++    IN PLCB Lcb,
++    IN BOOLEAN CloseParentFileInfo
++    );
++
+ PFCB
+ UDFCreateFcb (
+     _In_ PIRP_CONTEXT IrpContext,
+@@ -779,11 +826,15 @@ UDFCreateFcb (
+ 
+ VOID
+ UDFDeleteFcb(
+-    _In_ PIRP_CONTEXT IrpContext,
++    _In_opt_ PIRP_CONTEXT IrpContext,
+     _In_ PFCB Fcb
+     );
+ 
+-VOID UDFCleanUpFCB(PFCB Fcb);
++VOID
++UDFInsertFcbIntoTable(
++    _In_ PIRP_CONTEXT IrpContext,
++    _In_ PFCB Fcb
++    );
+ 
+ _Ret_valid_ PIRP_CONTEXT
+ UDFCreateIrpContext(
+@@ -882,13 +933,13 @@ UDFCreateFileLock(
+ );
+ 
+ /*************************************************************************
+-* Prototypes for the file NameSup.cpp
++* Prototypes for the file NameSup.c
+ *************************************************************************/
+ 
+ #include "namesup.h"
+ 
+ /*************************************************************************
+-* Prototypes for the file Pnp.cpp
++* Prototypes for the file Pnp.c
+ *************************************************************************/
+ NTSTATUS
+ NTAPI
+@@ -898,7 +949,7 @@ UDFPnp (
+     );
+ 
+ /*************************************************************************
+-* Prototypes for the file read.cpp
++* Prototypes for the file read.c
+ *************************************************************************/
+ extern NTSTATUS NTAPI UDFRead(
+     PDEVICE_OBJECT              DeviceObject,       // the logical volume device object
+@@ -952,7 +1003,7 @@ UDFSetAccessRights(
+     USHORT       ShareAccess);
+ 
+ /*************************************************************************
+-* Prototypes for the file Shutdown.cpp
++* Prototypes for the file Shutdown.c
+ *************************************************************************/
+ 
+ NTSTATUS
+@@ -962,9 +1013,9 @@ UDFCommonShutdown(
+     );
+ 
+ /*************************************************************************
+-* Prototypes for the file UDFinit.cpp
++* Prototypes for the file UDFinit.c
  *************************************************************************/
 -extern "C" NTSTATUS NTAPI DriverEntry(
 +NTSTATUS NTAPI DriverEntry(
  PDRIVER_OBJECT              DriverObject,       // created by the I/O sub-system
  PUNICODE_STRING             RegistryPath);      // path to the registry key
  
-@@ -1271,7 +1271,7 @@ UDFAcquireResource(
+@@ -972,7 +1023,7 @@ extern VOID NTAPI UDFInitializeFunctionPointers(
+ PDRIVER_OBJECT              DriverObject);      // created by the I/O sub-system
+ 
+ /*************************************************************************
+-* Prototypes for the file verify.cpp
++* Prototypes for the file verify.c
+ *************************************************************************/
+ 
+ VOID
+@@ -1024,7 +1075,7 @@ UDFCompareVcb(
+     );
+ 
+ /*************************************************************************
+-* Prototypes for the file VolInfo.cpp
++* Prototypes for the file VolInfo.c
+ *************************************************************************/
+ extern NTSTATUS NTAPI UDFQueryVolInfo(PDEVICE_OBJECT DeviceObject,
+                                       PIRP Irp);
+@@ -1051,7 +1102,7 @@ UDFCommonSetVolInfo(
+     );
+ 
+ /*************************************************************************
+-* Prototypes for the file write.cpp
++* Prototypes for the file write.c
+ *************************************************************************/
+ extern NTSTATUS NTAPI UDFWrite(
+ PDEVICE_OBJECT              DeviceObject,       // the logical volume device object
+@@ -1217,13 +1268,13 @@ UDFMarkDevForVerifyIfVcbMounted(
+     UdfData.UdfDataLockThread = NULL;                                                   \
+     ExReleaseFastMutexUnsafe(&UdfData.UdfDataMutex)
+ 
+-enum TYPE_OF_ACQUIRE {
++typedef enum TYPE_OF_ACQUIRE {
+     
+     AcquireExclusive,
+     AcquireShared,
+     AcquireSharedStarveExclusive
+ 
+-};
++} TYPE_OF_ACQUIRE;
+ 
+ _Requires_lock_held_(_Global_critical_region_)
+ _When_(Type == AcquireExclusive && return != FALSE, _Acquires_exclusive_lock_(*Resource))
+@@ -1271,7 +1322,7 @@ UDFAcquireResource(
  #define UDFReleasePagingIo(IC,F)                                                        \
      ExReleaseResourceLite((F)->Header.PagingIoResource)
  
@@ -263,7 +558,7 @@ index 59cb00c..7898d13 100644
  ULONG
  UDFHighBit(
      ULONG Word
-@@ -1295,7 +1295,7 @@ UDFHighBit(
+@@ -1295,7 +1346,7 @@ UDFHighBit(
  
  #define SectorSize(V) ((V)->SectorSize)
  
@@ -272,7 +567,7 @@ index 59cb00c..7898d13 100644
  ULONG
  SectorAlign(
      PVCB Vcb,
-@@ -1305,7 +1305,7 @@ SectorAlign(
+@@ -1305,7 +1356,7 @@ SectorAlign(
      return (Length + (Vcb->SectorSize - 1)) & ~(Vcb->SectorSize - 1);
  }
  
@@ -281,7 +576,7 @@ index 59cb00c..7898d13 100644
  ULONGLONG
  LlSectorAlign( 
      PVCB Vcb, 
-@@ -1327,7 +1327,7 @@ UDFSetThreadContext(
+@@ -1327,7 +1378,7 @@ UDFSetThreadContext(
      (IC)->ThreadContext = NULL
  
  
@@ -290,7 +585,7 @@ index 59cb00c..7898d13 100644
  BOOLEAN UdfIsExtendedFESupported(
      _In_ PVCB Vcb
  )
-@@ -1335,7 +1335,7 @@ BOOLEAN UdfIsExtendedFESupported(
+@@ -1335,7 +1386,7 @@ BOOLEAN UdfIsExtendedFESupported(
      return Vcb->NSRDesc == VRS_NSR03_FOUND;
  }
  
@@ -381,11 +676,262 @@ index 6e00af7..7964ebb 100644
  VOID
  UDFDeallocateFcbData(
      PFCB Fcb
+diff --git a/drivers/filesystems/udfs/struct.h b/drivers/filesystems/udfs/struct.h
+index fb48f5e..53eb53b 100644
+--- a/drivers/filesystems/udfs/struct.h
++++ b/drivers/filesystems/udfs/struct.h
+@@ -36,6 +36,24 @@
+ struct IRP_CONTEXT_LITE;
+ struct IO_CONTEXT;
+ struct IRP_CONTEXT;
++struct LCB;
++typedef struct LCB *PLCB;
++
++/* C typedef aliases – allow plain name usage without the 'struct' keyword */
++typedef struct IRP_CONTEXT_LITE IRP_CONTEXT_LITE;
++typedef struct IO_CONTEXT IO_CONTEXT;
++typedef struct IRP_CONTEXT IRP_CONTEXT;
++typedef struct LCB LCB;
++typedef struct UDFIdentifier UDFIdentifier;
++typedef struct UDFObjectName UDFObjectName;
++typedef struct CCB CCB;
++typedef struct FCB_NONPAGED FCB_NONPAGED;
++typedef struct FCB_DATA FCB_DATA;
++typedef struct FCB_INDEX FCB_INDEX;
++typedef struct FCB FCB;
++typedef struct VCB VCB;
++typedef struct VOLUME_DEVICE_OBJECT VOLUME_DEVICE_OBJECT;
++typedef struct THREAD_CONTEXT THREAD_CONTEXT;
+ 
+ /**************************************************************************
+     every structure has a node type, and a node size associated with it.
+@@ -47,8 +65,7 @@ struct UDFIdentifier {
+     NODE_BYTE_SIZE NodeByteSize;           // computed as sizeof(structure)
+ };
+ 
+-static_assert(sizeof(UDFIdentifier) == offsetof(FSRTL_ADVANCED_FCB_HEADER, Flags),
+-    "UDFIdentifier size mismatch with NodeTypeCode and NodeByteSize in FSRTL_ADVANCED_FCB_HEADER");
++C_ASSERT(sizeof(UDFIdentifier) == offsetof(FSRTL_ADVANCED_FCB_HEADER, Flags));
+ 
+ /**************************************************************************
+     Every open on-disk object must have a name associated with it
+@@ -67,7 +84,7 @@ struct UDFObjectName {
+     // an absolute pathname of the object is stored below
+     UNICODE_STRING                      ObjectName;
+ };
+-using PtrUDFObjectName = UDFObjectName*;
++typedef UDFObjectName* PtrUDFObjectName;
+ 
+ /**************************************************************************
+     Each file open instance is represented by a context control block.
+@@ -82,6 +99,8 @@ struct CCB {
+     UDFIdentifier                       NodeIdentifier;
+     // ptr to the associated FCB
+     FCB*                                Fcb;
++    // ptr to the LCB used to open this file
++    PLCB                                Lcb;
+     // all CCB structures for a FCB are linked together
+     LIST_ENTRY                          NextCCB;
+     // each CCB is associated with a file object
+@@ -94,9 +113,8 @@ struct CCB {
+     //  need to maintain a search pattern
+     PUNICODE_STRING                     DirectorySearchPattern;
+     HASH_ENTRY                          hashes;
+-    ULONG                               TreeLength;
+ };
+-using PCCB = CCB*;
++typedef CCB* PCCB;
+ 
+ #define CCB_FLAG_IGNORE_CASE                    (0x00000004)
+ // the CCB has had an IRP_MJ_CLEANUP issued on it. we must
+@@ -152,7 +170,7 @@ struct FCB_NONPAGED {
+     FAST_MUTEX AdvancedFcbHeaderMutex;
+ 
+ };
+-using PFCB_NONPAGED = FCB_NONPAGED*;
++typedef FCB_NONPAGED* PFCB_NONPAGED;
+ 
+ /**************************************************************************
+     each open file/directory/volume is represented by a file control block.
+@@ -193,11 +211,11 @@ using PFCB_NONPAGED = FCB_NONPAGED*;
+ /***************************************************/
+ 
+ struct FCB_DATA {
+-
++    UCHAR Placeholder;
+ };
+ 
+ struct FCB_INDEX {
+-
++    UCHAR Placeholder;
+ };
+ 
+ struct FCB {
+@@ -267,6 +285,13 @@ struct FCB {
+     PVOID LazyWriteThread;
+ 
+     FCB* ParentFcb;
++
++    // LCB queues for parent-child relationships
++    // ParentLcbQueue - LCBs linking this FCB to parent directories (for hardlinks, usually 1)
++    LIST_ENTRY ParentLcbQueue;
++    // ChildLcbQueue - LCBs linking child files to this directory FCB
++    LIST_ENTRY ChildLcbQueue;
++
+     // Pointer to IrpContextLite in delayed queue.
+     IRP_CONTEXT_LITE* IrpContextLite;
+     uint32                              CcbCount;
+@@ -284,7 +309,7 @@ struct FCB {
+         FCB_INDEX FcbIndex;
+     };
+ };
+-using PFCB = FCB*;
++typedef FCB* PFCB;
+ 
+ #define SIZEOF_FCB_DATA     \
+     (FIELD_OFFSET(FCB, FcbType) + sizeof(FCB_DATA))
+@@ -325,7 +350,7 @@ using PFCB = FCB*;
+ 
+ **************************************************************************/
+ 
+-enum UDFFSD_MEDIA_TYPE {
++typedef enum UDFFSD_MEDIA_TYPE {
+     MediaUnknown = 0,
+     MediaHdd,
+     MediaCdr,
+@@ -335,16 +360,63 @@ enum UDFFSD_MEDIA_TYPE {
+     MediaFloppy,
+     MediaDvdr,
+     MediaDvdrw
++} UDFFSD_MEDIA_TYPE;
++
++//***************************************************************************
++//                      LCB (Link Control Block)
++//***************************************************************************
++
++/**
++    Link Control Block (LCB) - links parent directory to child file.
++    Similar to MS UDF driver's LCB structure.
++
++    Used to defer directory linkage until create operation completes successfully.
++    This prevents partial creates from being visible in directory lookups.
++*/
++struct LCB {
++    UDFIdentifier NodeIdentifier;      // Node type = UDFS_NTC_LCB
++
++    // Links in parent FCB's ChildLcbQueue
++    LIST_ENTRY ParentFcbLinks;
++    // Links in child FCB's ParentLcbQueue
++    LIST_ENTRY ChildFcbLinks;
++
++    // Parent directory FCB
++    PFCB ParentFcb;
++    // Child file FCB
++    PFCB ChildFcb;
++
++    // Reference count (incremented by CCB, decremented on cleanup)
++    ULONG Reference;
++    // LCB flags
++    ULONG Flags;
++    // Index in parent's DirIndex (for quick lookup)
++    ULONG Index;
+ };
+ 
+-enum VCB_CONDITION {
++// LCB Flags
++#define UDF_LCB_FLAG_DELETE_ON_CLEANUP  0x00000001  // Delete file on cleanup
++#define UDF_LCB_FLAG_LINK_DELETED       0x00000002  // Link has been deleted
++#define UDF_LCB_FLAG_PENDING_CREATE     0x00000004  // Create not yet complete
++#define UDF_LCB_FLAG_POOL_ALLOCATED     0x00000008  // Allocated from pool (not lookaside)
++#define UDF_LCB_FLAG_IGNORE_CASE        0x00000010  // Case-insensitive name
++#define UDF_LCB_FLAG_SHORT_NAME         0x00000020  // Short name match
++
++// LCB lookaside size - fits LCB + 16 WCHARs for short names
++#define SIZEOF_LOOKASIDE_LCB            (sizeof(LCB) + (sizeof(WCHAR) * 16))
++
++//***************************************************************************
++//                      VCB (Volume Control Block)
++//***************************************************************************
++
++typedef enum VCB_CONDITION {
+ 
+     VcbNotMounted = 0,
+     VcbMountInProgress,
+     VcbMounted,
+     VcbInvalid,
+     VcbDismountInProgress
+-};
++} VCB_CONDITION;
+ 
+ struct VCB {
+ 
+@@ -608,7 +680,7 @@ struct VCB {
+     PVPB SwapVpb;
+ };
+ 
+-using PVCB = VCB*;
++typedef VCB* PVCB;
+ 
+ // One for root
+ #define UDFS_BASE_RESIDUAL_REFERENCE                (4)//(6)
+@@ -682,7 +754,7 @@ struct THREAD_CONTEXT {
+     //  will store the IrpContext for the request in this stack location.
+     IRP_CONTEXT* TopLevelIrpContext;
+ };
+-using PTHREAD_CONTEXT = THREAD_CONTEXT*;
++typedef THREAD_CONTEXT* PTHREAD_CONTEXT;
+ 
+ /**************************************************************************
+     The IRP context encapsulates the current request. This structure is
+@@ -707,7 +779,6 @@ struct IRP_CONTEXT {
+     NTSTATUS                        ExceptionStatus;
+     // For queued close operation we save Fcb
+     FCB*                            Fcb;
+-    ULONG                           TreeLength;
+ 
+     // Io context for a read request.
+     // Address of Fcb for teardown oplock in create case.
+@@ -727,7 +798,7 @@ struct IRP_CONTEXT {
+ 
+     VCB*      Vcb;
+ };
+-using PIRP_CONTEXT = IRP_CONTEXT*;
++typedef IRP_CONTEXT* PIRP_CONTEXT;
+ 
+ #define IRP_CONTEXT_FLAG_ON_STACK               (0x00000001)
+ #define IRP_CONTEXT_FLAG_MORE_PROCESSING        (0x00000002)
+@@ -792,9 +863,8 @@ struct IRP_CONTEXT_LITE {
+     ULONG                           UserReference;
+     //  Real device object.  This represents the physical device closest to the media.
+     PDEVICE_OBJECT                  RealDevice;
+-    ULONG                           TreeLength;
+ };
+-using PIRP_CONTEXT_LITE = IRP_CONTEXT_LITE*;
++typedef IRP_CONTEXT_LITE* PIRP_CONTEXT_LITE;
+ 
+ /**************************************************************************
+     we will store all of our global variables in one structure.
+@@ -837,6 +907,7 @@ typedef struct _UDFData {
+     PAGED_LOOKASIDE_LIST UDFFcbDataLookasideList;
+ 
+     PAGED_LOOKASIDE_LIST CcbLookasideList;
++    PAGED_LOOKASIDE_LIST LcbLookasideList;
+ 
+     LIST_ENTRY AsyncCloseQueue;
+     ULONG AsyncCloseCount;
+@@ -877,6 +948,7 @@ typedef struct _UDFData {
+ #define TAG_FCB_NONPAGED        'nfdU'
+ #define TAG_FCB                 'pfdU'
+ #define TAG_CCB                 'ccdU'
++#define TAG_LCB                 'lcdU'
+ #define TAG_VPB                 'pvdU'
+ #define TAG_FCB_TABLE           'tfdU'
+ #define TAG_FILE_NAME           'nFdU'
 diff --git a/drivers/filesystems/udfs/sys_spec.cpp b/drivers/filesystems/udfs/sys_spec.c
-similarity index 91%
+similarity index 95%
 rename from drivers/filesystems/udfs/sys_spec.cpp
 rename to drivers/filesystems/udfs/sys_spec.c
-index e9a11ab..82f2665 100644
+index e9a11ab..df66b8c 100644
 --- a/drivers/filesystems/udfs/sys_spec.cpp
 +++ b/drivers/filesystems/udfs/sys_spec.c
 @@ -20,6 +20,6 @@
@@ -395,8 +941,7 @@ index e9a11ab..82f2665 100644
 -#include "Include/Sys_spec_lib.cpp"
 +#include "Include/Sys_spec_lib.c"
  
--//#include "Include/tools.cpp"
-+//#include "Include/tools.c"
+ //#include "Include/tools.cpp"
 diff --git a/drivers/filesystems/udfs/udf_dbg.cpp b/drivers/filesystems/udfs/udf_dbg.c
 similarity index 100%
 rename from drivers/filesystems/udfs/udf_dbg.cpp
@@ -409,6 +954,50 @@ diff --git a/drivers/filesystems/udfs/udf_info/dirtree.cpp b/drivers/filesystems
 similarity index 100%
 rename from drivers/filesystems/udfs/udf_info/dirtree.cpp
 rename to drivers/filesystems/udfs/udf_info/dirtree.c
+diff --git a/drivers/filesystems/udfs/udf_info/ecma_167.h b/drivers/filesystems/udfs/udf_info/ecma_167.h
+index 6ca06a7..36ace5e 100644
+--- a/drivers/filesystems/udfs/udf_info/ecma_167.h
++++ b/drivers/filesystems/udfs/udf_info/ecma_167.h
+@@ -770,6 +770,39 @@ typedef struct _EXTENDED_FILE_ENTRY {
+ 
+ typedef EXTENDED_FILE_ENTRY ExtendedFileEntry;
+ 
++/* C typedef aliases for all non-typedef struct declarations */
++typedef struct VolStructDesc VolStructDesc;
++typedef struct BeginningExtendedAreaDesc BeginningExtendedAreaDesc;
++typedef struct TerminatingExtendedAreaDesc TerminatingExtendedAreaDesc;
++typedef struct NSRDesc NSRDesc;
++typedef struct PrimaryVolDesc PrimaryVolDesc;
++typedef struct AnchorVolDescPtr AnchorVolDescPtr;
++typedef struct VolDescPtr VolDescPtr;
++typedef struct ImpUseVolDesc ImpUseVolDesc;
++typedef struct PartitionDesc PartitionDesc;
++typedef struct LogicalVolDesc LogicalVolDesc;
++typedef struct GenericPartitionMap GenericPartitionMap;
++typedef struct GenericPartitionMap1 GenericPartitionMap1;
++typedef struct GenericPartitionMap2 GenericPartitionMap2;
++typedef struct TerminatingDesc TerminatingDesc;
++typedef struct GenericDesc GenericDesc;
++typedef struct LogicalVolIntegrityDesc LogicalVolIntegrityDesc;
++typedef struct IndirectEntry IndirectEntry;
++typedef struct TerminalEntry TerminalEntry;
++typedef struct ExtendedAttrHeaderDesc ExtendedAttrHeaderDesc;
++typedef struct GenericAttrFormat GenericAttrFormat;
++typedef struct CharSetAttrFormat CharSetAttrFormat;
++typedef struct AlternatePermissionsExtendedAttr AlternatePermissionsExtendedAttr;
++typedef struct FileTimesExtendedAttr FileTimesExtendedAttr;
++typedef struct InfoTimesExtendedAttr InfoTimesExtendedAttr;
++typedef struct DeviceSpecificationExtendedAttr DeviceSpecificationExtendedAttr;
++typedef struct ImpUseExtendedAttr ImpUseExtendedAttr;
++typedef struct AppUseExtendedAttr AppUseExtendedAttr;
++typedef struct UnallocatedSpaceEntry UnallocatedSpaceEntry;
++typedef struct PartitionIntegrityEntry PartitionIntegrityEntry;
++typedef struct LogicalVolHeaderDesc LogicalVolHeaderDesc;
++typedef struct PathComponent PathComponent;
++
+ #pragma pack(pop)
+ 
+ #endif /* __ECMA_167_H__ */
 diff --git a/drivers/filesystems/udfs/udf_info/extent.cpp b/drivers/filesystems/udfs/udf_info/extent.c
 similarity index 100%
 rename from drivers/filesystems/udfs/udf_info/extent.cpp
@@ -417,6 +1006,28 @@ diff --git a/drivers/filesystems/udfs/udf_info/mount.cpp b/drivers/filesystems/u
 similarity index 100%
 rename from drivers/filesystems/udfs/udf_info/mount.cpp
 rename to drivers/filesystems/udfs/udf_info/mount.c
+diff --git a/drivers/filesystems/udfs/udf_info/osta_misc.h b/drivers/filesystems/udfs/udf_info/osta_misc.h
+index f9813bf..60b522c 100644
+--- a/drivers/filesystems/udfs/udf_info/osta_misc.h
++++ b/drivers/filesystems/udfs/udf_info/osta_misc.h
+@@ -348,6 +348,17 @@ typedef UID_MAPPING_TABLE*   PUID_MAPPING_TABLE;
+ 
+ #define TID_ADAPTEC_LOGICAL_VOL_DESC      0x9999U
+ 
++/* C typedef aliases for all non-typedef struct declarations */
++typedef struct LogicalVolIntegrityDescImpUse LogicalVolIntegrityDescImpUse;
++typedef struct ImpUseVolDescImpUse ImpUseVolDescImpUse;
++typedef struct UdfPartitionMap2 UdfPartitionMap2;
++typedef struct VirtualPartitionMap VirtualPartitionMap;
++typedef struct DVDCopyrightImpUse DVDCopyrightImpUse;
++typedef struct ADImpUse ADImpUse;
++typedef struct FidADImpUse FidADImpUse;
++typedef struct VirtualAllocationTable15 VirtualAllocationTable15;
++typedef struct VirtualAllocationTable20 VirtualAllocationTable20;
++
+ #pragma pack(pop)
+ 
+ #endif /* _OSTA_MISC_H */
 diff --git a/drivers/filesystems/udfs/udf_info/phys_eject.cpp b/drivers/filesystems/udfs/udf_info/phys_eject.c
 similarity index 100%
 rename from drivers/filesystems/udfs/udf_info/phys_eject.cpp
@@ -443,6 +1054,38 @@ diff --git a/drivers/filesystems/udfs/udf_info/udf_info.cpp b/drivers/filesystem
 similarity index 100%
 rename from drivers/filesystems/udfs/udf_info/udf_info.cpp
 rename to drivers/filesystems/udfs/udf_info/udf_info.c
+diff --git a/drivers/filesystems/udfs/udf_info/udf_rel.h b/drivers/filesystems/udfs/udf_info/udf_rel.h
+index 602a8f6..f62ef96 100644
+--- a/drivers/filesystems/udfs/udf_info/udf_rel.h
++++ b/drivers/filesystems/udfs/udf_info/udf_rel.h
+@@ -246,7 +246,7 @@ typedef struct _UDF_DATALOC_INFO {
+     NT-specific field. As soon as NT supports HardLink concept it
+     has own structure describing the file's actual data.
+ */
+-	FCB* CommonFcb; // pointer to corresponding FCB
++	struct FCB* CommonFcb; // pointer to corresponding FCB
+ /**
+     Describes on-disk location of  user  data.  If  the  file  is
+     recorded using IN_ICB method this  structure  points  to  the
+@@ -441,6 +441,18 @@ typedef struct _UDF_DIR_SCAN_CONTEXT {
+     uint_di i;
+ } UDF_DIR_SCAN_CONTEXT, *PUDF_DIR_SCAN_CONTEXT;
+ 
++/**
++    Directory enumeration context for find/open operations.
++    Separates directory search from file open operations.
++*/
++typedef struct _DIR_ENUM_CONTEXT {
++    PUDF_FILE_INFO ParentInfo;        // Parent directory FileInfo
++    PDIR_INDEX_HDR DirIndex;          // Directory index header
++    PDIR_INDEX_ITEM DirNdx;           // Found directory entry (or NULL)
++    uint_di Index;                    // Index of found entry
++    BOOLEAN ShortNameMatch;           // TRUE if matched by 8.3 short name
++} DIR_ENUM_CONTEXT, *PDIR_ENUM_CONTEXT;
++
+ typedef EXT_RELOCATION_ENTRY  EXT_RELOC_MAP;
+ typedef PEXT_RELOCATION_ENTRY PEXT_RELOC_MAP;
+ 
 diff --git a/drivers/filesystems/udfs/udfdata.cpp b/drivers/filesystems/udfs/udfdata.c
 similarity index 100%
 rename from drivers/filesystems/udfs/udfdata.cpp

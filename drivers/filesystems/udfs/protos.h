@@ -1354,13 +1354,13 @@ UDFMarkDevForVerifyIfVcbMounted(
     UdfData.UdfDataLockThread = NULL;                                                   \
     ExReleaseFastMutexUnsafe(&UdfData.UdfDataMutex)
 
-enum TYPE_OF_ACQUIRE {
+typedef enum TYPE_OF_ACQUIRE {
     
     AcquireExclusive,
     AcquireShared,
     AcquireSharedStarveExclusive
 
-};
+} TYPE_OF_ACQUIRE;
 
 _Requires_lock_held_(_Global_critical_region_)
 _When_(Type == AcquireExclusive && return != FALSE, _Acquires_exclusive_lock_(*Resource))

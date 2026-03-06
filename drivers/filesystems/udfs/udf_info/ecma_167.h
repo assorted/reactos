@@ -770,6 +770,39 @@ typedef struct _EXTENDED_FILE_ENTRY {
 
 typedef EXTENDED_FILE_ENTRY ExtendedFileEntry;
 
+/* C typedef aliases for all non-typedef struct declarations */
+typedef struct VolStructDesc VolStructDesc;
+typedef struct BeginningExtendedAreaDesc BeginningExtendedAreaDesc;
+typedef struct TerminatingExtendedAreaDesc TerminatingExtendedAreaDesc;
+typedef struct NSRDesc NSRDesc;
+typedef struct PrimaryVolDesc PrimaryVolDesc;
+typedef struct AnchorVolDescPtr AnchorVolDescPtr;
+typedef struct VolDescPtr VolDescPtr;
+typedef struct ImpUseVolDesc ImpUseVolDesc;
+typedef struct PartitionDesc PartitionDesc;
+typedef struct LogicalVolDesc LogicalVolDesc;
+typedef struct GenericPartitionMap GenericPartitionMap;
+typedef struct GenericPartitionMap1 GenericPartitionMap1;
+typedef struct GenericPartitionMap2 GenericPartitionMap2;
+typedef struct TerminatingDesc TerminatingDesc;
+typedef struct GenericDesc GenericDesc;
+typedef struct LogicalVolIntegrityDesc LogicalVolIntegrityDesc;
+typedef struct IndirectEntry IndirectEntry;
+typedef struct TerminalEntry TerminalEntry;
+typedef struct ExtendedAttrHeaderDesc ExtendedAttrHeaderDesc;
+typedef struct GenericAttrFormat GenericAttrFormat;
+typedef struct CharSetAttrFormat CharSetAttrFormat;
+typedef struct AlternatePermissionsExtendedAttr AlternatePermissionsExtendedAttr;
+typedef struct FileTimesExtendedAttr FileTimesExtendedAttr;
+typedef struct InfoTimesExtendedAttr InfoTimesExtendedAttr;
+typedef struct DeviceSpecificationExtendedAttr DeviceSpecificationExtendedAttr;
+typedef struct ImpUseExtendedAttr ImpUseExtendedAttr;
+typedef struct AppUseExtendedAttr AppUseExtendedAttr;
+typedef struct UnallocatedSpaceEntry UnallocatedSpaceEntry;
+typedef struct PartitionIntegrityEntry PartitionIntegrityEntry;
+typedef struct LogicalVolHeaderDesc LogicalVolHeaderDesc;
+typedef struct PathComponent PathComponent;
+
 #pragma pack(pop)
 
 #endif /* __ECMA_167_H__ */

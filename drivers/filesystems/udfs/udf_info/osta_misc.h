@@ -348,6 +348,17 @@ typedef UID_MAPPING_TABLE*   PUID_MAPPING_TABLE;
 
 #define TID_ADAPTEC_LOGICAL_VOL_DESC      0x9999U
 
+/* C typedef aliases for all non-typedef struct declarations */
+typedef struct LogicalVolIntegrityDescImpUse LogicalVolIntegrityDescImpUse;
+typedef struct ImpUseVolDescImpUse ImpUseVolDescImpUse;
+typedef struct UdfPartitionMap2 UdfPartitionMap2;
+typedef struct VirtualPartitionMap VirtualPartitionMap;
+typedef struct DVDCopyrightImpUse DVDCopyrightImpUse;
+typedef struct ADImpUse ADImpUse;
+typedef struct FidADImpUse FidADImpUse;
+typedef struct VirtualAllocationTable15 VirtualAllocationTable15;
+typedef struct VirtualAllocationTable20 VirtualAllocationTable20;
+
 #pragma pack(pop)
 
 #endif /* _OSTA_MISC_H */
