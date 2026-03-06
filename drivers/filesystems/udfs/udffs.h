@@ -130,7 +130,7 @@ extern UDFData              UdfData;
 
 //  Encapsulate safe pool freeing
 
-inline
+static inline
 VOID
 UDFFreePool(
     _Inout_ _At_(*Pool, __drv_freesMem(Mem) _Post_null_) PVOID *Pool
@@ -149,7 +149,7 @@ UDFFreePool(
 
 // small check for illegal open mode (desired access) if volume is
 // read only (on standard CD-ROM device or another like this)
-inline
+static inline
 BOOLEAN
 UDFIllegalFcbAccess(
     IN PVCB Vcb,
@@ -395,7 +395,7 @@ UDFIllegalFcbAccess(
 
 #define FID_DIR_MASK  0x80000000            // high order bit means directory.
 
-inline
+static inline
 FILE_ID
 UdfGetFidFromLbAddr(lb_addr lbAddr)
 {
