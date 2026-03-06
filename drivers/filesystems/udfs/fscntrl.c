@@ -302,7 +302,7 @@ UDFMountVolume(
     ASSERT(IrpSp);
     UDFPrint(("\n !!! UDFMountVolume\n"));
 
-    auto RealDevice = Vpb->RealDevice;
+    PDEVICE_OBJECT RealDevice = Vpb->RealDevice;
     
     SetDoVerifyOnFail = UDFRealDevNeedsVerify(RealDevice);
 

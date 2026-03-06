@@ -711,7 +711,7 @@ UDFCreateIrpContext(
     }
 
     // TODO: fix
-    if (false && IrpSp->FileObject != NULL) {
+    if (FALSE && IrpSp->FileObject != NULL) {
 
         PFILE_OBJECT FileObject = IrpSp->FileObject;
 

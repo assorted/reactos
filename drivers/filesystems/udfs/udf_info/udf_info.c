@@ -4387,7 +4387,7 @@ UDFReadTagged(
 
     // Read the block
     if (Block == 0xFFFFFFFF)
-        return NULL;
+        return STATUS_UNSUCCESSFUL;
 
     _SEH2_TRY {
         RC = UDFReadSectors(IrpContext, Vcb, FALSE, Block, 1, FALSE, Buf, &ReadBytes);

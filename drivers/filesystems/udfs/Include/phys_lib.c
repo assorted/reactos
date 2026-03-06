@@ -796,14 +796,14 @@ UDFGetBlockSize(
     if (UDFGetDevType(DeviceObject) == FILE_DEVICE_DISK) {
         UDFPrint(("UDFGetBlockSize: HDD\n"));
         RC = UDFPhSendIOCTL(IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,DeviceObject,
-            0,NULL,
+            NULL,0,
             &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
             TRUE,NULL );
 
         if (!NT_SUCCESS(RC))
             try_return(RC);
         RC = UDFPhSendIOCTL(IOCTL_DISK_GET_PARTITION_INFO,DeviceObject,
-            0,NULL,
+            NULL,0,
             &PartitionInfo,sizeof(PARTITION_INFORMATION),
             TRUE,NULL );
         if (!NT_SUCCESS(RC)) {

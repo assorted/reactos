@@ -907,7 +907,7 @@ UDFCompleteMount(
     PtrUDFObjectName RootName;
     ULONG LastSector = 0;
     BOOLEAN UnlockVcb = FALSE;
-    FILE_ID FileId{};
+    FILE_ID FileId = {0};
 
     PAGED_CODE();
 
@@ -1096,7 +1096,7 @@ UDFCompleteMount(
         /* Read SN UID mapping */
         if (Vcb->SysSDirFileInfo) {
 
-            LocalPath = RTL_CONSTANT_STRING(UDF_SN_UID_MAPPING);
+            RtlInitUnicodeString(&LocalPath, UDF_SN_UID_MAPPING);
 
             Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &LocalPath, Vcb->SysSDirFileInfo , &Vcb->UniqueIDMapFileInfo, NULL);
 

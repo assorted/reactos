@@ -143,7 +143,7 @@ UDFShortAllocDescToMapping(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN uint32 PartNum,
-    IN PLONG_AD AllocDesc,
+    IN PSHORT_AD AllocDesc,
     IN uint32 AllocDescLength,
     IN uint32 SubCallCount,
     OUT PEXTENT_INFO AllocLoc
@@ -165,7 +165,7 @@ PEXTENT_MAP
 UDFExtAllocDescToMapping(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN PLONG_AD AllocDesc,
+    IN PEXT_AD AllocDesc,
     IN uint32 AllocDescLength,
     IN uint32 SubCallCount,
     OUT PEXTENT_INFO AllocLoc
