@@ -29,7 +29,7 @@ typedef struct _FCB_TABLE_ELEMENT {
      RtlDeleteElementGenericTable( &(F)->Vcb->FcbTable, &_Key );     \
 }
 
-inline
+static inline
 PFCB_NONPAGED
 UDFAllocateFcbNonpaged(
 )
@@ -37,7 +37,7 @@ UDFAllocateFcbNonpaged(
     return (PFCB_NONPAGED)ExAllocateFromNPagedLookasideList(&UdfData.UDFNonPagedFcbLookasideList);
 }
 
-inline
+static inline
 PFCB
 UDFAllocateFcbIndex(
 )
@@ -45,7 +45,7 @@ UDFAllocateFcbIndex(
     return (PFCB)ExAllocateFromPagedLookasideList(&UdfData.UDFFcbIndexLookasideList);
 }
 
-inline
+static inline
 PFCB
 UDFAllocateFcbData(
 )
@@ -53,7 +53,7 @@ UDFAllocateFcbData(
     return (PFCB)ExAllocateFromPagedLookasideList(&UdfData.UDFFcbDataLookasideList);
 }
 
-inline
+static inline
 PFCB
 UDFAllocateFcb(
 )
@@ -61,7 +61,7 @@ UDFAllocateFcb(
     return (PFCB)ExAllocatePoolWithTag(NonPagedPool, sizeof(FCB), TAG_FCB);
 }
 
-inline
+static inline
 VOID
 UDFDeallocateFcbNonpaged(
     PFCB_NONPAGED FcbNonpaged
@@ -70,7 +70,7 @@ UDFDeallocateFcbNonpaged(
     ExFreeToNPagedLookasideList(&UdfData.UDFNonPagedFcbLookasideList, FcbNonpaged);
 }
 
-inline
+static inline
 VOID
 UDFDeallocateFcbIndex(
     PFCB Fcb
@@ -79,7 +79,7 @@ UDFDeallocateFcbIndex(
     ExFreeToPagedLookasideList(&UdfData.UDFFcbIndexLookasideList, Fcb);
 }
 
-inline
+static inline
 VOID
 UDFDeallocateFcbData(
     PFCB Fcb

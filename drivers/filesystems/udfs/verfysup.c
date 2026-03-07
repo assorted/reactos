@@ -234,6 +234,9 @@ UDFVerifyVcb(
             UDFRaiseStatus(IrpContext, STATUS_FILE_INVALID);
         }
         break;
+
+    default:
+        break;
     }
 } // end UDFVerifyVcb()
 

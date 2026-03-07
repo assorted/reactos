@@ -99,7 +99,7 @@ __inline LARGE_INTEGER UDFMakeLargeInteger(LONGLONG value) {
 
 #define UDFGetNTFileId(Vcb, fi) \
     UDFMakeLargeInteger((((fi)->Dloc->FELoc.Mapping[0].extLocation - UDFPartStart(Vcb, -2)) + \
-                      ((LONGLONG)Vcb<<32)))
+                      ((LONGLONG)(ULONG_PTR)Vcb<<32)))
 
 #define UnicodeIsPrint(a) RtlIsValidOemCharacter(&(a))
 
