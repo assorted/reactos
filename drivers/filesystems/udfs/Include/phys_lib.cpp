@@ -1155,10 +1155,25 @@ UDFWriteSectors(
 {
     NTSTATUS status;
 
+    if (Vcb->VcbState & UDF_VCB_FLAGS_DEAD)
+        return STATUS_NO_SUCH_DEVICE;
+
     if (!Vcb->Modified || (Vcb->IntegrityType == INTEGRITY_TYPE_CLOSE)) {
         UDFSetModified(Vcb);
         if (Vcb->LVid && !Direct) {
-            status = UDFUpdateLogicalVolInt(IrpContext, Vcb,FALSE);
+            // Use an atomic compare-exchange to ensure only one thread transitions
+            // IntegrityType from CLOSE to OPEN and calls UDFUpdateLogicalVolInt.
+            // Without this guard, concurrent heavy write activity (e.g. multiple
+            // threads simultaneously seeing IntegrityType == INTEGRITY_TYPE_CLOSE)
+            // causes races into UDFUpdateLogicalVolInt that corrupt the shared
+            // Vcb->LVid buffer and trigger the assert via the nested write failure.
+            if (InterlockedCompareExchange((volatile LONG*)&Vcb->IntegrityType,
+                                          INTEGRITY_TYPE_OPEN,
+                                          INTEGRITY_TYPE_CLOSE) == INTEGRITY_TYPE_CLOSE) {
+                status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
+                if (!NT_SUCCESS(status))
+                    return status;
+            }
         }
     }
 
@@ -1168,7 +1183,6 @@ UDFWriteSectors(
     }
 
     status = UDFTWrite(IrpContext, Vcb, Buffer, BCount<<Vcb->SectorShift, Lba, WrittenBytes);
-    ASSERT(NT_SUCCESS(status));
 
     return status;
 } // end UDFWriteSectors()
@@ -1226,7 +1240,6 @@ UDFWriteInSector(
 EO_WrSctD:
     MyFreePool__(tmp_buff);
 
-    ASSERT(NT_SUCCESS(status));
     if (!NT_SUCCESS(status)) {
         UDFPrint(("UDFWriteInSector() for LBA %x failed\n", Lba));
     }

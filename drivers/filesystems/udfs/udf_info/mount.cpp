@@ -307,6 +307,7 @@ UDFUpdatePartDesc(
     uint32 i; // PartNdx
     tag* PTag;
     SIZE_T WrittenBytes;
+    NTSTATUS status = STATUS_SUCCESS;
 
     for(i=0; i<Vcb->PartitionMaps; i++)
     {
@@ -330,10 +331,14 @@ UDFUpdatePartDesc(
             UDFUpdateXSpaceBitmaps(IrpContext, Vcb, i, phd);
             PTag = (tag*)Buf;
             UDFSetUpTag(Vcb, PTag, PTag->descCRCLength + sizeof(tag), PTag->tagLocation, 0);
-            UDFWriteSectors(IrpContext, Vcb, TRUE, PTag->tagLocation, 1, FALSE, Buf, &WrittenBytes);
+            {
+                NTSTATUS writeStatus = UDFWriteSectors(IrpContext, Vcb, TRUE, PTag->tagLocation, 1, FALSE, Buf, &WrittenBytes);
+                if (!NT_SUCCESS(writeStatus) && NT_SUCCESS(status))
+                    status = writeStatus;
+            }
         }
     }
-    return STATUS_SUCCESS;
+    return status;
 } // end UDFUpdatePartDesc()
 
 /*
@@ -581,7 +586,7 @@ swp_loc:
             SIZE_T WrittenBytes;
             status = UDFWriteSectors(IrpContext, Vcb, FALSE, Vcb->SparingTableLoc[i], BC2, FALSE, (int8*)SparTable, &WrittenBytes);
             if (!NT_SUCCESS(status)) {
-                if (!NT_SUCCESS(status2)) {
+                if (NT_SUCCESS(status2)) {
                     status2 = status;
                 }
 //                }
