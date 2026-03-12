@@ -1485,17 +1485,17 @@ UDFChangeFileCounter(
     IN BOOLEAN Increase
     )
 {
-    uint32* counter;
+    LONG* counter;
 
     counter = FileCounter ?
         &(Vcb->numFiles) :
         &(Vcb->numDirs);
-    if (*counter == (ULONG)-1)
+    if (*counter == -1)
         return;
     if (Increase) {
-        InterlockedIncrement((int32*)counter);
+        InterlockedIncrement(counter);
     } else {
-        InterlockedDecrement((int32*)counter);
+        InterlockedDecrement(counter);
     }
 
 } // end UDFChangeFileCounter()
@@ -2979,10 +2979,10 @@ UDFCloseFile__(
     if (FileInfo->Index<2 && (FileInfo->ParentFile) && !UDFIsAStreamDir(FileInfo)) {
         UDFPrint(("Closing Current or Parent Directory... :-\\\n"));
         if (FileInfo->RefCount) {
-            InterlockedDecrement((PLONG)&FileInfo->RefCount);
+            InterlockedDecrement(&FileInfo->RefCount);
             ASSERT(FileInfo->Dloc);
             if (FileInfo->Dloc)
-                InterlockedDecrement((PLONG)&FileInfo->Dloc->LinkRefCount);
+                InterlockedDecrement(&FileInfo->Dloc->LinkRefCount);
 #ifdef UDF_DBG
         } else {
             BrutePoint();
@@ -2990,7 +2990,7 @@ UDFCloseFile__(
 #endif // UDF_DBG
         }
         if (FileInfo->ParentFile->OpenCount) {
-            InterlockedDecrement((PLONG)&FileInfo->ParentFile->OpenCount);
+            InterlockedDecrement(&FileInfo->ParentFile->OpenCount);
 #ifdef UDF_DBG
         } else {
             BrutePoint();
@@ -3003,10 +3003,10 @@ UDFCloseFile__(
     NTSTATUS status;
     uint32 PartNum;
     if (FileInfo->RefCount) {
-        InterlockedDecrement((PLONG)&FileInfo->RefCount);
+        InterlockedDecrement(&FileInfo->RefCount);
         ASSERT(FileInfo->Dloc);
         if (FileInfo->Dloc)
-            InterlockedDecrement((PLONG)&FileInfo->Dloc->LinkRefCount);
+            InterlockedDecrement(&FileInfo->Dloc->LinkRefCount);
 #ifdef UDF_DBG
     } else {
         BrutePoint();
@@ -3018,7 +3018,7 @@ UDFCloseFile__(
         ValidateFileInfo(DirInfo);
 
         if (DirInfo->OpenCount) {
-            InterlockedDecrement((PLONG)&DirInfo->OpenCount);
+            InterlockedDecrement(&DirInfo->OpenCount);
 #ifdef UDF_DBG
         } else {
             BrutePoint();
@@ -3290,7 +3290,7 @@ cleanup_and_abort_rename:
     DirNdx1->FileInfo = NULL;
     ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     UDFFlushFI(IrpContext, Vcb, FileInfo, UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation));
-    InterlockedExchangeAdd((PLONG)&(DirInfo1->OpenCount),
+    InterlockedExchangeAdd(&(DirInfo1->OpenCount),
                           -((LONG)(FileInfo->RefCount)));
     // PHASE 2
     // copy all necessary info from FileInfo to FileInfo2
@@ -3308,7 +3308,7 @@ cleanup_and_abort_rename:
     DirNdx2->FileCharacteristics = DirNdx1->FileCharacteristics & ~FILE_DELETED;
     DirNdx2->FileEntryLoc = DirNdx1->FileEntryLoc;
     DirNdx2->FI_Flags = (DirNdx1->FI_Flags & ~UDF_FI_FLAG_SYS_ATTR) | UDF_FI_FLAG_FI_MODIFIED;
-    InterlockedExchangeAdd((PLONG)&(DirInfo2->OpenCount),
+    InterlockedExchangeAdd(&(DirInfo2->OpenCount),
                            FileInfo->RefCount - FileInfo2->RefCount);
 
     UDFAttributesToUDF(DirNdx2, FileInfo2->Dloc->FileEntry, NTAttr);
@@ -4719,7 +4719,7 @@ UDFCreateStreamDir__(
     status = UDFRecordDirectory__(IrpContext, Vcb, SDirInfo);
     UDFDecDirCounter(Vcb);
 
-    InterlockedIncrement((PLONG)&FileInfo->OpenCount);
+    InterlockedIncrement(&FileInfo->OpenCount);
     if (!NT_SUCCESS(status)) {
         UDFUnlinkFile__(IrpContext, Vcb, SDirInfo, TRUE);
         UDFCloseFile__(IrpContext, Vcb, SDirInfo);
@@ -4820,7 +4820,7 @@ UDFOpenStreamDir__(
     FileInfo->Dloc->SDirInfo = SDirInfo;
     SDirInfo->ParentFile = FileInfo;
 
-    InterlockedIncrement((PLONG)&FileInfo->OpenCount);
+    InterlockedIncrement(&FileInfo->OpenCount);
 
     return STATUS_SUCCESS;
 } // end UDFOpenStreamDir__()

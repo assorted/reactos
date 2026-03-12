@@ -1754,12 +1754,12 @@ UDFSetEndOfFileInfo(
 
             // reference file to pretend that it is opened
             UDFReferenceFile__(Fcb->FileInfo);
-            InterlockedIncrement((PLONG)&Fcb->FcbReference);
+            InterlockedIncrement(&Fcb->FcbReference);
             // perform resize operation
             RC = UDFResizeFile__(IrpContext, Vcb, Fcb->FileInfo, PtrBuffer->EndOfFile.QuadPart);
             // dereference file
             UDFCloseFile__(IrpContext, Vcb, Fcb->FileInfo);
-            InterlockedDecrement((PLONG)&Fcb->FcbReference);
+            InterlockedDecrement(&Fcb->FcbReference);
             // update values in NtReqFcb
             Fcb->Header.FileSize.QuadPart =
 //            NtReqFcb->CommonFCBHeader.ValidDataLength.QuadPart =
@@ -1784,12 +1784,12 @@ UDFSetEndOfFileInfo(
             // Perform directory entry modifications. Release any on-disk
             // space we may need to in the process.
             UDFReferenceFile__(Fcb->FileInfo);
-            InterlockedIncrement((PLONG)&Fcb->FcbReference);
+            InterlockedIncrement(&Fcb->FcbReference);
             // perform resize operation
             RC = UDFResizeFile__(IrpContext, Vcb, Fcb->FileInfo, PtrBuffer->EndOfFile.QuadPart);
             // dereference file
             UDFCloseFile__(IrpContext, Vcb, Fcb->FileInfo);
-            InterlockedDecrement((PLONG)&Fcb->FcbReference);
+            InterlockedDecrement(&Fcb->FcbReference);
 
             ModifiedAllocSize = TRUE;
             TruncatedFile = TRUE;
@@ -1909,16 +1909,16 @@ UDFPrepareForRenameMoveLink(
     // one of them is a parent of another. Sequential resource
     // acquisition may lead to deadlock due to concurrent
     // CleanUpFcbChain() or UDFCloseFileInfoChain()
-    InterlockedIncrement((PLONG)&Vcb->VcbReference);
+    InterlockedIncrement(&Vcb->VcbReference);
 
 
     (*SingleDir) = ((Dir1 == Dir2) && (Dir1->Fcb));
 
     if (!(*SingleDir) ||
        (UDFGetFileLinkCount(File1) != 1)) {
-        InterlockedDecrement((PLONG)&Vcb->VcbReference);
+        InterlockedDecrement(&Vcb->VcbReference);
     } else {
-        InterlockedDecrement((PLONG)&Vcb->VcbReference);
+        InterlockedDecrement(&Vcb->VcbReference);
 
         UDF_CHECK_PAGING_IO_RESOURCE(Dir1->Fcb);
         UDFAcquireResourceExclusive(&Dir1->Fcb->FcbNonpaged->FcbResource, TRUE);
@@ -2205,7 +2205,7 @@ post_rename:
 
         // this will prevent structutre release before call to
         // UDFCleanUpFcbChain()
-        InterlockedIncrement((PLONG)&DirInfo->Fcb->FcbReference);
+        InterlockedIncrement(&DirInfo->Fcb->FcbReference);
         ASSERT(DirInfo->Fcb->FcbReference >= DirInfo->RefCount);
 
         // Look through Ccb list & decrement OpenHandleCounter(s)
@@ -2237,7 +2237,7 @@ post_rename:
                     }
                     ASSERT(NextFileInfo->Fcb->FcbReference > NextFileInfo->RefCount);
                     ASSERT(NextFileInfo->Fcb->FcbReference);
-                    InterlockedDecrement((PLONG)&NextFileInfo->Fcb->FcbReference);
+                    InterlockedDecrement(&NextFileInfo->Fcb->FcbReference);
                     ASSERT(NextFileInfo->Fcb->FcbReference >= NextFileInfo->RefCount);
                     NextFileInfo = fi;
                 }
@@ -2259,7 +2259,7 @@ post_rename:
             // update counters & pointers
             Fcb->ParentFcb = TargetDirInfo->Fcb;
             // move references to TargetDir
-            InterlockedExchangeAdd((PLONG)&TargetDirInfo->Fcb->FcbReference, DirRefCount);
+            InterlockedExchangeAdd(&TargetDirInfo->Fcb->FcbReference, DirRefCount);
             ASSERT(TargetDirInfo->Fcb->FcbReference > TargetDirInfo->RefCount);
             UDFReferenceFileEx__(TargetDirInfo, FileInfoRefCount);
             ASSERT(TargetDirInfo->Fcb->FcbReference >= TargetDirInfo->RefCount);

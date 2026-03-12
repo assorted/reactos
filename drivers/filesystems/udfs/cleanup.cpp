@@ -153,7 +153,7 @@ UDFCommonCleanup(
 
             if (FileObject->Flags & FO_CACHE_SUPPORTED) {
                 // we've cached close
-                InterlockedDecrement((PLONG)&Fcb->CachedOpenHandleCount);
+                InterlockedDecrement(&Fcb->CachedOpenHandleCount);
             }
             ASSERT(Fcb->FcbCleanup <= (Fcb->FcbReference-1));
 
@@ -195,7 +195,7 @@ UDFCommonCleanup(
 
         if (FileObject->Flags & FO_CACHE_SUPPORTED) {
             // we've cached close
-            InterlockedDecrement((PLONG)&Fcb->CachedOpenHandleCount);
+            InterlockedDecrement(&Fcb->CachedOpenHandleCount);
         }
         ASSERT(Fcb->FcbCleanup <= (Fcb->FcbReference-1));
 

@@ -297,7 +297,7 @@ typedef struct _UDF_DATALOC_INFO {
     HardLink concept. UDF_DATALOC_INFO structure  should  not  be
     released untill this field reaches zero.
 */
-    uint32      LinkRefCount;
+    LONG        LinkRefCount;
 /**
     Points to the list of files referenced  by  the  given  file.
     This field is used for directories only. Otherwise its  value
@@ -390,7 +390,7 @@ typedef struct _UDF_FILE_INFO {
     decrements. The FileInfo structure can't be  released  untill
     this counter reachs zero.
 */
-    uint32       RefCount;             // number of references
+    LONG         RefCount;             // number of references
 /**
     Counter of open operations performed  for  subsequent  files.
     Each routine opening the  file  increments  this  counter  in
@@ -398,7 +398,7 @@ typedef struct _UDF_FILE_INFO {
     decrements. The FileInfo structure can't be  released  untill
     this counter reachs zero.
 */
-    uint32       OpenCount;            // number of opened files in Dir
+    LONG         OpenCount;            // number of opened files in Dir
     struct _UDF_FILE_INFO* NextLinkedFile; //
     struct _UDF_FILE_INFO* PrevLinkedFile; //
 

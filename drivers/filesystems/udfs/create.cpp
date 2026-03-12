@@ -85,7 +85,7 @@ UDFAcquireParent(
     UDF_CHECK_PAGING_IO_RESOURCE(RelatedFileInfo->Fcb);
     UDFAcquireResourceExclusive((*Res1) = &RelatedFileInfo->Fcb->FcbNonpaged->FcbResource, TRUE);
 
-    InterlockedIncrement((PLONG)&RelatedFileInfo->Fcb->FcbReference);
+    InterlockedIncrement(&RelatedFileInfo->Fcb->FcbReference);
     UDFReferenceFile__(RelatedFileInfo);
     ASSERT(RelatedFileInfo->Fcb->FcbReference >= RelatedFileInfo->RefCount);
 } // end UDFAcquireParent()
@@ -486,7 +486,7 @@ UDFCommonCreate(
                     IrpContext->Flags |= UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
 /*
-                    InterlockedIncrement((PLONG)&Vcb->VcbReference);
+                    InterlockedIncrement(&Vcb->VcbReference);
                     UDFReleaseResource(&(Vcb->VcbResource));
                     AcquiredVcb = FALSE;
 
@@ -498,7 +498,7 @@ UDFCommonCreate(
 
                     UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE);
                     AcquiredVcb = TRUE;
-                    InterlockedDecrement((PLONG)&Vcb->VcbReference);
+                    InterlockedDecrement(&Vcb->VcbReference);
 */
                 }
             }
@@ -518,11 +518,11 @@ UDFCommonCreate(
                     UDFPrint(("  perform flush\n"));
                     IrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
 
-                    InterlockedIncrement((PLONG)&Vcb->VcbReference);
+                    InterlockedIncrement(&Vcb->VcbReference);
 
                     UDFFspClose(Vcb);
 
-                    InterlockedDecrement((PLONG)&Vcb->VcbReference);
+                    InterlockedDecrement(&Vcb->VcbReference);
 
                     UDFFlushVolume(IrpContext, Vcb);
                 }
@@ -1119,7 +1119,7 @@ Skip_open_attempt:
                     UDF_CHECK_PAGING_IO_RESOURCE(NewFileInfo->Fcb);
                     UDFAcquireResourceExclusive(Res1 = &NewFileInfo->Fcb->FcbNonpaged->FcbResource, TRUE);
                     // ...and reference it
-                    InterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
+                    InterlockedIncrement(&PtrNewFcb->FcbReference);
 
                     ASSERT(PtrNewFcb->FcbReference >= NewFileInfo->RefCount);
                     // update unwind information
@@ -1228,7 +1228,7 @@ Skip_open_attempt:
                     try_return(RC);
                 }
                 // discard changes for last successfully opened file
-                InterlockedDecrement((PLONG)&PtrNewFcb->FcbReference);
+                InterlockedDecrement(&PtrNewFcb->FcbReference);
                 RC = STATUS_SUCCESS;
                 ASSERT(!OpenTargetDirectory);
                 // break open loop and continue with Open
@@ -1292,7 +1292,7 @@ Skip_open_attempt:
             //  to reflect the fact that the parent directory of the
             //  target has been opened
             PtrNewFcb = NewFileInfo->Fcb;
-            InterlockedDecrement((PLONG)&PtrNewFcb->FcbReference);
+            InterlockedDecrement(&PtrNewFcb->FcbReference);
 
             RC = UDFCompleteFcbOpen(IrpContext, IrpSp, Vcb, &PtrNewFcb, UserDirectoryOpen, 0, CreateDisposition);
 
@@ -1479,7 +1479,7 @@ Undo_Create_1:
                 RC = MyAppendUnicodeStringToStringTag(&LocalPath, &LastGoodTail, MEM_USLOC_TAG);
                 if (!NT_SUCCESS(RC))
                     goto Creation_Err_1;
-                InterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
+                InterlockedIncrement(&PtrNewFcb->FcbReference);
                 ASSERT(PtrNewFcb->FcbReference >= NewFileInfo->RefCount);
                 PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                 PtrNewFcb->FcbState |= UDF_FCB_VALID;
@@ -1532,7 +1532,7 @@ Undo_Create_1:
                     BrutePoint();
                     goto Creation_Err_1;
                 }
-                InterlockedIncrement((PLONG)&PtrNewFcb->FcbReference);
+                InterlockedIncrement(&PtrNewFcb->FcbReference);
                 ASSERT(PtrNewFcb->FcbReference >= NewFileInfo->RefCount);
                 PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                 PtrNewFcb->FcbState |= UDF_FCB_VALID;
@@ -1962,13 +1962,13 @@ try_exit:   NOTHING;
                 UDFIncrementReferenceCounts(IrpContext, PtrNewFcb, 1, 1);
 
                 if (FileObject->Flags & FO_CACHE_SUPPORTED)
-                    InterlockedIncrement((PLONG)&PtrNewFcb->CachedOpenHandleCount);
+                    InterlockedIncrement(&PtrNewFcb->CachedOpenHandleCount);
 
                 UDFUnlockVcb(IrpContext, Vcb);
 
 
                 if (FileObject->Flags & FO_CACHE_SUPPORTED)
-                    InterlockedIncrement((PLONG)&PtrNewFcb->CachedOpenHandleCount);
+                    InterlockedIncrement(&PtrNewFcb->CachedOpenHandleCount);
                 // Store some flags in CCB
                 if (PtrNewCcb) {
                     PtrNewCcb->TreeLength = TreeLength;
@@ -1993,7 +1993,7 @@ try_exit:   NOTHING;
 //                PtrNewCcb->CCBFlags |= UDF_CCB_VALID;
                 // increment the number of outstanding open operations on this
                 // logical volume (i.e. volume cannot be dismounted)
-                InterlockedIncrement((PLONG)&Vcb->VcbReference);
+                InterlockedIncrement(&Vcb->VcbReference);
                 PtrNewFcb->NtReqFCBFlags |= UDF_NTREQ_FCB_VALID;
                 PtrNewFcb->FcbState |= UDF_FCB_VALID;
 #ifdef UDF_DBG
@@ -2415,7 +2415,7 @@ UDFCompleteFcbOpen(
             AdPrint(("Can't allocate CCB\n"));
             IrpSp->FileObject->FsContext2 = NULL;
             //
-            InterlockedIncrement((PLONG)&Fcb->FcbReference);
+            InterlockedIncrement(&Fcb->FcbReference);
             Status = STATUS_INSUFFICIENT_RESOURCES;
             try_return(Status);
         }
@@ -2472,7 +2472,7 @@ UDFCompleteFcbOpen(
         // insert CCB into linked list of open file object to Fcb or
         // to Vcb and do other intialization
         InsertTailList(&Fcb->NextCCB, &Ccb->NextCCB);
-        InterlockedIncrement((PLONG)&Fcb->FcbReference);
+        InterlockedIncrement(&Fcb->FcbReference);
         UDFReleaseResource(&Fcb->FcbNonpaged->CcbListResource);
 
         Ccb = NULL;

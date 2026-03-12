@@ -1725,8 +1725,8 @@ UDFSetModified(
     IN PVCB        Vcb
     )
 {
-    if (InterlockedIncrement((PLONG) & (Vcb->Modified)) & 0x80000000)
-        InterlockedExchange((PLONG)&Vcb->Modified, 2);
+    if (InterlockedIncrement(&(Vcb->Modified)) & 0x80000000)
+        InterlockedExchange(&Vcb->Modified, 2);
 } // end UDFSetModified()
 
 VOID
@@ -1734,7 +1734,7 @@ UDFPreClrModified(
     IN PVCB Vcb
     )
 {
-    InterlockedExchange((PLONG)&Vcb->Modified, 1);
+    InterlockedExchange(&Vcb->Modified, 1);
 } // end UDFPreClrModified()
 
 VOID
@@ -1743,7 +1743,7 @@ UDFClrModified(
     )
 {
     UDFPrint(("ClrModified\n"));
-    InterlockedDecrement((PLONG)&Vcb->Modified);
+    InterlockedDecrement(&Vcb->Modified);
 } // end UDFClrModified()
 
 NTSTATUS

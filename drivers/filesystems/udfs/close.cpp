@@ -124,7 +124,7 @@ UDFCommonClose(
         IrpContext->TreeLength =
         i = Ccb->TreeLength;
         // remember the number of incomplete Close requests
-        InterlockedIncrement((PLONG)&(Fcb->CcbCount));
+        InterlockedIncrement(&(Fcb->CcbCount));
         // we can release CCB in any case
         UDFDeleteCcb(Ccb);
         FileObject->FsContext2 = NULL;
@@ -155,9 +155,9 @@ UDFCommonClose(
             // Close request is near completion, Vcb is acquired.
             // Now we can safely decrease CcbCount, because no Rename
             // operation can run until Vcb release.
-            InterlockedDecrement((PLONG)&Fcb->CcbCount);
+            InterlockedDecrement(&Fcb->CcbCount);
 
-            InterlockedDecrement((PLONG)&Vcb->VcbReference);
+            InterlockedDecrement(&Vcb->VcbReference);
 
             if (!i || (Fcb == Fcb->Vcb->VolumeDasdFcb)) {
 
@@ -166,14 +166,14 @@ UDFCommonClose(
 
                 if (Vcb->VcbCleanup > 0) {
                     ASSERT(Fcb == Fcb->Vcb->VolumeDasdFcb);
-                    InterlockedDecrement((PLONG)&Fcb->FcbReference);
+                    InterlockedDecrement(&Fcb->FcbReference);
                     ASSERT(Fcb);
 
                     try_return(RC = STATUS_SUCCESS);
                 }
 
                 ASSERT(Fcb == Fcb->Vcb->VolumeDasdFcb);
-                InterlockedDecrement((PLONG)&Fcb->FcbReference);
+                InterlockedDecrement(&Fcb->FcbReference);
                 ASSERT(Fcb);
 
                 if ((Vcb->VcbCleanup == 0) &&
@@ -311,7 +311,7 @@ UDFTeardownStructures(
             if (CurrentFcb) {
                 if (TreeLength) {
                     ASSERT(CurrentFcb->FcbReference);
-                    RefCount = InterlockedDecrement((PLONG)&CurrentFcb->FcbReference);
+                    RefCount = InterlockedDecrement(&CurrentFcb->FcbReference);
                 }
             } else {
                 BrutePoint();
@@ -321,7 +321,7 @@ UDFTeardownStructures(
             ASSERT(CurrentFcb->FcbCleanup <= CurrentFcb->FcbReference);
     #else
             if (TreeLength) {
-                RefCount = InterlockedDecrement((PLONG)&CurrentFcb->FcbReference);
+                RefCount = InterlockedDecrement(&CurrentFcb->FcbReference);
                 TreeLength--;
             }
     #endif

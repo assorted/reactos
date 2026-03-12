@@ -471,7 +471,7 @@ UDFMountVolume(
                 // but simply cleanup and return error, Vcb->VcbReference
                 // will be decremented during cleanup. Thus anyway it must
                 // stay 1 unchanged here
-                //InterlockedDecrement((PLONG)&Vcb->VcbReference);
+                //InterlockedDecrement(&Vcb->VcbReference);
                 UDFCloseResidual(IrpContext, Vcb);
                 Vcb->VcbReference = 1;
 
@@ -525,7 +525,7 @@ try_exit: NOTHING;
                 }
                 // Make sure there is no Vcb since it could go away
                 if (Vcb->VcbReference)
-                    InterlockedDecrement((PLONG)&Vcb->VcbReference);
+                    InterlockedDecrement(&Vcb->VcbReference);
                 // This procedure will also delete the volume device object
                 if (UDFDismountVcb(IrpContext, Vcb, FALSE)) {
                     UDFReleaseResource( &(Vcb->VcbResource) );
@@ -575,7 +575,7 @@ UDFCloseResidual(
 {
     //  Deinitialize Non-alloc file
     if (Vcb->VcbReference)
-        InterlockedDecrement((PLONG)&Vcb->VcbReference);
+        InterlockedDecrement(&Vcb->VcbReference);
     UDFPrint(("UDFCloseResidual: NonAllocFileInfo %x\n", Vcb->NonAllocFileInfo));
     if (Vcb->NonAllocFileInfo) {
         UDFCloseFile__(IrpContext, Vcb, Vcb->NonAllocFileInfo);
@@ -642,7 +642,7 @@ UDFCloseResidual(
         UDFTeardownStructures(IrpContext, Vcb->RootIndexFcb, 1, NULL);
         // Remove root FCB reference in vcb
         if (Vcb->VcbReference)
-            InterlockedDecrement((PLONG)&Vcb->VcbReference);
+            InterlockedDecrement(&Vcb->VcbReference);
         Vcb->RootIndexFcb = NULL;
     }
 } // end UDFCloseResidual()

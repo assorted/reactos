@@ -1324,28 +1324,28 @@ NTSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,
 
 #define UDFReferenceFile__(fi)                       \
 {                                                    \
-    InterlockedIncrement((PLONG)&((fi)->RefCount));  \
-    InterlockedIncrement((PLONG)&((fi)->Dloc->LinkRefCount));  \
+    InterlockedIncrement(&((fi)->RefCount));  \
+    InterlockedIncrement(&((fi)->Dloc->LinkRefCount));  \
     if ((fi)->ParentFile) {                           \
-        InterlockedIncrement((PLONG)&((fi)->ParentFile->OpenCount));  \
+        InterlockedIncrement(&((fi)->ParentFile->OpenCount));  \
     }                                                \
 }
 
 #define UDFReferenceFileEx__(fi,i)                   \
 {                                                    \
-    InterlockedExchangeAdd((PLONG)&((fi)->RefCount),i);  \
-    InterlockedExchangeAdd((PLONG)&((fi)->Dloc->LinkRefCount),i);  \
+    InterlockedExchangeAdd(&((fi)->RefCount),i);  \
+    InterlockedExchangeAdd(&((fi)->Dloc->LinkRefCount),i);  \
     if ((fi)->ParentFile) {                           \
-        InterlockedExchangeAdd((PLONG)&((fi)->ParentFile->OpenCount),i);  \
+        InterlockedExchangeAdd(&((fi)->ParentFile->OpenCount),i);  \
     }                                                \
 }
 
 #define UDFDereferenceFile__(fi)                     \
 {                                                    \
-    InterlockedDecrement((PLONG)&((fi)->RefCount));  \
-    InterlockedDecrement((PLONG)&((fi)->Dloc->LinkRefCount));  \
+    InterlockedDecrement(&((fi)->RefCount));  \
+    InterlockedDecrement(&((fi)->Dloc->LinkRefCount));  \
     if ((fi)->ParentFile) {                           \
-        InterlockedDecrement((PLONG)&((fi)->ParentFile->OpenCount));  \
+        InterlockedDecrement(&((fi)->ParentFile->OpenCount));  \
     }                                                \
 }
 

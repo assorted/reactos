@@ -1002,7 +1002,7 @@ UDFCompleteMount(
         }
 
         // this is a part of UDF_RESIDUAL_REFERENCE
-        InterlockedIncrement((PLONG)&Vcb->VcbReference);
+        InterlockedIncrement(&Vcb->VcbReference);
         Vcb->RootIndexFcb->FcbCleanup = 1;
         Vcb->RootIndexFcb->FcbReference = 1;
 
@@ -1045,7 +1045,7 @@ UDFCompleteMount(
             UDFCleanUpFile__(Vcb, Vcb->NonAllocFileInfo);
             Vcb->NonAllocFileInfo = NULL;
             // this was a part of UDF_RESIDUAL_REFERENCE
-            InterlockedDecrement((PLONG)&Vcb->VcbReference);
+            InterlockedDecrement(&Vcb->VcbReference);
     unwind_1:
 
             // UDFCloseResidual() will clean up everything
@@ -1122,7 +1122,7 @@ UDFCompleteMount(
         UDFPreClrModified(Vcb);
         UDFClrModified(Vcb);
         // this is a part of UDF_RESIDUAL_REFERENCE
-        InterlockedIncrement((PLONG)&Vcb->VcbReference);
+        InterlockedIncrement(&Vcb->VcbReference);
 
         // Start initializing the fields contained in the Header.
 

@@ -1155,6 +1155,8 @@ UDFWriteSectors(
 {
     NTSTATUS status;
 
+    // If the volume is dead (device unexpectedly disappeared), no write is
+    // possible so return immediately without updating the Modified flag.
     if (Vcb->VcbState & UDF_VCB_FLAGS_DEAD)
         return STATUS_NO_SUCH_DEVICE;
 

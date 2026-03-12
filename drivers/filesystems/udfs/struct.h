@@ -235,10 +235,10 @@ struct FCB {
     //  But when we have mapped data, we can receive no IRP_MJ_CLOSE
     //  In this case OpenHandleCount may reach zero, but ReferenceCount may
     //  be non-zero.
-    ULONG                              FcbReference;
-    ULONG                              FcbCleanup;
-    ULONG                              CachedOpenHandleCount;
-    ULONG FcbUserReference;
+    LONG                               FcbReference;
+    LONG                               FcbCleanup;
+    LONG                               CachedOpenHandleCount;
+    LONG FcbUserReference;
 
     // State flags for this Fcb.
 
@@ -269,7 +269,7 @@ struct FCB {
     FCB* ParentFcb;
     // Pointer to IrpContextLite in delayed queue.
     IRP_CONTEXT_LITE* IrpContextLite;
-    uint32                              CcbCount;
+    LONG                                CcbCount;
 
     //  The following field is used by the filelock module
     //  to maintain current byte range locking information.
@@ -353,11 +353,11 @@ struct VCB {
     // Condition flag for the Vcb.
     VCB_CONDITION VcbCondition;
 
-    ULONG                               VcbCleanup;
-    ULONG                               VcbReference;
-    ULONG                               VcbUserReference;
-    ULONG                               VcbResidualReference;
-    ULONG                               VcbResidualUserReference;
+    LONG                                VcbCleanup;
+    LONG                                VcbReference;
+    LONG                                VcbUserReference;
+    LONG                                VcbResidualReference;
+    LONG                                VcbResidualUserReference;
     ERESOURCE                           FlushResource;
 
     // Link into queue of Vcb's in the CdData structure.  We will create a union with
@@ -518,8 +518,8 @@ struct VCB {
     uint16          minUDFWriteRev;
     uint16          maxUDFWriteRev;
     // file/dir counters for Mac OS
-    uint32          numFiles;
-    uint32          numDirs;
+    LONG            numFiles;
+    LONG            numDirs;
     // VAT
     uint32          InitVatCount;
     uint32          VatCount;
@@ -557,7 +557,7 @@ struct VCB {
     ULONG VDS2;
     ULONG VDS2_Len;
 
-    ULONG           Modified;
+    LONG            Modified;
 
     // System Stream Dir
     PUDF_FILE_INFO  SysSDirFileInfo;
