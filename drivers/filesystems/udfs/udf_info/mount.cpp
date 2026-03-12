@@ -2559,7 +2559,7 @@ UDFVerifySequence(
                             if (!NT_SUCCESS(RC)) try_return(RC);
                         } else if (ident == TID_UNALLOC_SPACE_DESC) {
                             RC = UDFVerifyFreeSpaceBitmap(IrpContext, Vcb, 0, NULL, j);
-                            Vcb->Modified = FALSE;
+                            InterlockedExchange((PLONG)&Vcb->Modified, FALSE);
                             if (!NT_SUCCESS(RC))
                                 try_return(RC);
                         }

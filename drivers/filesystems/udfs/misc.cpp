@@ -1726,7 +1726,7 @@ UDFSetModified(
     )
 {
     if (InterlockedIncrement((PLONG) & (Vcb->Modified)) & 0x80000000)
-        Vcb->Modified = 2;
+        InterlockedExchange((PLONG)&Vcb->Modified, 2);
 } // end UDFSetModified()
 
 VOID
@@ -1734,7 +1734,7 @@ UDFPreClrModified(
     IN PVCB Vcb
     )
 {
-    Vcb->Modified = 1;
+    InterlockedExchange((PLONG)&Vcb->Modified, 1);
 } // end UDFPreClrModified()
 
 VOID
@@ -1763,7 +1763,10 @@ UDFToggleMediaEjectDisable (
 
     } else {
 
-        Vcb->VcbState ^= UDF_VCB_FLAGS_MEDIA_LOCKED;
+        if (PreventRemoval)
+            InterlockedOr((volatile LONG*)&Vcb->VcbState, UDF_VCB_FLAGS_MEDIA_LOCKED);
+        else
+            InterlockedAnd((volatile LONG*)&Vcb->VcbState, ~UDF_VCB_FLAGS_MEDIA_LOCKED);
     }
 
     Prevent.PreventMediaRemoval = PreventRemoval;

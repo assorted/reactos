@@ -63,7 +63,7 @@ UDFDoDismountSequence(
     UDFReleaseResource(&(Vcb->IoResource));
     // allow media change checks (this will lead to dismount)
     // ... and make it Read-Only...  :-\~
-    Vcb->VcbState &= ~UDF_VCB_FLAGS_MEDIA_LOCKED;
+    InterlockedAnd((volatile LONG*)&Vcb->VcbState, ~UDF_VCB_FLAGS_MEDIA_LOCKED);
 
     return STATUS_SUCCESS;
 } // end UDFDoDismountSequence()

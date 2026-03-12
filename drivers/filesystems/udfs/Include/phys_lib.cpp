@@ -133,7 +133,7 @@ UDFTWrite(
         return STATUS_NO_SUCH_DEVICE;
     }
 
-    Vcb->VcbState |= UDF_VCB_LAST_WRITE;
+    InterlockedOr((volatile LONG*)&Vcb->VcbState, UDF_VCB_LAST_WRITE);
     if (!Vcb->CDR_Mode) {
         RelocExtent = UDFRelocateSectors(Vcb, LBA, BCount);
         if (!RelocExtent) {
@@ -271,7 +271,7 @@ retry_1:
 
             RC = UDFPhReadSynchronous(IrpContext, Vcb->TargetDeviceObject, Buffer, Length,
                        ((uint64)rLba) << Vcb->SectorShift, ReadBytes, Flags);
-            Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
+            InterlockedAnd((volatile LONG*)&Vcb->VcbState, ~UDF_VCB_LAST_WRITE);
 
             if (!NT_SUCCESS(RC) &&
                 NT_SUCCESS(RC = UDFRecoverFromError(Vcb, FALSE, RC, rLba, BCount, &retry)) ) {
@@ -304,7 +304,7 @@ retry_2:
 
             RC = UDFPhReadSynchronous(IrpContext, Vcb->TargetDeviceObject, Buffer, RelocExtent->extLength,
                        ((uint64)rLba) << Vcb->SectorShift, &_ReadBytes, Flags);
-            Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
+            InterlockedAnd((volatile LONG*)&Vcb->VcbState, ~UDF_VCB_LAST_WRITE);
 
             if (!NT_SUCCESS(RC) &&
                 NT_SUCCESS(RC = UDFRecoverFromError(Vcb, FALSE, RC, rLba, BCount, &retry)) ) {
@@ -354,7 +354,7 @@ UDFTReadAsync(
 //    LARGE_INTEGER delay;
     uint32 retry = UDF_READ_MAX_RETRY;
     PVCB Vcb = (PVCB)_Vcb;
-    Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
+    InterlockedOr((volatile LONG*)&Vcb->VcbState, UDF_VCB_SKIP_EJECT_CHECK);
     uint32 rLba;
     uint32 BCount;
 
@@ -376,8 +376,8 @@ retry_1:
         rLba = UDFFixFPAddress(Vcb, rLba);
         RC = UDFPhReadSynchronous(Vcb->TargetDeviceObject, Buffer, Length,
                    ((uint64)rLba) << Vcb->BlockSizeBits, ReadBytes, 0);
-        Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
-        Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
+        InterlockedAnd((volatile LONG*)&Vcb->VcbState, ~UDF_VCB_LAST_WRITE);
+        InterlockedOr((volatile LONG*)&Vcb->VcbState, UDF_VCB_SKIP_EJECT_CHECK);
         if (!NT_SUCCESS(RC) &&
             NT_SUCCESS(RC = UDFRecoverFromError(Vcb, FALSE, RC, rLba, BCount, &retry)) )
             goto retry_1;
@@ -400,8 +400,8 @@ retry_2:
         rLba = UDFFixFPAddress(Vcb, rLba);
         RC = UDFPhReadSynchronous(Vcb->TargetDeviceObject, Buffer, RelocExtent->extLength,
                    ((uint64)rLba) << Vcb->BlockSizeBits, &_ReadBytes, 0);
-        Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
-        Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
+        InterlockedAnd((volatile LONG*)&Vcb->VcbState, ~UDF_VCB_LAST_WRITE);
+        InterlockedOr((volatile LONG*)&Vcb->VcbState, UDF_VCB_SKIP_EJECT_CHECK);
         if (!NT_SUCCESS(RC) &&
             NT_SUCCESS(RC = UDFRecoverFromError(Vcb, FALSE, RC, rLba, BCount, &retry)) )
             goto retry_2;
@@ -449,7 +449,7 @@ UDFPrepareForWriteOperation(
     }
 #endif //_UDF_STRUCTURES_H_
 
-    Vcb->VcbState |= UDF_VCB_LAST_WRITE;
+    InterlockedOr((volatile LONG*)&Vcb->VcbState, UDF_VCB_LAST_WRITE);
 
     return STATUS_SUCCESS;
 } // end UDFPrepareForWriteOperation()
@@ -959,7 +959,7 @@ try_exit:   NOTHING;
         if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) {
             if (!Vcb->BlankCD && Vcb->MediaType != MediaType_UnknownSize_CDRW) {
                 UDFPrint(("UDFGetDiskInfo: R/O+!Blank+!RW -> !RAW\n"));
-                Vcb->VcbState &= ~UDF_VCB_FLAGS_RAW_DISK;
+                InterlockedAnd((volatile LONG*)&Vcb->VcbState, ~UDF_VCB_FLAGS_RAW_DISK);
             } else {
                 UDFPrint(("UDFGetDiskInfo: Blank or RW\n"));
             }
@@ -999,7 +999,7 @@ UDFPrepareForReadOperation(
     )
 {
     if ( (Vcb->FsDeviceType != FILE_DEVICE_CD_ROM_FILE_SYSTEM) ) {
-        Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
+        InterlockedAnd((volatile LONG*)&Vcb->VcbState, ~UDF_VCB_LAST_WRITE);
         return STATUS_SUCCESS;
     }
     uint32 i = Vcb->LastReadTrack;
@@ -1166,7 +1166,7 @@ UDFWriteSectors(
             // Without this guard, concurrent heavy write activity (e.g. multiple
             // threads simultaneously seeing IntegrityType == INTEGRITY_TYPE_CLOSE)
             // causes races into UDFUpdateLogicalVolInt that corrupt the shared
-            // Vcb->LVid buffer and trigger the assert via the nested write failure.
+            // Vcb->LVid buffer and produce a failed nested write.
             if (InterlockedCompareExchange((volatile LONG*)&Vcb->IntegrityType,
                                           INTEGRITY_TYPE_OPEN,
                                           INTEGRITY_TYPE_CLOSE) == INTEGRITY_TYPE_CLOSE) {
