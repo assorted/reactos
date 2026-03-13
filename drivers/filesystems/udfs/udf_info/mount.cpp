@@ -253,11 +253,18 @@ UDFUpdateXSpaceBitmaps(
         d=1;
         // if we have some bad bits, mark corresponding area as BAD
         if (bad_bm) {
-            for(i=pstart; i<pend; i++) {
+            for(i=pstart; i<pend; ) {
+                // Skip 32-block groups with no bad blocks using the hierarchical bitmap
+                if (Vcb->BSBM_HBitmap && !UDFGetBit(Vcb->BSBM_HBitmap, i >> UDF_HBITMAP_SHIFT)) {
+                    uint32 next = ((i >> UDF_HBITMAP_SHIFT) + 1) << UDF_HBITMAP_SHIFT;
+                    i = (next < pend) ? next : pend;
+                    continue;
+                }
                 if (UDFGetBadBit(bad_bm, i)) {
                     // TODO: would be nice to add these blocks to unallocatable space
                     UDFSetUsedBits(new_bm, i & ~(d-1), d);
                 }
+                i++;
             }
         }
         j=0;
@@ -897,13 +904,22 @@ UDFUpdateNonAllocated(
     pend = min(pstart + plen, Vcb->FSBM_BitCount);
 
     //BrutePoint();
-    for(i=pstart; i<pend; i++) {
-        if (!UDFGetBadBit(bad_bm, i))
+    for(i=pstart; i<pend; ) {
+        // Skip 32-block groups with no bad blocks using the hierarchical bitmap
+        if (Vcb->BSBM_HBitmap && !UDFGetBit(Vcb->BSBM_HBitmap, i >> UDF_HBITMAP_SHIFT)) {
+            uint32 next = ((i >> UDF_HBITMAP_SHIFT) + 1) << UDF_HBITMAP_SHIFT;
+            i = (next < pend) ? next : pend;
             continue;
+        }
+        if (!UDFGetBadBit(bad_bm, i)) {
+            i++;
+            continue;
+        }
         // add BAD blocks to unallocatable space
         // if the block is already in NonAllocatable, ignore it
         if (UDFLocateLbaInExtent(Vcb, DataLoc->Mapping, i) != LBA_OUT_OF_EXTENT) {
             UDFPrint(("lba %#x is already in NonAllocFileInfo\n", i));
+            i++;
             continue;
         }
         UDFPrint(("add lba %#x to NonAllocFileInfo\n", i));
@@ -912,6 +928,7 @@ UDFUpdateNonAllocated(
         Ext.extLocation = i;
         Map = UDFExtentToMapping(&Ext);
         DataLoc->Mapping = UDFMergeMappings(DataLoc->Mapping, Map);
+        i++;
     }
     UDFPackMapping(Vcb, DataLoc);
     DataLoc->Length = UDFGetExtentLength(DataLoc->Mapping);
@@ -988,8 +1005,11 @@ UDFUmount__(
         UDFUpdateLogicalVolInt(IrpContext, Vcb, TRUE);
     }
 
-    if (flags & 1)
+    if (flags & 1) {
         RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
+        // Keep old-bitmap hierarchical meta-bitmap in sync
+        UDFBuildOldHBitmap(Vcb);
+    }
 
 //skip_update_bitmap:
 
@@ -1968,6 +1988,14 @@ UDFBuildFreeSpaceBitmap(
         if (!(Vcb->FSBM_Bitmap)) return STATUS_INSUFFICIENT_RESOURCES;
 
         RtlZeroMemory(Vcb->FSBM_Bitmap, i);
+
+        // Allocate bad-space bitmap alongside the free-space bitmap (same size, zero = no bad blocks)
+        if (!(Vcb->BSBM_Bitmap)) {
+            Vcb->BSBM_Bitmap = (int8*)DbgAllocatePool(NonPagedPool, i);
+            if (Vcb->BSBM_Bitmap) {
+                RtlZeroMemory(Vcb->BSBM_Bitmap, i);
+            }
+        }
 
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
         Vcb->FSBM_Bitmap_owners = (uint32*)DbgAllocatePool(NonPagedPool, (Vcb->LastPossibleLBA+1)*sizeof(uint32));
@@ -2975,6 +3003,18 @@ UDFGetDiskInfoAndVerify(
             Vcb->FSBM_HBitmap = (int8*)DbgAllocatePool(NonPagedPool, HBitmapByteCount);
             if (Vcb->FSBM_HBitmap) {
                 UDFBuildHBitmap(Vcb);
+            }
+            // Hierarchical bitmap for old free-space snapshot
+            Vcb->FSBM_OldHBitmap = (int8*)DbgAllocatePool(NonPagedPool, HBitmapByteCount);
+            if (Vcb->FSBM_OldHBitmap) {
+                UDFBuildOldHBitmap(Vcb);
+            }
+            // Hierarchical bitmap for bad-space bitmap
+            if (Vcb->BSBM_Bitmap) {
+                Vcb->BSBM_HBitmap = (int8*)DbgAllocatePool(NonPagedPool, HBitmapByteCount);
+                if (Vcb->BSBM_HBitmap) {
+                    UDFBuildBSBMHBitmap(Vcb);
+                }
             }
         }
 

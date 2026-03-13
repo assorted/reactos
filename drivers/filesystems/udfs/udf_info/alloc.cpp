@@ -590,6 +590,97 @@ UDFUpdateHBitmapRange(
 } // end UDFUpdateHBitmapRange()
 
 /*
+    This routine builds (or rebuilds) the hierarchical bitmap (L1) from
+    the bad-space bitmap (BSBM).  Each bit covers 32 L0 BSBM bits and is
+    set if any of those bits indicates a bad block.
+ */
+void
+UDFBuildBSBMHBitmap(
+    IN PVCB Vcb
+    )
+{
+    uint32* L0;
+    uint32  L0Words;
+    uint32  i;
+
+    if (!Vcb->BSBM_Bitmap || !Vcb->BSBM_HBitmap) return;
+
+    L0      = (uint32*)Vcb->BSBM_Bitmap;
+    L0Words = (Vcb->FSBM_BitCount + 31) >> UDF_HBITMAP_SHIFT;
+
+    RtlZeroMemory(Vcb->BSBM_HBitmap, (L0Words + 7) >> 3);
+
+    for (i = 0; i < L0Words; i++) {
+        if (L0[i]) {
+            UDFSetBit(Vcb->BSBM_HBitmap, i);
+        }
+    }
+} // end UDFBuildBSBMHBitmap()
+
+/*
+    This routine updates the BSBM hierarchical bitmap (L1) bits covering
+    the L0 range [start, start+len-1] after bad-block markings change.
+ */
+void
+UDFUpdateBSBMHBitmapRange(
+    IN PVCB Vcb,
+    IN uint32 start,
+    IN uint32 len
+    )
+{
+    uint32* L0;
+    uint32  startWord;
+    uint32  endWord;
+    uint32  limitWords;
+    uint32  w;
+
+    if (!Vcb->BSBM_Bitmap || !Vcb->BSBM_HBitmap || !len) return;
+
+    L0         = (uint32*)Vcb->BSBM_Bitmap;
+    startWord  = start >> UDF_HBITMAP_SHIFT;
+    endWord    = (start + len - 1) >> UDF_HBITMAP_SHIFT;
+    limitWords = (Vcb->FSBM_BitCount + 31) >> UDF_HBITMAP_SHIFT;
+
+    if (endWord >= limitWords) endWord = limitWords - 1;
+
+    for (w = startWord; w <= endWord; w++) {
+        if (L0[w]) {
+            UDFSetBit(Vcb->BSBM_HBitmap, w);
+        } else {
+            UDFClrBit(Vcb->BSBM_HBitmap, w);
+        }
+    }
+} // end UDFUpdateBSBMHBitmapRange()
+
+/*
+    This routine builds (or rebuilds) the hierarchical bitmap (L1) from
+    the old free-space bitmap snapshot (FSBM_OldBitmap).  Each bit covers
+    32 L0 bits and is set if any of those L0 bits was free in the snapshot.
+ */
+void
+UDFBuildOldHBitmap(
+    IN PVCB Vcb
+    )
+{
+    uint32* L0;
+    uint32  L0Words;
+    uint32  i;
+
+    if (!Vcb->FSBM_OldBitmap || !Vcb->FSBM_OldHBitmap) return;
+
+    L0      = (uint32*)Vcb->FSBM_OldBitmap;
+    L0Words = (Vcb->FSBM_BitCount + 31) >> UDF_HBITMAP_SHIFT;
+
+    RtlZeroMemory(Vcb->FSBM_OldHBitmap, (L0Words + 7) >> 3);
+
+    for (i = 0; i < L0Words; i++) {
+        if (L0[i]) {
+            UDFSetBit(Vcb->FSBM_OldHBitmap, i);
+        }
+    }
+} // end UDFBuildOldHBitmap()
+
+/*
     This routine marks space described by Mapping as Used/Freed (optionaly)
  */
 void
@@ -701,7 +792,10 @@ UDFMarkSpaceAsXXXNoProtect_(
             }
 #endif //UDF_TRACK_ONDISK_ALLOCATION
             if (asXXX & AS_BAD) {
-                UDFSetBits(Vcb->BSBM_Bitmap, lba, len);
+                if (Vcb->BSBM_Bitmap) {
+                    UDFSetBits(Vcb->BSBM_Bitmap, lba, len);
+                    UDFUpdateBSBMHBitmapRange(Vcb, lba, len);
+                }
             }
             UDFMarkBadSpaceAsUsed(Vcb, lba, len);
 

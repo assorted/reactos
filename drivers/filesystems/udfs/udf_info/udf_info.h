@@ -1474,4 +1474,21 @@ UDFUpdateHBitmapRange(
     IN uint32 len
     );
 
+void
+UDFBuildBSBMHBitmap(
+    IN PVCB Vcb
+    );
+
+void
+UDFUpdateBSBMHBitmapRange(
+    IN PVCB Vcb,
+    IN uint32 start,
+    IN uint32 len
+    );
+
+void
+UDFBuildOldHBitmap(
+    IN PVCB Vcb
+    );
+
 #endif // __UDF_STRUCT_SUPPORT_H__
