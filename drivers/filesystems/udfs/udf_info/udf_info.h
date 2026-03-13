@@ -1391,6 +1391,11 @@ UDFDirIndex(
 #define UDFSetBit(arr, bit) ( (((uint32*)(arr))[(bit)>>5]) |= (((uint32)1) << ((bit)&31)) )
 #define UDFClrBit(arr, bit) ( (((uint32*)(arr))[(bit)>>5]) &= (~(((uint32)1) << ((bit)&31))) )
 
+// Hierarchical (meta) bitmap constants.
+// FSBM_HBitmap stores 1 bit per 32 bits of FSBM_Bitmap.
+// A bit in HBitmap is SET if any block in the corresponding 32-block group is free.
+#define UDF_HBITMAP_SHIFT   5   // log2(32)
+
 #define UDFSetBits(arr, bit, bc) \
 {uint32 j;                       \
     for(j=0;j<bc;j++) {          \
@@ -1455,6 +1460,18 @@ UDFCheckArea(
     IN PVCB Vcb,
     IN lba_t LBA,
     IN uint32 BCount
+    );
+
+void
+UDFBuildHBitmap(
+    IN PVCB Vcb
+    );
+
+void
+UDFUpdateHBitmapRange(
+    IN PVCB Vcb,
+    IN uint32 start,
+    IN uint32 len
     );
 
 #endif // __UDF_STRUCT_SUPPORT_H__

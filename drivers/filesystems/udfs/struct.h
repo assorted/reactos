@@ -550,6 +550,7 @@ struct VCB {
     PCHAR           FSBM_OldBitmap;  // 0 - free, 1 - used
     ULONG           BitmapModified;
     PCHAR           BSBM_Bitmap;     // 0 - normal, 1 - bad-block
+    PCHAR           FSBM_HBitmap;   // Hierarchical (meta) bitmap: 1 bit per 32 FSBM bits; set if any block in group is free
 
     // pointers to Volume Descriptor Sequences
     ULONG VDS1;

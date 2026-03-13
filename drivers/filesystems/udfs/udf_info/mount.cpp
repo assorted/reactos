@@ -2968,6 +2968,16 @@ UDFGetDiskInfoAndVerify(
         if (!(Vcb->FSBM_OldBitmap)) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
 
+        // Allocate and build the hierarchical (meta) bitmap.
+        // Each bit covers 32 L0 bits; total size is ((FSBM_BitCount + 31) / 32 + 7) / 8 bytes.
+        {
+            ULONG HBitmapByteCount = (((Vcb->FSBM_BitCount + 31) >> UDF_HBITMAP_SHIFT) + 7) >> 3;
+            Vcb->FSBM_HBitmap = (int8*)DbgAllocatePool(NonPagedPool, HBitmapByteCount);
+            if (Vcb->FSBM_HBitmap) {
+                UDFBuildHBitmap(Vcb);
+            }
+        }
+
 try_exit:   NOTHING;
     } _SEH2_FINALLY {
         if (FileSetDesc)   MyFreePool__(FileSetDesc);

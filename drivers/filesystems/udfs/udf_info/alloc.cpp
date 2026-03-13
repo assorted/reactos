@@ -349,6 +349,11 @@ retry_no_align:
             if (i >= SearchLim)
                 break;
         }
+        // Use the hierarchical bitmap to skip groups of 32 blocks with no free space
+        if (Vcb->FSBM_HBitmap && !UDFGetBit(Vcb->FSBM_HBitmap, i >> UDF_HBITMAP_SHIFT)) {
+            i = (((SIZE_T)(i >> UDF_HBITMAP_SHIFT) + 1) << UDF_HBITMAP_SHIFT);
+            continue;
+        }
         len = UDFGetBitmapLen(cur, i, SearchLim);
         if (UDFGetFreeBit(cur, i)) { // is the extent found free or used ?
             // wow! it is free!
@@ -527,6 +532,64 @@ UDFMarkBadSpaceAsUsed(
 } // UDFMarkBadSpaceAsUsed()
 
 /*
+    This routine builds (or rebuilds) the hierarchical bitmap (L1) from
+    the flat free-space bitmap (L0).  Each bit in the hierarchical bitmap
+    covers 32 bits of L0 and is set if any of those L0 bits is set (free).
+ */
+void
+UDFBuildHBitmap(
+    IN PVCB Vcb
+    )
+{
+    uint32* L0 = (uint32*)Vcb->FSBM_Bitmap;
+    uint32  L0Words = (Vcb->FSBM_BitCount + 31) >> UDF_HBITMAP_SHIFT;
+    uint32  i;
+
+    RtlZeroMemory(Vcb->FSBM_HBitmap, (L0Words + 7) >> 3);
+
+    for (i = 0; i < L0Words; i++) {
+        if (L0[i]) {
+            UDFSetBit(Vcb->FSBM_HBitmap, i);
+        }
+    }
+} // end UDFBuildHBitmap()
+
+/*
+    This routine updates the hierarchical bitmap (L1) bits that cover the
+    L0 range [start, start+len-1], reflecting the current state of L0.
+ */
+void
+UDFUpdateHBitmapRange(
+    IN PVCB Vcb,
+    IN uint32 start,
+    IN uint32 len
+    )
+{
+    uint32* L0;
+    uint32  startWord;
+    uint32  endWord;
+    uint32  limitWords;
+    uint32  w;
+
+    if (!Vcb->FSBM_HBitmap || !len) return;
+
+    L0         = (uint32*)Vcb->FSBM_Bitmap;
+    startWord  = start >> UDF_HBITMAP_SHIFT;
+    endWord    = (start + len - 1) >> UDF_HBITMAP_SHIFT;
+    limitWords = (Vcb->FSBM_BitCount + 31) >> UDF_HBITMAP_SHIFT;
+
+    if (endWord >= limitWords) endWord = limitWords - 1;
+
+    for (w = startWord; w <= endWord; w++) {
+        if (L0[w]) {
+            UDFSetBit(Vcb->FSBM_HBitmap, w);
+        } else {
+            UDFClrBit(Vcb->FSBM_HBitmap, w);
+        }
+    }
+} // end UDFUpdateHBitmapRange()
+
+/*
     This routine marks space described by Mapping as Used/Freed (optionaly)
  */
 void
@@ -659,6 +722,9 @@ UDFMarkSpaceAsXXXNoProtect_(
             Map[i].extLocation = 0;
         }
 
+        // Update the hierarchical bitmap to reflect the L0 changes above
+        UDFUpdateHBitmapRange(Vcb, lba, len);
+
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
         if (lba)
             ASSERT(bit_before == UDFGetBit(Vcb->FSBM_Bitmap, lba-1));
@@ -777,6 +843,7 @@ no_free_space_err:
                 AdPrint(("newly allocated extent contains BB\n"));
                 UDFMarkSpaceAsXXXNoProtect(Vcb, 0, ExtInfo->Mapping, AS_DISCARDED); // free
                 UDFMarkBadSpaceAsUsed(Vcb, Ext.extLocation, Ext.extLength >> BSh); // bad -> bad+used
+                UDFUpdateHBitmapRange(Vcb, Ext.extLocation, Ext.extLength >> BSh);
                 // roll back
                 blen += Ext.extLength>>BSh;
                 continue;
