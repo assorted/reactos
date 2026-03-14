@@ -196,10 +196,11 @@ UDFUpdateXSpaceBitmaps(
     uint32 plen, pstart, pend;
     int8* bad_bm;
     int8* old_bm;
+    int8* old_bm_decompressed = NULL;
     int8* new_bm;
     int8* fpart_bm;
     int8* upart_bm;
-    NTSTATUS status, status2;
+    NTSTATUS status, status2, rc;
     int8* USBM=NULL;
     int8* FSBM=NULL;
     uint32 USl, FSl;
@@ -220,8 +221,23 @@ UDFUpdateXSpaceBitmaps(
 
     pstart = UDFPartStart(Vcb, RefPartNum);
     new_bm = Vcb->FSBM_Bitmap;
-    old_bm = Vcb->FSBM_OldBitmap;
     bad_bm = Vcb->BSBM_Bitmap;
+
+    // Decompress the old bitmap snapshot for use in this function
+    if (Vcb->FSBM_OldBitmap) {
+        rc = UDFDecompressBitmap(Vcb->FSBM_OldBitmap,
+                                 Vcb->FSBM_OldBitmapCompressedSize,
+                                 Vcb->FSBM_ByteCount,
+                                 &old_bm_decompressed);
+        if (!NT_SUCCESS(rc)) {
+            UDFPrint(("UDFUpdateXSpaceBitmaps: failed to decompress old bitmap 0x%08X\n", rc));
+            old_bm = NULL;
+        } else {
+            old_bm = old_bm_decompressed;
+        }
+    } else {
+        old_bm = NULL;
+    }
 
     if ((status  == STATUS_INSUFFICIENT_RESOURCES) ||
        (status2 == STATUS_INSUFFICIENT_RESOURCES)) {
@@ -262,7 +278,7 @@ UDFUpdateXSpaceBitmaps(
         }
         j=0;
         for(i=pstart; i<pend; i+=d) {
-            if (UDFGetUsedBit(old_bm, i) && UDFGetFreeBit(new_bm, i)) {
+            if (old_bm && UDFGetUsedBit(old_bm, i) && UDFGetFreeBit(new_bm, i)) {
                 // sector was deallocated during last session
                 if (USBM) UDFSetFreeBit(upart_bm, j);
                 if (FSBM) UDFSetFreeBit(fpart_bm, j);
@@ -286,6 +302,10 @@ UDFUpdateXSpaceBitmaps(
         } else {
             status2 = status;
         }
+    }
+
+    if (old_bm_decompressed) {
+        DbgFreePool(old_bm_decompressed);
     }
 
     if (!NT_SUCCESS(status))
@@ -967,10 +987,29 @@ UDFUmount__(
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
     // check if we should update BM
-    if (Vcb->FSBM_ByteCount == RtlCompareMemory(Vcb->FSBM_Bitmap, Vcb->FSBM_OldBitmap, Vcb->FSBM_ByteCount)) {
-        flags &= ~1;
-    } else {
-        flags |= 1;
+    {
+        int8* old_bm_decompressed = NULL;
+        NTSTATUS decompStatus;
+        if (Vcb->FSBM_OldBitmap) {
+            decompStatus = UDFDecompressBitmap(Vcb->FSBM_OldBitmap,
+                                               Vcb->FSBM_OldBitmapCompressedSize,
+                                               Vcb->FSBM_ByteCount,
+                                               &old_bm_decompressed);
+        } else {
+            decompStatus = STATUS_NOT_FOUND;
+        }
+        if (NT_SUCCESS(decompStatus)) {
+            if (Vcb->FSBM_ByteCount == RtlCompareMemory(Vcb->FSBM_Bitmap, old_bm_decompressed, Vcb->FSBM_ByteCount)) {
+                flags &= ~1;
+            } else {
+                flags |= 1;
+            }
+            DbgFreePool(old_bm_decompressed);
+        } else {
+            // If we can't decompress, conservatively assume the bitmap changed
+            UDFPrint(("UDFUmount__: failed to decompress old bitmap snapshot 0x%08X; assuming changed\n", decompStatus));
+            flags |= 1;
+        }
     }
 
 #ifdef UDF_DBG
@@ -988,8 +1027,24 @@ UDFUmount__(
         UDFUpdateLogicalVolInt(IrpContext, Vcb, TRUE);
     }
 
-    if (flags & 1)
-        RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
+    if (flags & 1) {
+        // Re-compress the updated bitmap as the new old-bitmap snapshot.
+        // On failure the old snapshot is retained, causing the next flush
+        // to treat the bitmap as changed (safe but conservative).
+        PCHAR newCompressed = NULL;
+        ULONG newCompressedSize = 0;
+        NTSTATUS compStatus = UDFCompressBitmap(Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount,
+                                                &newCompressed, &newCompressedSize);
+        if (NT_SUCCESS(compStatus)) {
+            if (Vcb->FSBM_OldBitmap) {
+                DbgFreePool(Vcb->FSBM_OldBitmap);
+            }
+            Vcb->FSBM_OldBitmap = newCompressed;
+            Vcb->FSBM_OldBitmapCompressedSize = newCompressedSize;
+        } else {
+            UDFPrint(("UDFUmount__: failed to compress updated bitmap 0x%08X; retaining old snapshot\n", compStatus));
+        }
+    }
 
 //skip_update_bitmap:
 
@@ -2964,9 +3019,10 @@ UDFGetDiskInfoAndVerify(
 
         UDFLoadFileset(Vcb,FileSetDesc, &(Vcb->RootLbAddr), &(Vcb->SysStreamLbAddr));
 
-        Vcb->FSBM_OldBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
-        if (!(Vcb->FSBM_OldBitmap)) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-        RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
+        Vcb->FSBM_OldBitmapCompressedSize = 0;
+        RC = UDFCompressBitmap(Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount,
+                               &Vcb->FSBM_OldBitmap, &Vcb->FSBM_OldBitmapCompressedSize);
+        if (!NT_SUCCESS(RC)) try_return(RC);
 
 try_exit:   NOTHING;
     } _SEH2_FINALLY {

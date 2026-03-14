@@ -1457,4 +1457,20 @@ UDFCheckArea(
     IN uint32 BCount
     );
 
+NTSTATUS
+UDFCompressBitmap(
+    IN PCHAR  UncompressedData,
+    IN ULONG  UncompressedSize,
+    OUT PCHAR *CompressedBuffer,
+    OUT ULONG *CompressedSize
+    );
+
+NTSTATUS
+UDFDecompressBitmap(
+    IN PCHAR  CompressedData,
+    IN ULONG  CompressedSize,
+    IN ULONG  UncompressedSize,
+    OUT PCHAR *DecompressedBuffer
+    );
+
 #endif // __UDF_STRUCT_SUPPORT_H__

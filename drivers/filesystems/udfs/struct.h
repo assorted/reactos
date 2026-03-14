@@ -547,7 +547,8 @@ struct VCB {
     // other - owner's FE location
 #endif //UDF_TRACK_ONDISK_ALLOCATION_OWNERS
 
-    PCHAR           FSBM_OldBitmap;  // 0 - free, 1 - used
+    PCHAR           FSBM_OldBitmap;           // 0 - free, 1 - used (compressed storage)
+    ULONG           FSBM_OldBitmapCompressedSize; // size of compressed FSBM_OldBitmap data (0 if uncompressed)
     ULONG           BitmapModified;
     PCHAR           BSBM_Bitmap;     // 0 - normal, 1 - bad-block
 

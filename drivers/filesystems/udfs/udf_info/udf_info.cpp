@@ -5287,3 +5287,135 @@ UDFPretendFileDeleted__(
     }
     return STATUS_SUCCESS;
 } // end UDFPretendFileDeleted__()
+
+/*
+    Compress a bitmap buffer using RtlCompressBuffer (LZNT1).
+    On success, *CompressedBuffer is allocated from NonPagedPool and
+    *CompressedSize is set to the number of bytes written.
+    The caller is responsible for freeing the buffer with DbgFreePool.
+    Returns STATUS_SUCCESS on success, or an error status.
+    Falls back to returning the uncompressed data if the result is larger.
+ */
+NTSTATUS
+UDFCompressBitmap(
+    IN PCHAR  UncompressedData,
+    IN ULONG  UncompressedSize,
+    OUT PCHAR *CompressedBuffer,
+    OUT ULONG *CompressedSize
+    )
+{
+    NTSTATUS status;
+    ULONG workSpaceSize, fragWorkSpaceSize;
+    PVOID workSpace = NULL;
+    PCHAR compBuf = NULL;
+    PCHAR tightBuf = NULL;
+    ULONG finalSize = 0;
+
+    *CompressedBuffer = NULL;
+    *CompressedSize = 0;
+
+    status = RtlGetCompressionWorkSpaceSize(
+        COMPRESSION_FORMAT_LZNT1 | COMPRESSION_ENGINE_STANDARD,
+        &workSpaceSize,
+        &fragWorkSpaceSize);
+    if (!NT_SUCCESS(status)) {
+        UDFPrint(("UDFCompressBitmap: RtlGetCompressionWorkSpaceSize failed 0x%08X\n", status));
+        return status;
+    }
+
+    workSpace = DbgAllocatePool(NonPagedPool, workSpaceSize);
+    if (!workSpace) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    // Allocate a worst-case-sized buffer for the compressed output
+    compBuf = (PCHAR)DbgAllocatePool(NonPagedPool, UncompressedSize);
+    if (!compBuf) {
+        DbgFreePool(workSpace);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    status = RtlCompressBuffer(
+        COMPRESSION_FORMAT_LZNT1 | COMPRESSION_ENGINE_STANDARD,
+        (PUCHAR)UncompressedData,
+        UncompressedSize,
+        (PUCHAR)compBuf,
+        UncompressedSize,
+        4096,
+        &finalSize,
+        workSpace);
+
+    DbgFreePool(workSpace);
+
+    if (!NT_SUCCESS(status) || finalSize >= UncompressedSize) {
+        // Compression didn't help or failed; store uncompressed copy in the
+        // existing buffer to avoid a free/allocate cycle
+        RtlCopyMemory(compBuf, UncompressedData, UncompressedSize);
+        *CompressedBuffer = compBuf;
+        *CompressedSize = 0; // 0 signals "stored uncompressed"
+        return STATUS_SUCCESS;
+    }
+
+    // Compression succeeded: allocate a tighter buffer to avoid wasting memory
+    tightBuf = (PCHAR)DbgAllocatePool(NonPagedPool, finalSize);
+    if (tightBuf) {
+        RtlCopyMemory(tightBuf, compBuf, finalSize);
+        DbgFreePool(compBuf);
+        *CompressedBuffer = tightBuf;
+    } else {
+        // Fall back to the over-sized buffer
+        *CompressedBuffer = compBuf;
+    }
+    *CompressedSize = finalSize;
+    return STATUS_SUCCESS;
+} // end UDFCompressBitmap()
+
+/*
+    Decompress a bitmap buffer previously compressed with UDFCompressBitmap.
+    If CompressedSize is 0, the buffer is treated as uncompressed and simply
+    copied.  On success, *DecompressedBuffer is allocated from NonPagedPool.
+    The caller is responsible for freeing it with DbgFreePool.
+ */
+NTSTATUS
+UDFDecompressBitmap(
+    IN PCHAR  CompressedData,
+    IN ULONG  CompressedSize,
+    IN ULONG  UncompressedSize,
+    OUT PCHAR *DecompressedBuffer
+    )
+{
+    NTSTATUS status;
+    PCHAR buf;
+    ULONG finalSize = 0;
+
+    *DecompressedBuffer = NULL;
+
+    buf = (PCHAR)DbgAllocatePool(NonPagedPool, UncompressedSize);
+    if (!buf) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    if (CompressedSize == 0) {
+        // Data was stored uncompressed
+        RtlCopyMemory(buf, CompressedData, UncompressedSize);
+        *DecompressedBuffer = buf;
+        return STATUS_SUCCESS;
+    }
+
+    status = RtlDecompressBuffer(
+        COMPRESSION_FORMAT_LZNT1,
+        (PUCHAR)buf,
+        UncompressedSize,
+        (PUCHAR)CompressedData,
+        CompressedSize,
+        &finalSize);
+
+    if (!NT_SUCCESS(status)) {
+        UDFPrint(("UDFDecompressBitmap: RtlDecompressBuffer failed 0x%08X\n", status));
+        DbgFreePool(buf);
+        return status;
+    }
+
+    *DecompressedBuffer = buf;
+    return STATUS_SUCCESS;
+} // end UDFDecompressBitmap()
