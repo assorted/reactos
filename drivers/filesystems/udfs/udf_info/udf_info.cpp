@@ -5348,8 +5348,8 @@ UDFCompressBitmap(
     DbgFreePool(workSpace);
 
     if (!NT_SUCCESS(status) || finalSize >= UncompressedSize) {
-        // Compression didn't help or failed; store uncompressed copy in the
-        // existing buffer to avoid a free/allocate cycle
+        // Compression didn't help (result >= input) or failed.
+        // Store a verbatim copy; CompressedSize = 0 signals "uncompressed".
         RtlCopyMemory(compBuf, UncompressedData, UncompressedSize);
         *CompressedBuffer = compBuf;
         *CompressedSize = 0; // 0 signals "stored uncompressed"
@@ -5590,6 +5590,10 @@ UDFCBMPinChunk(
                 cb->Chunks[chunkIdx].CompressedSize,
                 &finalSize);
         if (!NT_SUCCESS(st)) {
+            /* Zeroing marks all sectors in this chunk as USED (bit=0), which
+             * prevents allocations from an unreadable chunk and is safer than
+             * returning an error and leaving the hot buffer in an undefined
+             * state. */
             UDFPrint(("UDFCBMPinChunk: decompress failed 0x%08X, zeroing chunk %u\n",
                       st, chunkIdx));
             RtlZeroMemory(cb->HotData, UDF_FSBM_CHUNK_BYTES);
@@ -5865,14 +5869,25 @@ UDFCBMGetFlatBuf(
         } else if (cb->Chunks[ci].CompressedSize == 0) {
             RtlCopyMemory(flat + start, cb->Chunks[ci].CompressedData, bytes);
         } else {
-            /* Decompress into the hot buffer, then copy the valid bytes */
+            /* Decompress into the hot buffer, then copy the valid bytes.
+             * On failure, free the partial flat buffer and return NULL so
+             * the caller knows it cannot safely use the result. */
+            NTSTATUS decompSt;
             finalSize = 0;
-            RtlDecompressBuffer(
+            decompSt = RtlDecompressBuffer(
                 COMPRESSION_FORMAT_LZNT1,
                 (PUCHAR)cb->HotData, UDF_FSBM_CHUNK_BYTES,
                 (PUCHAR)cb->Chunks[ci].CompressedData,
                 cb->Chunks[ci].CompressedSize,
                 &finalSize);
+            if (!NT_SUCCESS(decompSt)) {
+                UDFPrint(("UDFCBMGetFlatBuf: decompress chunk %u failed 0x%08X\n",
+                          ci, decompSt));
+                DbgFreePool(flat);
+                cb->HotIdx   = UDF_FSBM_NO_HOT_CHUNK;
+                cb->HotDirty = FALSE;
+                return NULL;
+            }
             RtlCopyMemory(flat + start, cb->HotData, bytes);
         }
     }

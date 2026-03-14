@@ -229,7 +229,8 @@ UDFUpdateXSpaceBitmaps(
                                  Vcb->FSBM_ByteCount,
                                  &old_bm_decompressed);
         if (!NT_SUCCESS(rc)) {
-            UDFPrint(("UDFUpdateXSpaceBitmaps: failed to decompress old bitmap 0x%08X\n", rc));
+            UDFPrint(("UDFUpdateXSpaceBitmaps: failed to decompress old bitmap 0x%08X; "
+                      "proceeding without cross-session change detection\n", rc));
             old_bm = NULL;
         } else {
             old_bm = old_bm_decompressed;
@@ -1005,6 +1006,8 @@ UDFUmount__(
                 decompStatus = STATUS_NOT_FOUND;
             }
             if (NT_SUCCESS(decompStatus)) {
+                /* RtlCompareMemory returns the number of matching bytes;
+                 * equality means every byte matched → bitmap unchanged. */
                 if (Vcb->FSBM_ByteCount == RtlCompareMemory(current_flat, old_bm_decompressed, Vcb->FSBM_ByteCount)) {
                     flags &= ~1;
                 } else {
