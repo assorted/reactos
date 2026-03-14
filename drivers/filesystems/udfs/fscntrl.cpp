@@ -664,9 +664,9 @@ UDFCleanupVCB(
     MyFreeMemoryAndPointer(Vcb->Vat);
     MyFreeMemoryAndPointer(Vcb->SparingTable);
 
-    if (Vcb->FSBM_Bitmap) {
-        DbgFreePool(Vcb->FSBM_Bitmap);
-        Vcb->FSBM_Bitmap = NULL;
+    if (Vcb->FSBM_Chunks) {
+        UDFCBMDestroy(Vcb->FSBM_Chunks);
+        Vcb->FSBM_Chunks = NULL;
     }
 
     if (Vcb->BSBM_Bitmap) {
@@ -1264,7 +1264,6 @@ UDFGetVolumeBitmap(
     LARGE_INTEGER StartingLcn;
     PVOLUME_BITMAP_BUFFER OutputBuffer;
     ULONG i, lim;
-    PULONG FSBM;
     BOOLEAN VcbAcquired = FALSE;
 
     ASSERT_VCB(Vcb);
@@ -1367,13 +1366,12 @@ UDFGetVolumeBitmap(
 
         RtlZeroMemory( &OutputBuffer->Buffer[0], BytesToCopy );
         lim = BytesToCopy * 8;
-        FSBM = (PULONG)(Vcb->FSBM_Bitmap);
 
 //        Dest = (PULONG)(&OutputBuffer->Buffer[0]);
 
         for(i=StartingCluster & ~7; i<lim; i++) {
-            if (UDFGetFreeBit(FSBM, i << Vcb->SectorShift))
-                UDFSetFreeBit(FSBM, i);
+            if (UDFCBMGetBit(Vcb->FSBM_Chunks, i << Vcb->SectorShift))
+                UDFCBMSetBit(Vcb->FSBM_Chunks, i);
         }
 
         Irp->IoStatus.Information = FIELD_OFFSET(VOLUME_BITMAP_BUFFER, Buffer) + BytesToCopy;

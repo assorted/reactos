@@ -2393,8 +2393,8 @@ UDFResizeExtent(
                     // how many sectors we should add
                     req_s = lim - s;
                     ASSERT(req_s);
-                    if ((lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, lba)) {
-                        s += UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s));
+                    if ((lba < pe) && UDFCBMGetBit(Vcb->FSBM_Chunks, lba)) {
+                        s += UDFCBMGetLen(Vcb->FSBM_Chunks, lba, min(pe, lba+req_s));
                     }
 /*                    for(s1=lba; (s<lim) && (s1<pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, s1); s1++) {
                         s++;
@@ -2465,8 +2465,8 @@ UDFResizeExtent(
 
                         UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
                         //ASSERT(req_s);
-                        if ((lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, lba)) {
-                            s += (d = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s)));
+                        if ((lba < pe) && UDFCBMGetBit(Vcb->FSBM_Chunks, lba)) {
+                            s += (d = UDFCBMGetLen(Vcb->FSBM_Chunks, lba, min(pe, lba+req_s)));
                         }
     /*                    for(s1=lba; (s<lim) && (s1<pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, s1); s1++) {
                             s++;

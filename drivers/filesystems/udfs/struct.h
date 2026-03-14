@@ -346,6 +346,35 @@ enum VCB_CONDITION {
     VcbDismountInProgress
 };
 
+/* ---------- Chunked compressed Free-Space Bitmap ----------------------------- */
+
+/* Uncompressed size of one chunk: 64 KiB covers 524,288 LBA bits */
+#define UDF_FSBM_CHUNK_BYTES    ((ULONG)(64 * 1024))
+#define UDF_FSBM_CHUNK_BITS     (UDF_FSBM_CHUNK_BYTES * 8)
+
+/* Sentinel meaning no chunk is currently decompressed */
+#define UDF_FSBM_NO_HOT_CHUNK   ((ULONG)~0UL)
+
+/* Descriptor for one compressed chunk */
+typedef struct _UDF_FSBM_CHUNK {
+    PCHAR CompressedData; /* NULL = all-zero (all sectors USED, never touched) */
+    ULONG CompressedSize; /* 0 = verbatim 64 KiB copy; >0 = LZNT1 byte count  */
+} UDF_FSBM_CHUNK, *PUDF_FSBM_CHUNK;
+
+/* Chunked compressed Free-Space Bitmap header */
+typedef struct _UDF_CHUNKED_FSBM {
+    ULONG           ChunkCount; /* number of 64 KiB chunks                     */
+    ULONG           BitCount;   /* total LBA count (= FSBM_BitCount)            */
+    ULONG           ByteCount;  /* = (BitCount + 7) / 8  (= FSBM_ByteCount)    */
+    ULONG           HotIdx;     /* UDF_FSBM_NO_HOT_CHUNK = nothing pinned       */
+    BOOLEAN         HotDirty;   /* hot chunk has been modified since last flush  */
+    UCHAR           Pad[3];
+    PCHAR           HotData;    /* 64 KiB decompressed scratch (always live)    */
+    PUDF_FSBM_CHUNK Chunks;     /* [ChunkCount] descriptor array                */
+} UDF_CHUNKED_FSBM, *PUDF_CHUNKED_FSBM;
+
+/* ----------------------------------------------------------------------------- */
+
 struct VCB {
 
     UDFIdentifier NodeIdentifier;
@@ -540,7 +569,7 @@ struct VCB {
     ULONG           FSBM_ByteCount;
     // the following 2 fields are equal to NTIFS's RTL_BITMAP structure
     ULONG           FSBM_BitCount;
-    PCHAR           FSBM_Bitmap;     // 0 - free, 1 - used
+    PUDF_CHUNKED_FSBM FSBM_Chunks;   // chunked compressed free-space bitmap
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
     PULONG          FSBM_Bitmap_owners; // 0 - free
     // -1 - used by unknown

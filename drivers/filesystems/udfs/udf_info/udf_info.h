@@ -1473,4 +1473,23 @@ UDFDecompressBitmap(
     OUT PCHAR *DecompressedBuffer
     );
 
+/* --- Chunked Compressed Free-Space Bitmap (CBM) API ------------------------- */
+
+PUDF_CHUNKED_FSBM UDFCBMCreate(IN ULONG BitCount);
+VOID              UDFCBMDestroy(IN PUDF_CHUNKED_FSBM cb);
+NTSTATUS          UDFCBMFlushHot(IN PUDF_CHUNKED_FSBM cb);
+NTSTATUS          UDFCBMPinChunk(IN PUDF_CHUNKED_FSBM cb, IN ULONG chunkIdx);
+BOOLEAN           UDFCBMGetBit(IN PUDF_CHUNKED_FSBM cb, IN ULONG bit);
+VOID              UDFCBMSetBit(IN PUDF_CHUNKED_FSBM cb, IN ULONG bit);
+VOID              UDFCBMClrBit(IN PUDF_CHUNKED_FSBM cb, IN ULONG bit);
+VOID              UDFCBMSetBitRange(IN PUDF_CHUNKED_FSBM cb, IN ULONG startBit, IN ULONG count);
+VOID              UDFCBMClrBitRange(IN PUDF_CHUNKED_FSBM cb, IN ULONG startBit, IN ULONG count);
+SIZE_T            UDFCBMGetLen(IN PUDF_CHUNKED_FSBM cb, IN ULONG start, IN ULONG limit);
+ULONG             UDFCBMCountFreeBits(IN PUDF_CHUNKED_FSBM cb, IN ULONG startBit, IN ULONG endBit);
+PCHAR             UDFCBMGetFlatBuf(IN PUDF_CHUNKED_FSBM cb);
+PUDF_CHUNKED_FSBM UDFCBMFromFlat(IN PCHAR flat, IN ULONG byteCount);
+VOID              UDFCBMApplyBSBM(IN PUDF_CHUNKED_FSBM cb, IN PCHAR bsbm, IN ULONG lba, IN ULONG len);
+
+/* ----------------------------------------------------------------------------- */
+
 #endif // __UDF_STRUCT_SUPPORT_H__

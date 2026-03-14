@@ -2835,7 +2835,7 @@ CrF__2:
 
 #ifdef UDF_CHECK_DISK_ALLOCATION
         if (  /*FileInfo->Fcb &&*/
-             UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+             UDFCBMGetBit(Vcb->FSBM_Chunks, FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
 
             if (!FileInfo->FileIdent ||
                !(FileInfo->FileIdent->fileCharacteristics & FILE_DELETED)) {
@@ -3044,7 +3044,7 @@ UDFCloseFile__(
     }
 #ifdef UDF_CHECK_DISK_ALLOCATION
     if (  FileInfo->Fcb &&
-         UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+         UDFCBMGetBit(Vcb->FSBM_Chunks, FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
 
         //ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
         if (UDFIsAStreamDir(FileInfo)) {
@@ -3071,7 +3071,7 @@ UDFCloseFile__(
         }
     } else {
         if (!FileInfo->Dloc->FELoc.Mapping[0].extLocation ||
-            UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+            UDFCBMGetBit(Vcb->FSBM_Chunks, FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
             UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->DataLoc.Mapping, AS_FREE); // check if free
         } else {
             UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->DataLoc.Mapping, AS_USED); // check if used
@@ -3138,7 +3138,7 @@ UDFCloseFile__(
 //    ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     if ((FileInfo->Dloc->FileEntry->descVersion != 2) &&
        (FileInfo->Dloc->FileEntry->descVersion != 3)) {
-        ASSERT(UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation));
+        ASSERT(UDFCBMGetBit(Vcb->FSBM_Chunks, FileInfo->Dloc->FELoc.Mapping[0].extLocation));
     }
 #endif // UDF_DBG
     return STATUS_SUCCESS;
@@ -3737,7 +3737,7 @@ err_vat_15:
         // sync VAT and FSBM
         for(i=0; i<len; i++) {
             if (Vcb->Vat[i] == UDF_VAT_FREE_ENTRY) {
-                UDFSetFreeBit(Vcb->FSBM_Bitmap, root+i);
+                UDFCBMSetBit(Vcb->FSBM_Chunks, root+i);
             }
         }
         len = Vcb->LastPossibleLBA;
@@ -3746,12 +3746,12 @@ err_vat_15:
             for (j = 0; (j < PACKETSIZE_UDF) && (i < len); j++, i++)
             {
                 UDFPrint(("udf_info:FSBM_Bitmap Set Free: %x\n", root + i));
-                UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
+                UDFCBMSetBit(Vcb->FSBM_Chunks, i);
             }
             for (j = 0; (j < 7) && (i < len); j++, i++)
             {
                 UDFPrint(("udf_info:FSBM_Bitmap Set Used: %x\n", root + i));
-                UDFSetUsedBit(Vcb->FSBM_Bitmap, i);
+                UDFCBMClrBit(Vcb->FSBM_Chunks, i);
             }
         }
         DbgFreePool(VatOldData);
@@ -3937,7 +3937,7 @@ retry_flush_FE:
     }
 /*    if (FileInfo->Fcb &&
        ((FileInfo->Dloc->FELoc.Mapping[0].extLocation > Vcb->LastLBA) ||
-        UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) ) {
+        UDFCBMGetBit(Vcb->FSBM_Chunks, FileInfo->Dloc->FELoc.Mapping[0].extLocation)) ) {
         BrutePoint();
     }*/
 /*    if (FileInfo->Dloc->FELoc.Mapping[0].extLocation) {
@@ -4146,7 +4146,7 @@ UDFFlushFile__(
     }
 #ifdef UDF_CHECK_DISK_ALLOCATION
     if ( FileInfo->Fcb &&
-        UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+        UDFCBMGetBit(Vcb->FSBM_Chunks, FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
 
         if (UDFIsAStreamDir(FileInfo)) {
             if (!UDFIsSDirDeleted(FileInfo)) {
@@ -4867,7 +4867,7 @@ UDFRecordVAT(
     len = min(UDFPartLen(Vcb, PartNum), Vcb->FSBM_BitCount - root);
     len = min(Vcb->VatCount, len);
     for(i=0; i<len; i++) {
-        if (UDFGetFreeBit(Vcb->FSBM_Bitmap, root+i))
+        if (UDFCBMGetBit(Vcb->FSBM_Chunks, root+i))
             Vat[i] = UDF_VAT_FREE_ENTRY;
     }
     // Ok, now we shall construct new VAT image...
@@ -5419,3 +5419,553 @@ UDFDecompressBitmap(
     *DecompressedBuffer = buf;
     return STATUS_SUCCESS;
 } // end UDFDecompressBitmap()
+
+/*
+ * Chunked Compressed Free-Space Bitmap (CBM) implementation.
+ *
+ * The Free-Space Bitmap maps every LBA on the volume to one bit:
+ *   1 = free, 0 = used.
+ * For a 256 GiB volume with 2 KiB sectors the flat bitmap is 16 MiB.
+ * The chunked scheme stores the bitmap as an array of LZNT1-compressed
+ * 64 KiB chunks so that only a few MiB of NonPagedPool are needed at rest.
+ * A single 64 KiB "hot" buffer is kept decompressed for bit operations.
+ * Accessing a different chunk flushes (re-compresses) the current hot
+ * chunk and decompresses the requested one.
+ */
+
+/*
+ * Allocate and initialise a new chunked bitmap for 'BitCount' LBAs.
+ * All chunks start as NULL (all-zero = all sectors marked USED).
+ * Returns NULL on allocation failure.
+ */
+PUDF_CHUNKED_FSBM
+UDFCBMCreate(
+    IN ULONG BitCount
+    )
+{
+    PUDF_CHUNKED_FSBM cb;
+    ULONG chunkCount;
+
+    if (!BitCount)
+        return NULL;
+
+    chunkCount = (BitCount + UDF_FSBM_CHUNK_BITS - 1) / UDF_FSBM_CHUNK_BITS;
+
+    cb = (PUDF_CHUNKED_FSBM)DbgAllocatePool(NonPagedPool, sizeof(UDF_CHUNKED_FSBM));
+    if (!cb)
+        return NULL;
+
+    RtlZeroMemory(cb, sizeof(UDF_CHUNKED_FSBM));
+
+    cb->HotData = (PCHAR)DbgAllocatePool(NonPagedPool, UDF_FSBM_CHUNK_BYTES);
+    if (!cb->HotData) {
+        DbgFreePool(cb);
+        return NULL;
+    }
+    RtlZeroMemory(cb->HotData, UDF_FSBM_CHUNK_BYTES);
+
+    cb->Chunks = (PUDF_FSBM_CHUNK)DbgAllocatePool(NonPagedPool,
+                     chunkCount * sizeof(UDF_FSBM_CHUNK));
+    if (!cb->Chunks) {
+        DbgFreePool(cb->HotData);
+        DbgFreePool(cb);
+        return NULL;
+    }
+    RtlZeroMemory(cb->Chunks, chunkCount * sizeof(UDF_FSBM_CHUNK));
+
+    cb->ChunkCount = chunkCount;
+    cb->BitCount   = BitCount;
+    cb->ByteCount  = (BitCount + 7) / 8;
+    cb->HotIdx     = UDF_FSBM_NO_HOT_CHUNK;
+    cb->HotDirty   = FALSE;
+
+    return cb;
+} // end UDFCBMCreate()
+
+/*
+ * Free all resources owned by a chunked bitmap.
+ */
+VOID
+UDFCBMDestroy(
+    IN PUDF_CHUNKED_FSBM cb
+    )
+{
+    ULONG i;
+
+    if (!cb)
+        return;
+
+    if (cb->Chunks) {
+        for (i = 0; i < cb->ChunkCount; i++) {
+            if (cb->Chunks[i].CompressedData) {
+                DbgFreePool(cb->Chunks[i].CompressedData);
+                cb->Chunks[i].CompressedData = NULL;
+            }
+        }
+        DbgFreePool(cb->Chunks);
+        cb->Chunks = NULL;
+    }
+
+    if (cb->HotData) {
+        DbgFreePool(cb->HotData);
+        cb->HotData = NULL;
+    }
+
+    DbgFreePool(cb);
+} // end UDFCBMDestroy()
+
+/*
+ * If the hot chunk is dirty, recompress it and store it back.
+ */
+NTSTATUS
+UDFCBMFlushHot(
+    IN PUDF_CHUNKED_FSBM cb
+    )
+{
+    PCHAR newData = NULL;
+    ULONG newSize = 0;
+    NTSTATUS st;
+
+    if (!cb || !cb->HotDirty || cb->HotIdx == UDF_FSBM_NO_HOT_CHUNK)
+        return STATUS_SUCCESS;
+
+    st = UDFCompressBitmap(cb->HotData, UDF_FSBM_CHUNK_BYTES, &newData, &newSize);
+    if (!NT_SUCCESS(st))
+        return st;
+
+    if (cb->Chunks[cb->HotIdx].CompressedData)
+        DbgFreePool(cb->Chunks[cb->HotIdx].CompressedData);
+    cb->Chunks[cb->HotIdx].CompressedData = newData;
+    cb->Chunks[cb->HotIdx].CompressedSize = newSize;
+    cb->HotDirty = FALSE;
+    return STATUS_SUCCESS;
+} // end UDFCBMFlushHot()
+
+/*
+ * Ensure chunk 'chunkIdx' is decompressed in the hot buffer.
+ * Flushes the current hot chunk first if it is dirty.
+ */
+NTSTATUS
+UDFCBMPinChunk(
+    IN PUDF_CHUNKED_FSBM cb,
+    IN ULONG chunkIdx
+    )
+{
+    NTSTATUS st;
+    ULONG    finalSize;
+    ULONG    chunkBytes;
+
+    if (!cb || chunkIdx >= cb->ChunkCount)
+        return STATUS_INVALID_PARAMETER;
+
+    if (cb->HotIdx == chunkIdx)
+        return STATUS_SUCCESS;
+
+    /* Flush the current hot chunk (if any and if dirty) */
+    st = UDFCBMFlushHot(cb);
+    if (!NT_SUCCESS(st))
+        return st;
+
+    /* How many bytes are in this chunk (last chunk may be partial) */
+    chunkBytes = min(UDF_FSBM_CHUNK_BYTES,
+                     cb->ByteCount - chunkIdx * UDF_FSBM_CHUNK_BYTES);
+
+    /* Load the chunk into HotData */
+    if (cb->Chunks[chunkIdx].CompressedData == NULL) {
+        /* All-zero chunk: never been written, every sector is USED */
+        RtlZeroMemory(cb->HotData, UDF_FSBM_CHUNK_BYTES);
+    } else if (cb->Chunks[chunkIdx].CompressedSize == 0) {
+        /* Stored verbatim (uncompressed) */
+        RtlCopyMemory(cb->HotData, cb->Chunks[chunkIdx].CompressedData, chunkBytes);
+        if (chunkBytes < UDF_FSBM_CHUNK_BYTES)
+            RtlZeroMemory(cb->HotData + chunkBytes,
+                          UDF_FSBM_CHUNK_BYTES - chunkBytes);
+    } else {
+        /* LZNT1 compressed */
+        finalSize = 0;
+        st = RtlDecompressBuffer(
+                COMPRESSION_FORMAT_LZNT1,
+                (PUCHAR)cb->HotData, UDF_FSBM_CHUNK_BYTES,
+                (PUCHAR)cb->Chunks[chunkIdx].CompressedData,
+                cb->Chunks[chunkIdx].CompressedSize,
+                &finalSize);
+        if (!NT_SUCCESS(st)) {
+            UDFPrint(("UDFCBMPinChunk: decompress failed 0x%08X, zeroing chunk %u\n",
+                      st, chunkIdx));
+            RtlZeroMemory(cb->HotData, UDF_FSBM_CHUNK_BYTES);
+        } else if (finalSize < UDF_FSBM_CHUNK_BYTES) {
+            RtlZeroMemory(cb->HotData + finalSize,
+                          UDF_FSBM_CHUNK_BYTES - finalSize);
+        }
+    }
+
+    cb->HotIdx   = chunkIdx;
+    cb->HotDirty = FALSE;
+    return STATUS_SUCCESS;
+} // end UDFCBMPinChunk()
+
+/*
+ * Read a single bit.  TRUE = 1 = free, FALSE = 0 = used.
+ */
+BOOLEAN
+UDFCBMGetBit(
+    IN PUDF_CHUNKED_FSBM cb,
+    IN ULONG bit
+    )
+{
+    ULONG chunkIdx   = bit / UDF_FSBM_CHUNK_BITS;
+    ULONG bitInChunk = bit % UDF_FSBM_CHUNK_BITS;
+
+    if (!cb || chunkIdx >= cb->ChunkCount)
+        return FALSE;
+
+    if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
+        return FALSE;
+
+    return UDFGetBit((uint32*)cb->HotData, bitInChunk);
+} // end UDFCBMGetBit()
+
+/*
+ * Set a single bit to 1 (mark LBA as free).
+ */
+VOID
+UDFCBMSetBit(
+    IN PUDF_CHUNKED_FSBM cb,
+    IN ULONG bit
+    )
+{
+    ULONG chunkIdx   = bit / UDF_FSBM_CHUNK_BITS;
+    ULONG bitInChunk = bit % UDF_FSBM_CHUNK_BITS;
+
+    if (!cb || chunkIdx >= cb->ChunkCount)
+        return;
+
+    if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
+        return;
+
+    UDFSetBit((uint32*)cb->HotData, bitInChunk);
+    cb->HotDirty = TRUE;
+} // end UDFCBMSetBit()
+
+/*
+ * Clear a single bit to 0 (mark LBA as used).
+ */
+VOID
+UDFCBMClrBit(
+    IN PUDF_CHUNKED_FSBM cb,
+    IN ULONG bit
+    )
+{
+    ULONG chunkIdx   = bit / UDF_FSBM_CHUNK_BITS;
+    ULONG bitInChunk = bit % UDF_FSBM_CHUNK_BITS;
+
+    if (!cb || chunkIdx >= cb->ChunkCount)
+        return;
+
+    if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
+        return;
+
+    UDFClrBit((uint32*)cb->HotData, bitInChunk);
+    cb->HotDirty = TRUE;
+} // end UDFCBMClrBit()
+
+/*
+ * Set 'count' consecutive bits to 1 (free), chunk-by-chunk.
+ */
+VOID
+UDFCBMSetBitRange(
+    IN PUDF_CHUNKED_FSBM cb,
+    IN ULONG startBit,
+    IN ULONG count
+    )
+{
+    ULONG end = startBit + count;
+    ULONG bit = startBit;
+
+    if (!cb) return;
+
+    while (bit < end) {
+        ULONG chunkIdx       = bit / UDF_FSBM_CHUNK_BITS;
+        ULONG bitInChunk     = bit % UDF_FSBM_CHUNK_BITS;
+        ULONG nextChunkStart = (chunkIdx + 1) * UDF_FSBM_CHUNK_BITS;
+        ULONG bitsHere       = min(end, nextChunkStart) - bit;
+
+        if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
+            break;
+
+        UDFSetBits((uint32*)cb->HotData, bitInChunk, bitsHere);
+        cb->HotDirty = TRUE;
+        bit += bitsHere;
+    }
+} // end UDFCBMSetBitRange()
+
+/*
+ * Clear 'count' consecutive bits to 0 (used), chunk-by-chunk.
+ */
+VOID
+UDFCBMClrBitRange(
+    IN PUDF_CHUNKED_FSBM cb,
+    IN ULONG startBit,
+    IN ULONG count
+    )
+{
+    ULONG end = startBit + count;
+    ULONG bit = startBit;
+
+    if (!cb) return;
+
+    while (bit < end) {
+        ULONG chunkIdx       = bit / UDF_FSBM_CHUNK_BITS;
+        ULONG bitInChunk     = bit % UDF_FSBM_CHUNK_BITS;
+        ULONG nextChunkStart = (chunkIdx + 1) * UDF_FSBM_CHUNK_BITS;
+        ULONG bitsHere       = min(end, nextChunkStart) - bit;
+
+        if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
+            break;
+
+        UDFClrBits((uint32*)cb->HotData, bitInChunk, bitsHere);
+        cb->HotDirty = TRUE;
+        bit += bitsHere;
+    }
+} // end UDFCBMClrBitRange()
+
+/*
+ * Return the length of the run of same-value bits starting at 'start',
+ * up to (but not including) 'limit'.  Spans chunk boundaries correctly.
+ */
+SIZE_T
+UDFCBMGetLen(
+    IN PUDF_CHUNKED_FSBM cb,
+    IN ULONG start,
+    IN ULONG limit
+    )
+{
+    BOOLEAN startBit;
+    SIZE_T  len = 0;
+    ULONG   bit;
+
+    if (!cb || start >= limit)
+        return 0;
+
+    limit = min(limit, cb->BitCount);
+    bit   = start;
+
+    /* Determine value of the starting bit */
+    {
+        ULONG chunkIdx   = bit / UDF_FSBM_CHUNK_BITS;
+        ULONG bitInChunk = bit % UDF_FSBM_CHUNK_BITS;
+
+        if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
+            return 0;
+
+        startBit = UDFGetBit((uint32*)cb->HotData, bitInChunk);
+    }
+
+    /* Extend the run chunk by chunk */
+    while (bit < limit) {
+        ULONG  chunkIdx       = bit / UDF_FSBM_CHUNK_BITS;
+        ULONG  bitInChunk     = bit % UDF_FSBM_CHUNK_BITS;
+        ULONG  nextChunkStart = (chunkIdx + 1) * UDF_FSBM_CHUNK_BITS;
+        ULONG  localLimit     = min(limit, nextChunkStart) - chunkIdx * UDF_FSBM_CHUNK_BITS;
+        SIZE_T addLen;
+
+        if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
+            break;
+
+        /* If we've crossed into a new chunk, verify the run continues */
+        if (len > 0 && UDFGetBit((uint32*)cb->HotData, bitInChunk) != startBit)
+            break;
+
+        addLen = UDFGetBitmapLen((uint32*)cb->HotData, bitInChunk, localLimit);
+        len += addLen;
+        bit += (ULONG)addLen;
+
+        /* If run ended before the chunk boundary (or hit limit), stop */
+        if (bit < nextChunkStart || bit >= limit)
+            break;
+    }
+
+    return len;
+} // end UDFCBMGetLen()
+
+/*
+ * Count bits set to 1 (free) in [startBit, endBit).
+ * Uses byte-level nibble counting within each chunk.
+ */
+ULONG
+UDFCBMCountFreeBits(
+    IN PUDF_CHUNKED_FSBM cb,
+    IN ULONG startBit,
+    IN ULONG endBit
+    )
+{
+    /* Nibble lookup table: popcount of 4-bit values */
+    static const UCHAR bc[16] = {0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4};
+    ULONG count     = 0;
+    ULONG startByte, endByte;
+
+    if (!cb || startBit >= endBit)
+        return 0;
+
+    startByte = startBit / 8;
+    endByte   = min((endBit + 7) / 8, cb->ByteCount);
+
+    while (startByte < endByte) {
+        ULONG chunkIdx    = startByte / UDF_FSBM_CHUNK_BYTES;
+        ULONG byteInChunk = startByte % UDF_FSBM_CHUNK_BYTES;
+        ULONG endThisIter = min(endByte, (chunkIdx + 1) * UDF_FSBM_CHUNK_BYTES);
+        ULONG jEnd        = byteInChunk + (endThisIter - startByte);
+        ULONG j;
+
+        if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
+            break;
+
+        for (j = byteInChunk; j < jEnd; j++) {
+            UCHAR b = (UCHAR)cb->HotData[j];
+            count += bc[b & 0xF] + bc[b >> 4];
+        }
+
+        startByte = endThisIter;
+    }
+
+    return count;
+} // end UDFCBMCountFreeBits()
+
+/*
+ * Produce a flat (uncompressed) copy of the entire chunked bitmap.
+ * The caller must free the returned buffer with DbgFreePool().
+ * Returns NULL on allocation failure.
+ * The hot-chunk slot is invalidated so the scratch buffer is free for reuse.
+ */
+PCHAR
+UDFCBMGetFlatBuf(
+    IN PUDF_CHUNKED_FSBM cb
+    )
+{
+    PCHAR flat;
+    ULONG ci, start, bytes, finalSize;
+
+    if (!cb)
+        return NULL;
+
+    /* Flush any pending dirty chunk so compressed data is current */
+    if (!NT_SUCCESS(UDFCBMFlushHot(cb)))
+        return NULL;
+
+    flat = (PCHAR)DbgAllocatePool(NonPagedPool, cb->ByteCount);
+    if (!flat)
+        return NULL;
+
+    for (ci = 0; ci < cb->ChunkCount; ci++) {
+        start = ci * UDF_FSBM_CHUNK_BYTES;
+        bytes = min(UDF_FSBM_CHUNK_BYTES, cb->ByteCount - start);
+
+        if (cb->Chunks[ci].CompressedData == NULL) {
+            RtlZeroMemory(flat + start, bytes);
+        } else if (cb->Chunks[ci].CompressedSize == 0) {
+            RtlCopyMemory(flat + start, cb->Chunks[ci].CompressedData, bytes);
+        } else {
+            /* Decompress into the hot buffer, then copy the valid bytes */
+            finalSize = 0;
+            RtlDecompressBuffer(
+                COMPRESSION_FORMAT_LZNT1,
+                (PUCHAR)cb->HotData, UDF_FSBM_CHUNK_BYTES,
+                (PUCHAR)cb->Chunks[ci].CompressedData,
+                cb->Chunks[ci].CompressedSize,
+                &finalSize);
+            RtlCopyMemory(flat + start, cb->HotData, bytes);
+        }
+    }
+
+    /* Invalidate the hot slot since we used HotData as a scratch buffer */
+    cb->HotIdx   = UDF_FSBM_NO_HOT_CHUNK;
+    cb->HotDirty = FALSE;
+
+    return flat;
+} // end UDFCBMGetFlatBuf()
+
+/*
+ * Build a chunked bitmap by compressing an existing flat buffer.
+ * 'byteCount' is the number of valid bytes in 'flat'.
+ * Returns NULL on allocation failure.
+ */
+PUDF_CHUNKED_FSBM
+UDFCBMFromFlat(
+    IN PCHAR flat,
+    IN ULONG byteCount
+    )
+{
+    PUDF_CHUNKED_FSBM cb;
+    ULONG ci, start, bytes;
+
+    if (!flat || !byteCount)
+        return NULL;
+
+    cb = UDFCBMCreate(byteCount * 8);
+    if (!cb)
+        return NULL;
+
+    for (ci = 0; ci < cb->ChunkCount; ci++) {
+        start = ci * UDF_FSBM_CHUNK_BYTES;
+        bytes = min(UDF_FSBM_CHUNK_BYTES, byteCount - start);
+
+        /* Copy this slice into the hot buffer (zero-pad if partial) */
+        RtlCopyMemory(cb->HotData, flat + start, bytes);
+        if (bytes < UDF_FSBM_CHUNK_BYTES)
+            RtlZeroMemory(cb->HotData + bytes, UDF_FSBM_CHUNK_BYTES - bytes);
+
+        /* Compress and store */
+        UDFCompressBitmap(cb->HotData, UDF_FSBM_CHUNK_BYTES,
+                          &cb->Chunks[ci].CompressedData,
+                          &cb->Chunks[ci].CompressedSize);
+    }
+
+    /* Last chunk's data is still in HotData but we won't track it as hot
+     * since we don't hold the HotDirty invariant here. */
+    cb->HotIdx   = UDF_FSBM_NO_HOT_CHUNK;
+    cb->HotDirty = FALSE;
+
+    return cb;
+} // end UDFCBMFromFlat()
+
+/*
+ * Apply the bad-sector bitmap (BSBM) to the free-space bitmap (CBM).
+ * For every byte in [lba/8, (lba+len+7)/8), clear FSBM bits that are
+ * set in BSBM (marking those sectors as USED).  Operates chunk-by-chunk
+ * so each chunk switch is amortised across many bytes.
+ */
+VOID
+UDFCBMApplyBSBM(
+    IN PUDF_CHUNKED_FSBM cb,
+    IN PCHAR bsbm,
+    IN ULONG lba,
+    IN ULONG len
+    )
+{
+    ULONG startByte, endByte, j;
+
+    if (!cb || !bsbm || !len)
+        return;
+
+    startByte = lba / 8;
+    endByte   = min((lba + len + 7) / 8, cb->ByteCount);
+    j         = startByte;
+
+    while (j < endByte) {
+        ULONG chunkIdx    = j / UDF_FSBM_CHUNK_BYTES;
+        ULONG byteInChunk = j % UDF_FSBM_CHUNK_BYTES;
+        ULONG endThisIter = min(endByte, (chunkIdx + 1) * UDF_FSBM_CHUNK_BYTES);
+        ULONG k;
+
+        if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
+            break;
+
+        for (k = byteInChunk; j < endThisIter; k++, j++) {
+            UCHAR mask = (UCHAR)bsbm[j];
+            if (mask) {
+                ((PUCHAR)cb->HotData)[k] &= ~mask;
+                cb->HotDirty = TRUE;
+            }
+        }
+    }
+} // end UDFCBMApplyBSBM()

@@ -652,7 +652,7 @@ UDFIndexDirectory(
 #ifdef UDF_CHECK_DISK_ALLOCATION
         if (!(FileId->fileCharacteristics & FILE_DELETED) &&
             (UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) != LBA_OUT_OF_EXTENT) &&
-             UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) )) {
+             UDFCBMGetBit(Vcb->FSBM_Chunks, UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) )) {
 
             AdPrint(("Ref to Discarded block %x\n",UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) ));
             BrutePoint();

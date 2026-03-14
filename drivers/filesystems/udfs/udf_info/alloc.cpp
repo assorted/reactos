@@ -315,7 +315,6 @@ UDFFindMinSuitableExtent(
     )
 {
     SIZE_T i, len;
-    uint32* cur;
     SIZE_T best_lba=0;
     SIZE_T best_len=0;
     SIZE_T max_lba=0;
@@ -333,8 +332,6 @@ UDFFindMinSuitableExtent(
     if (Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift))
         Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift);
 
-    cur = (uint32*)(Vcb->FSBM_Bitmap);
-
 retry_no_align:
 
     i=SearchStart;
@@ -349,8 +346,8 @@ retry_no_align:
             if (i >= SearchLim)
                 break;
         }
-        len = UDFGetBitmapLen(cur, i, SearchLim);
-        if (UDFGetFreeBit(cur, i)) { // is the extent found free or used ?
+        len = UDFCBMGetLen(Vcb->FSBM_Chunks, i, SearchLim);
+        if (UDFCBMGetBit(Vcb->FSBM_Chunks, i)) { // is the extent found free or used ?
             // wow! it is free!
             if (len >= Length) {
                 // minimize extent length
@@ -478,7 +475,7 @@ UDFCheckSpaceAllocation_(
                     AdPrint(("USED Mapping covers block(s) beyond media @%x\n",lba+j));
                     break;
                 }
-                if (!UDFGetUsedBit(Vcb->FSBM_Bitmap, lba+j)) {
+                if (UDFCBMGetBit(Vcb->FSBM_Chunks, lba+j)) {
                     BrutePoint();
                     AdPrint(("USED Mapping covers FREE block(s) @%x\n",lba+j));
                     break;
@@ -494,7 +491,7 @@ UDFCheckSpaceAllocation_(
                     AdPrint(("USED Mapping covers block(s) beyond media @%x\n",lba+j));
                     break;
                 }
-                if (!UDFGetFreeBit(Vcb->FSBM_Bitmap, lba+j)) {
+                if (!UDFCBMGetBit(Vcb->FSBM_Chunks, lba+j)) {
                     BrutePoint();
                     AdPrint(("FREE Mapping covers USED block(s) @%x\n",lba+j));
                     break;
@@ -515,15 +512,9 @@ UDFMarkBadSpaceAsUsed(
     IN ULONG len
     )
 {
-    uint32 j;
-#define BIT_C   (sizeof(Vcb->BSBM_Bitmap[0])*8)
-    len = (lba+len+BIT_C-1)/BIT_C;
     if (Vcb->BSBM_Bitmap) {
-        for(j=lba/BIT_C; j<len; j++) {
-            Vcb->FSBM_Bitmap[j] &= ~Vcb->BSBM_Bitmap[j];
-        }
+        UDFCBMApplyBSBM(Vcb->FSBM_Chunks, Vcb->BSBM_Bitmap, lba, len);
     }
-#undef BIT_C
 } // UDFMarkBadSpaceAsUsed()
 
 /*
@@ -599,8 +590,8 @@ UDFMarkSpaceAsXXXNoProtect_(
 
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
         if (lba)
-            bit_before = UDFGetBit(Vcb->FSBM_Bitmap, lba-1);
-        bit_after = UDFGetBit(Vcb->FSBM_Bitmap, lba+len);
+            bit_before = UDFCBMGetBit(Vcb->FSBM_Chunks, lba-1);
+        bit_after = UDFCBMGetBit(Vcb->FSBM_Chunks, lba+len);
 #endif //UDF_TRACK_ONDISK_ALLOCATION
 
         // mark frag as XXX (see asUsed parameter)
@@ -609,10 +600,10 @@ UDFMarkSpaceAsXXXNoProtect_(
                 UDFSetUsedBit(Vcb->FSBM_Bitmap, lba+j);
             }*/
             ASSERT(len);
-            UDFSetUsedBits(Vcb->FSBM_Bitmap, lba, len);
+            UDFCBMClrBitRange(Vcb->FSBM_Chunks, lba, len);
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
             for(j=0;j<len;j++) {
-                ASSERT(UDFGetUsedBit(Vcb->FSBM_Bitmap, lba+j));
+                ASSERT(!UDFCBMGetBit(Vcb->FSBM_Chunks, lba+j));
             }
 #endif //UDF_TRACK_ONDISK_ALLOCATION
 
@@ -631,10 +622,10 @@ UDFMarkSpaceAsXXXNoProtect_(
                 UDFSetFreeBit(Vcb->FSBM_Bitmap, lba+j);
             }*/
             ASSERT(len);
-            UDFSetFreeBits(Vcb->FSBM_Bitmap, lba, len);
+            UDFCBMSetBitRange(Vcb->FSBM_Chunks, lba, len);
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
             for(j=0;j<len;j++) {
-                ASSERT(UDFGetFreeBit(Vcb->FSBM_Bitmap, lba+j));
+                ASSERT(UDFCBMGetBit(Vcb->FSBM_Chunks, lba+j));
             }
 #endif //UDF_TRACK_ONDISK_ALLOCATION
             if (asXXX & AS_BAD) {
@@ -661,8 +652,8 @@ UDFMarkSpaceAsXXXNoProtect_(
 
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
         if (lba)
-            ASSERT(bit_before == UDFGetBit(Vcb->FSBM_Bitmap, lba-1));
-        ASSERT(bit_after == UDFGetBit(Vcb->FSBM_Bitmap, lba+len));
+            ASSERT(bit_before == UDFCBMGetBit(Vcb->FSBM_Chunks, lba-1));
+        ASSERT(bit_after == UDFCBMGetBit(Vcb->FSBM_Chunks, lba+len));
 #endif //UDF_TRACK_ONDISK_ALLOCATION
 
         i++;
@@ -833,16 +824,9 @@ UDFGetPartFreeSpace(
     IN uint32 partNum
     )
 {
-    uint32 lim/*, len=1*/;
-    uint32 s=0;
-    uint32 j;
-    PUCHAR cur = (PUCHAR)(Vcb->FSBM_Bitmap);
-
-    lim = (UDFPartEnd(Vcb,partNum)+7)/8;
-    for(j=(UDFPartStart(Vcb,partNum)+7)/8; j<lim/* && len*/; j++) {
-        s+=bit_count_tab[cur[j]];
-    }
-    return s;
+    return UDFCBMCountFreeBits(Vcb->FSBM_Chunks,
+                               UDFPartStart(Vcb, partNum),
+                               UDFPartEnd(Vcb, partNum));
 } // end UDFGetPartFreeSpace()
 
 int64
