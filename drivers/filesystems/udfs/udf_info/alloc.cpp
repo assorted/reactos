@@ -287,6 +287,13 @@ UDFGetBitmapLen(
         j=0;
 While_3:
         i++;
+        /* Guard: Lim is the 32-bit word index of the last bit, lLim is the
+           bit-offset within that word (both derived from the original Lim>>5 /
+           Lim&31 split above).  When lLim==0, the bit-limit falls exactly on a
+           word boundary: word Lim has 0 bits to process and may lie one past the
+           end of a valid bitmap buffer — break before reading it.  When lLim>0,
+           word Lim IS the valid last (partial) word — don't break early. */
+        if (i > Lim || (i == Lim && !lLim)) break;
         a = Bitmap[i];
 
         if (i<Lim) {

@@ -5530,13 +5530,43 @@ UDFCBMFlushHot(
         return STATUS_SUCCESS;
 
     st = UDFCompressBitmap(cb->HotData, UDF_FSBM_CHUNK_BYTES, &newData, &newSize);
-    if (!NT_SUCCESS(st))
+    if (!NT_SUCCESS(st)) {
+        UDFPrint(("UDFCBMFlushHot: compress failed for chunk %u: 0x%08X\n",
+                  cb->HotIdx, st));
         return st;
+    }
 
     if (cb->Chunks[cb->HotIdx].CompressedData)
         DbgFreePool(cb->Chunks[cb->HotIdx].CompressedData);
     cb->Chunks[cb->HotIdx].CompressedData = newData;
     cb->Chunks[cb->HotIdx].CompressedSize = newSize;
+
+    /* Compute uniform-chunk fast-path hint while HotData is still live.
+     * 0x00 = all-zeros (all USED), 0x01 = all-ones (all FREE), 0x02 = mixed.
+     * Only scan the full chunk when the first word looks uniform (common case). */
+    {
+        ULONG  k;
+        ULONG *words = (ULONG *)cb->HotData;
+        ULONG  first = words[0];
+        if (first == 0 || first == 0xFFFFFFFFUL) {
+            BOOLEAN allSame = TRUE;
+            for (k = 1; k < UDF_FSBM_CHUNK_BYTES / sizeof(ULONG); k++) {
+                if (words[k] != first) { allSame = FALSE; break; }
+            }
+            cb->Chunks[cb->HotIdx].AllBits =
+                allSame ? (UCHAR)(first ? UDF_FSBM_ALLBITS_FREE : UDF_FSBM_ALLBITS_USED)
+                        : UDF_FSBM_ALLBITS_MIXED;
+        } else {
+            cb->Chunks[cb->HotIdx].AllBits = UDF_FSBM_ALLBITS_MIXED;
+        }
+    }
+#ifdef UDF_DBG
+    UDFPrint(("UDFCBMFlushHot: chunk %u: %u KB -> %u bytes AllBits=%u\n",
+              cb->HotIdx, UDF_FSBM_CHUNK_BYTES / 1024,
+              cb->Chunks[cb->HotIdx].CompressedSize,
+              (unsigned)cb->Chunks[cb->HotIdx].AllBits));
+#endif
+
     cb->HotDirty = FALSE;
     return STATUS_SUCCESS;
 } // end UDFCBMFlushHot()
@@ -5622,6 +5652,11 @@ UDFCBMGetBit(
 
     if (!cb || chunkIdx >= cb->ChunkCount)
         return FALSE;
+
+    /* Fast path: chunk is compressed and known to be uniform — no decompression. */
+    if (chunkIdx != cb->HotIdx &&
+        cb->Chunks[chunkIdx].AllBits != UDF_FSBM_ALLBITS_MIXED)
+        return (BOOLEAN)(cb->Chunks[chunkIdx].AllBits == UDF_FSBM_ALLBITS_FREE);
 
     if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
         return FALSE;
@@ -5736,6 +5771,9 @@ UDFCBMClrBitRange(
 /*
  * Return the length of the run of same-value bits starting at 'start',
  * up to (but not including) 'limit'.  Spans chunk boundaries correctly.
+ *
+ * Uniform compressed chunks (AllBits != MIXED) are handled in O(1) without
+ * any decompression.  Mixed chunks are pinned into the hot slot as before.
  */
 SIZE_T
 UDFCBMGetLen(
@@ -5744,8 +5782,9 @@ UDFCBMGetLen(
     IN ULONG limit
     )
 {
-    BOOLEAN startBit;
-    SIZE_T  len = 0;
+    BOOLEAN startBit    = FALSE;
+    BOOLEAN startBitSet = FALSE;
+    SIZE_T  len         = 0;
     ULONG   bit;
 
     if (!cb || start >= limit)
@@ -5754,37 +5793,52 @@ UDFCBMGetLen(
     limit = min(limit, cb->BitCount);
     bit   = start;
 
-    /* Determine value of the starting bit */
-    {
-        ULONG chunkIdx   = bit / UDF_FSBM_CHUNK_BITS;
-        ULONG bitInChunk = bit % UDF_FSBM_CHUNK_BITS;
-
-        if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
-            return 0;
-
-        startBit = UDFGetBit((uint32*)cb->HotData, bitInChunk);
-    }
-
-    /* Extend the run chunk by chunk */
     while (bit < limit) {
         ULONG  chunkIdx       = bit / UDF_FSBM_CHUNK_BITS;
-        ULONG  bitInChunk     = bit % UDF_FSBM_CHUNK_BITS;
+        ULONG  chunkBase      = chunkIdx * UDF_FSBM_CHUNK_BITS;
         ULONG  nextChunkStart = (chunkIdx + 1) * UDF_FSBM_CHUNK_BITS;
-        ULONG  localLimit     = min(limit, nextChunkStart) - chunkIdx * UDF_FSBM_CHUNK_BITS;
+        ULONG  relCur         = bit - chunkBase;
+        ULONG  localLimit     = min(limit, nextChunkStart) - chunkBase;
         SIZE_T addLen;
 
-        if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
+        if (chunkIdx >= cb->ChunkCount) break;
+
+        /* Fast path: compressed uniform chunk — no decompression needed. */
+        if (chunkIdx != cb->HotIdx &&
+            cb->Chunks[chunkIdx].AllBits != UDF_FSBM_ALLBITS_MIXED) {
+            BOOLEAN chunkBit =
+                (BOOLEAN)(cb->Chunks[chunkIdx].AllBits == UDF_FSBM_ALLBITS_FREE);
+            if (!startBitSet) {
+                startBit    = chunkBit;
+                startBitSet = TRUE;
+            } else if (chunkBit != startBit) {
+                break; /* run ended at chunk boundary */
+            }
+            addLen = localLimit - relCur;
+            len   += addLen;
+            bit   += (ULONG)addLen;
+            continue;
+        }
+
+        /* Normal path: decompress (pin) the chunk. */
+        if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx))) {
+            UDFPrint(("UDFCBMGetLen: pin failed for chunk %u; run truncated\n",
+                      chunkIdx));
             break;
+        }
 
-        /* If we've crossed into a new chunk, verify the run continues */
-        if (len > 0 && UDFGetBit((uint32*)cb->HotData, bitInChunk) != startBit)
+        if (!startBitSet) {
+            startBit    = UDFGetBit((uint32*)cb->HotData, relCur);
+            startBitSet = TRUE;
+        } else if (UDFGetBit((uint32*)cb->HotData, relCur) != startBit) {
             break;
+        }
 
-        addLen = UDFGetBitmapLen((uint32*)cb->HotData, bitInChunk, localLimit);
-        len += addLen;
-        bit += (ULONG)addLen;
+        addLen  = UDFGetBitmapLen((uint32*)cb->HotData, relCur, localLimit);
+        len    += addLen;
+        bit    += (ULONG)addLen;
 
-        /* If run ended before the chunk boundary (or hit limit), stop */
+        /* Run ended inside this chunk segment — stop. */
         if (bit < nextChunkStart || bit >= limit)
             break;
     }
@@ -5794,7 +5848,11 @@ UDFCBMGetLen(
 
 /*
  * Count bits set to 1 (free) in [startBit, endBit).
- * Uses byte-level nibble counting within each chunk.
+ *
+ * Uniform compressed chunks (AllBits != MIXED) are handled in O(1) without
+ * any decompression: all-USED contributes 0 free bits; all-FREE contributes
+ * the full byte-range width.  Mixed chunks are pinned via the hot slot.
+ * Uses a nibble lookup table for byte-level popcount.
  */
 ULONG
 UDFCBMCountFreeBits(
@@ -5818,15 +5876,35 @@ UDFCBMCountFreeBits(
         ULONG chunkIdx    = startByte / UDF_FSBM_CHUNK_BYTES;
         ULONG byteInChunk = startByte % UDF_FSBM_CHUNK_BYTES;
         ULONG endThisIter = min(endByte, (chunkIdx + 1) * UDF_FSBM_CHUNK_BYTES);
-        ULONG jEnd        = byteInChunk + (endThisIter - startByte);
-        ULONG j;
+        ULONG bytesHere   = endThisIter - startByte;
 
-        if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx)))
+        if (chunkIdx >= cb->ChunkCount) break;
+
+        /* Fast path: compressed uniform chunk — no decompression needed.
+         * AllBits=USED  → 0 free bits in this range.
+         * AllBits=FREE  → bytesHere * 8 free bits (every bit is 1). */
+        if (chunkIdx != cb->HotIdx &&
+            cb->Chunks[chunkIdx].AllBits != UDF_FSBM_ALLBITS_MIXED) {
+            if (cb->Chunks[chunkIdx].AllBits == UDF_FSBM_ALLBITS_FREE)
+                count += bytesHere * 8;
+            startByte = endThisIter;
+            continue;
+        }
+
+        /* Normal path: pin and count via nibble table. */
+        if (!NT_SUCCESS(UDFCBMPinChunk(cb, chunkIdx))) {
+            UDFPrint(("UDFCBMCountFreeBits: pin failed for chunk %u; count may be low\n",
+                      chunkIdx));
             break;
+        }
 
-        for (j = byteInChunk; j < jEnd; j++) {
-            UCHAR b = (UCHAR)cb->HotData[j];
-            count += bc[b & 0xF] + bc[b >> 4];
+        {
+            ULONG jEnd = byteInChunk + bytesHere;
+            ULONG j;
+            for (j = byteInChunk; j < jEnd; j++) {
+                UCHAR b = (UCHAR)cb->HotData[j];
+                count += bc[b & 0xF] + bc[b >> 4];
+            }
         }
 
         startByte = endThisIter;
@@ -5864,14 +5942,26 @@ UDFCBMGetFlatBuf(
         start = ci * UDF_FSBM_CHUNK_BYTES;
         bytes = min(UDF_FSBM_CHUNK_BYTES, cb->ByteCount - start);
 
-        if (cb->Chunks[ci].CompressedData == NULL) {
-            RtlZeroMemory(flat + start, bytes);
-        } else if (cb->Chunks[ci].CompressedSize == 0) {
+        /* Fast path: uniform chunks need no decompression at all. */
+        if (cb->Chunks[ci].CompressedData == NULL ||
+            (ci != cb->HotIdx &&
+             cb->Chunks[ci].AllBits != UDF_FSBM_ALLBITS_MIXED)) {
+            if (cb->Chunks[ci].CompressedData == NULL ||
+                cb->Chunks[ci].AllBits == UDF_FSBM_ALLBITS_USED) {
+                /* NULL CompressedData → all-zero initial state (all USED) */
+                RtlZeroMemory(flat + start, bytes);
+            } else {
+                /* AllBits == FREE → every bit is 1 */
+                RtlFillMemory(flat + start, bytes, 0xFF);
+            }
+            continue;
+        }
+
+        if (cb->Chunks[ci].CompressedSize == 0) {
+            /* Stored verbatim (uncompressed) */
             RtlCopyMemory(flat + start, cb->Chunks[ci].CompressedData, bytes);
         } else {
-            /* Decompress into the hot buffer, then copy the valid bytes.
-             * On failure, free the partial flat buffer and return NULL so
-             * the caller knows it cannot safely use the result. */
+            /* LZNT1 compressed: decompress into the hot buffer, then copy. */
             NTSTATUS decompSt;
             finalSize = 0;
             decompSt = RtlDecompressBuffer(
@@ -5929,10 +6019,36 @@ UDFCBMFromFlat(
         if (bytes < UDF_FSBM_CHUNK_BYTES)
             RtlZeroMemory(cb->HotData + bytes, UDF_FSBM_CHUNK_BYTES - bytes);
 
-        /* Compress and store */
-        UDFCompressBitmap(cb->HotData, UDF_FSBM_CHUNK_BYTES,
-                          &cb->Chunks[ci].CompressedData,
-                          &cb->Chunks[ci].CompressedSize);
+        /* Compress and store, then compute AllBits hint from the live data.
+         * On failure, CompressedData stays NULL (treated as all-USED), which
+         * is safe but conservative. */
+        {
+            NTSTATUS compSt = UDFCompressBitmap(cb->HotData, UDF_FSBM_CHUNK_BYTES,
+                                                &cb->Chunks[ci].CompressedData,
+                                                &cb->Chunks[ci].CompressedSize);
+            if (!NT_SUCCESS(compSt)) {
+                UDFPrint(("UDFCBMFromFlat: compress failed for chunk %u: 0x%08X; "
+                          "treating as all-USED\n", ci, compSt));
+                cb->Chunks[ci].AllBits = UDF_FSBM_ALLBITS_USED;
+                continue;
+            }
+        }
+        {
+            ULONG  k;
+            ULONG *words = (ULONG *)cb->HotData;
+            ULONG  first = words[0];
+            if (first == 0 || first == 0xFFFFFFFFUL) {
+                BOOLEAN allSame = TRUE;
+                for (k = 1; k < UDF_FSBM_CHUNK_BYTES / sizeof(ULONG); k++) {
+                    if (words[k] != first) { allSame = FALSE; break; }
+                }
+                cb->Chunks[ci].AllBits =
+                    allSame ? (UCHAR)(first ? UDF_FSBM_ALLBITS_FREE : UDF_FSBM_ALLBITS_USED)
+                            : UDF_FSBM_ALLBITS_MIXED;
+            } else {
+                cb->Chunks[ci].AllBits = UDF_FSBM_ALLBITS_MIXED;
+            }
+        }
     }
 
     /* Last chunk's data is still in HotData but we won't track it as hot

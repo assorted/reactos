@@ -355,10 +355,25 @@ enum VCB_CONDITION {
 /* Sentinel meaning no chunk is currently decompressed */
 #define UDF_FSBM_NO_HOT_CHUNK   ((ULONG)~0UL)
 
+/*
+ * Uniform-chunk fast-path hint stored in UDF_FSBM_CHUNK::AllBits.
+ * Valid only when the chunk is NOT the current hot slot.
+ * Initialised to ALLBITS_USED by RtlZeroMemory (NULL CompressedData = all-zero).
+ * Updated in UDFCBMFlushHot after the hot chunk is (re-)compressed.
+ */
+#define UDF_FSBM_ALLBITS_USED   ((UCHAR)0x00) /* all bits 0 = every LBA in chunk USED   */
+#define UDF_FSBM_ALLBITS_FREE   ((UCHAR)0x01) /* all bits 1 = every LBA in chunk FREE   */
+#define UDF_FSBM_ALLBITS_MIXED  ((UCHAR)0x02) /* mixed; chunk must be decompressed      */
+
 /* Descriptor for one compressed chunk */
 typedef struct _UDF_FSBM_CHUNK {
     PCHAR CompressedData; /* NULL = all-zero (all sectors USED, never touched) */
     ULONG CompressedSize; /* 0 = verbatim 64 KiB copy; >0 = LZNT1 byte count  */
+    /* Uniform-chunk fast-path hint (see UDF_FSBM_ALLBITS_*).
+       Only consulted when this chunk is NOT the current hot slot.
+       Initialised to 0x00 (USED) by RtlZeroMemory. */
+    UCHAR AllBits;
+    UCHAR Pad[3];
 } UDF_FSBM_CHUNK, *PUDF_FSBM_CHUNK;
 
 /* Chunked compressed Free-Space Bitmap header */
