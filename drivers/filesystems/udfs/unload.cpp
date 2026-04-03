@@ -11,43 +11,14 @@ UDFDriverUnload(
     IN PDRIVER_OBJECT DriverObject
     )
 {
-//    UNICODE_STRING uniWin32NameString;
-    LARGE_INTEGER delay;
+    UDFPrint(("UDF: Unloading!!\n"));
 
-    //
-    // All *THIS* driver needs to do is to delete the device object and the
-    // symbolic link between our device name and the Win32 visible name.
-    //
-    // Almost every other driver ever written would need to do a
-    // significant amount of work here deallocating stuff.
-    //
-
-    UDFPrint( ("UDF: Unloading!!\n") );
-
-    // prevent mount oparations
-    UdfData.Flags |= UDF_DATA_FLAGS_SHUTDOWN;
-
-    // wait for all volumes to be dismounted
-    delay.QuadPart = 10*1000*1000*10;
-    while(TRUE) {
-        UDFPrint(("Poll...\n"));
-        KeDelayExecutionThread(KernelMode, FALSE, &delay);
+    // Release the object references we took in DriverEntry after
+    // IoRegisterFileSystem, matching Fastfat's FatUnload pattern.
+    if (UdfData.UDFDeviceObject_CD) {
+        ObDereferenceObject(UdfData.UDFDeviceObject_CD);
     }
-
-    // Create counted string version of our Win32 device name.
-
-
-//    RtlInitUnicodeString( &uniWin32NameString, DOS_DEVICE_NAME );
-
-
-    // Delete the link from our device name to a name in the Win32 namespace.
-
-
-//    IoDeleteSymbolicLink( &uniWin32NameString );
-
-
-    // Finally delete our device object
-
-
-//    IoDeleteDevice( DriverObject->DeviceObject );
+    if (UdfData.UDFDeviceObject_HDD) {
+        ObDereferenceObject(UdfData.UDFDeviceObject_HDD);
+    }
 }

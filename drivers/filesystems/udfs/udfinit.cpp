@@ -165,11 +165,13 @@ DriverEntry(
             if (UdfData.UDFDeviceObject_CD) {
                 UDFPrint(("UDFCreateFsDeviceObject: IoRegisterFileSystem() for CD\n"));
                 IoRegisterFileSystem(UdfData.UDFDeviceObject_CD);
+                ObReferenceObject(UdfData.UDFDeviceObject_CD);
             }
 
             if (UdfData.UDFDeviceObject_HDD) {
                 UDFPrint(("UDFCreateFsDeviceObject: IoRegisterFileSystem() for HDD\n"));
                 IoRegisterFileSystem(UdfData.UDFDeviceObject_HDD);
+                ObReferenceObject(UdfData.UDFDeviceObject_HDD);
             }
 
             RC = STATUS_SUCCESS;

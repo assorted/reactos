@@ -173,12 +173,10 @@ UDFCommonShutdown(
         IoUnregisterFileSystem(UdfData.UDFDeviceObject_CD);
         if (UdfData.UDFDeviceObject_CD) {
             IoDeleteDevice(UdfData.UDFDeviceObject_CD);
-            UdfData.UDFDeviceObject_CD = NULL;
         }
         IoUnregisterFileSystem(UdfData.UDFDeviceObject_HDD);
         if (UdfData.UDFDeviceObject_HDD) {
             IoDeleteDevice(UdfData.UDFDeviceObject_HDD);
-            UdfData.UDFDeviceObject_HDD = NULL;
         }
 
         // free up any memory we might have reserved for zones/lookaside
