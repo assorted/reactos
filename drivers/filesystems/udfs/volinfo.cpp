@@ -91,7 +91,7 @@ UDFCommonQueryVolInfo(
 {
     NTSTATUS Status = STATUS_INVALID_PARAMETER;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );
-    ULONG Length;
+    ULONG Length = 0;
     PVCB Vcb;
     TYPE_OF_OPEN TypeOfOpen;
     PFCB Fcb;
@@ -206,8 +206,8 @@ UDFQueryFsVolumeInfo(
     IN OUT PULONG Length
     )
 {
-    ULONG BytesToCopy;
-    NTSTATUS Status;
+    ULONG BytesToCopy = 0;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     PAGED_CODE();
 
@@ -403,11 +403,11 @@ UDFQueryFsAttributeInfo(
     IN OUT PULONG Length
     )
 {
-    ULONG BytesToCopy;
+    ULONG BytesToCopy = 0;
 
     NTSTATUS Status = STATUS_SUCCESS;
     PCWSTR FsTypeTitle;
-    ULONG FsTypeTitleLen;
+    ULONG FsTypeTitleLen = 0;
 
     PAGED_CODE();
     UDFPrint(("  UDFQueryFsAttributeInfo: \n"));
@@ -464,7 +464,7 @@ UDFCommonSetVolInfo(
 {
     NTSTATUS Status = STATUS_INVALID_PARAMETER;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
-    ULONG Length;
+    ULONG Length = 0;
     FS_INFORMATION_CLASS FsInformationClass;
     PVOID Buffer;
     TYPE_OF_OPEN TypeOfOpen;

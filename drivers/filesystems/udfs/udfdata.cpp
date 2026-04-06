@@ -76,13 +76,13 @@ Return Value:
 {
     THREAD_CONTEXT ThreadContext = {0};
     PIRP_CONTEXT IrpContext = NULL;
-    BOOLEAN Wait;
+    BOOLEAN Wait = FALSE;
 
 #ifdef UDF_SANITY
     PVOID PreviousTopLevel;
 #endif
 
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
 
 #if DBG
 

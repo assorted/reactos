@@ -55,7 +55,7 @@ UDFCommonFsControl(
     PIRP Irp
     )
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
     PAGED_CODE();
@@ -114,7 +114,7 @@ UDFUserFsCtrlRequest(
     PIRP Irp
     )
 {
-    NTSTATUS RC;
+    NTSTATUS RC = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
     //  Case on the control code.
@@ -283,7 +283,7 @@ UDFMountVolume(
     IN PIRP Irp
     )
 {
-    NTSTATUS                RC;
+    NTSTATUS                RC = STATUS_SUCCESS;
     PIO_STACK_LOCATION      IrpSp = IoGetCurrentIrpStackLocation(Irp);
     PDEVICE_OBJECT          DeviceObjectWeTalkTo = IrpSp->Parameters.MountVolume.DeviceObject;
     PVPB                    Vpb = IrpSp->Parameters.MountVolume.Vpb;
@@ -294,7 +294,7 @@ UDFMountVolume(
     DEVICE_TYPE             FsDeviceType;
     BOOLEAN                 RestoreDoVerify = FALSE;
     BOOLEAN                 RemovableMedia = TRUE;
-    BOOLEAN                 SetDoVerifyOnFail;
+    BOOLEAN                 SetDoVerifyOnFail = FALSE;
     BOOLEAN                 VcbAcquired = FALSE;
     BOOLEAN                 DeviceNotTouched = TRUE;
     DISK_GEOMETRY           DiskGeometry;
@@ -895,7 +895,7 @@ UDFLockVolume(
     IN PIRP             Irp
     )
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     PVCB Vcb;
     PFCB Fcb;
     PCCB Ccb;
@@ -990,7 +990,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     KIRQL SavedIrql;
     NTSTATUS FinalStatus = (FileObject? STATUS_ACCESS_DENIED: STATUS_DEVICE_BUSY);
     ULONG RemainingUserReferences = (FileObject? 1: 0);
@@ -1080,7 +1080,7 @@ UDFUnlockVolume(
     IN PIRP Irp
     )
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
     PVCB Vcb;
     PFCB Fcb;
@@ -1144,7 +1144,7 @@ UDFDismountVolume(
     IN PIRP Irp
     )
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     KIRQL SavedIrql;
 
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
@@ -1270,16 +1270,16 @@ UDFGetVolumeBitmap(
     PFCB Fcb;
     PCCB Ccb;
     PVCB Vcb = IrpContext->Vcb;
-    ULONG BytesToCopy;
-    ULONG TotalClusters;
-    ULONG StartingCluster;
-    ULONG DesiredClusters;
-    ULONG InputBufferLength;
-    ULONG OutputBufferLength;
+    ULONG BytesToCopy = 0;
+    ULONG TotalClusters = 0;
+    ULONG StartingCluster = 0;
+    ULONG DesiredClusters = 0;
+    ULONG InputBufferLength = 0;
+    ULONG OutputBufferLength = 0;
     LARGE_INTEGER StartingLcn;
     PVOLUME_BITMAP_BUFFER OutputBuffer;
     ULONG i, lim;
-    PULONG FSBM;
+    PULONG FSBM = NULL;
     BOOLEAN VcbAcquired = FALSE;
 
     ASSERT_VCB(Vcb);
@@ -1425,13 +1425,13 @@ UDFGetRetrievalPointers(
     IN PIRP  Irp
     )
 {
-    NTSTATUS RC;
+    NTSTATUS RC = STATUS_SUCCESS;
 
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
     PUDF_FILE_INFO FileInfo;
 
-    ULONG InputBufferLength;
-    ULONG OutputBufferLength;
+    ULONG InputBufferLength = 0;
+    ULONG OutputBufferLength = 0;
 
     PRETRIEVAL_POINTERS_BUFFER OutputBuffer;
     PSTARTING_VCN_INPUT_BUFFER InputBuffer;
@@ -1445,10 +1445,10 @@ UDFGetRetrievalPointers(
     TYPE_OF_OPEN TypeOfOpen;
 
     PEXTENT_MAP SubMapping = NULL;
-    ULONG SubExtInfoSz;
-    ULONG i;
-    ULONG LBS;
-    ULONG LBSh;
+    ULONG SubExtInfoSz = 0;
+    ULONG i = 0;
+    ULONG LBS = 0;
+    ULONG LBSh = 0;
 
     UDFPrint(("UDFGetRetrievalPointers\n"));
 
@@ -1586,7 +1586,7 @@ UDFIsVolumeDirty(
     IN PIRP Irp
     )
 {
-    PULONG VolumeState;
+    PULONG VolumeState = NULL;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
     PCCB Ccb;
     PFCB Fcb;
@@ -1677,7 +1677,7 @@ UDFInvalidateVolumes(
     _In_ PIRP Irp
     )
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
     UDFPrint(("UDFInvalidateVolumes\n"));

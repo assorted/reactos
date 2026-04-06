@@ -60,7 +60,7 @@ UDFExceptionFilter(
     PEXCEPTION_POINTERS ExceptionPointer
     )
 {
-    NTSTATUS ExceptionCode;
+    NTSTATUS ExceptionCode = STATUS_SUCCESS;
 
     ASSERT_OPTIONAL_IRP_CONTEXT(IrpContext);
 
@@ -731,7 +731,7 @@ Return Value:
 
 {
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
-    BOOLEAN RemovedFcb;
+    BOOLEAN RemovedFcb = FALSE;
 
     PAGED_CODE();
 
@@ -965,7 +965,7 @@ UDFFspDispatch(
 {
     THREAD_CONTEXT ThreadContext = { 0 };
     PIRP_CONTEXT IrpContext = (PIRP_CONTEXT)Context;
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     PIRP Irp = IrpContext->Irp;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
@@ -1739,7 +1739,7 @@ Return Value:
 
 {
     BOOLEAN Wait = FALSE;
-    BOOLEAN Acquired;
+    BOOLEAN Acquired = FALSE;
     PAGED_CODE();
 
     //  We look first at the IgnoreWait flag, next at the flag in the Irp

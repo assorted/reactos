@@ -29,7 +29,7 @@ UDFCheckAccessRights(
     USHORT ShareAccess
     )
 {
-    NTSTATUS RC;
+    NTSTATUS RC = STATUS_SUCCESS;
     BOOLEAN ROCheck = FALSE;
 
     // Check attr compatibility

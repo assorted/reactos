@@ -899,7 +899,7 @@ UDFFastIoAcqModWrite(
 
     // For embedded data files, acquire exclusive since data shares sector with metadata
     // For normal files, shared is enough
-    BOOLEAN Acquired;
+    BOOLEAN Acquired = FALSE;
     if (Fcb->FcbState & UDF_FCB_EMBEDDED_DATA) {
         Acquired = UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, FALSE);
     } else {

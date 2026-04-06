@@ -773,7 +773,7 @@ Return Value:
 
 {
     PFCB NewFcb;
-    BOOLEAN LocalFcbExisted;
+    BOOLEAN LocalFcbExisted = FALSE;
 
     PAGED_CODE();
 
@@ -1187,7 +1187,7 @@ UDFCompleteMount(
     IN PVCB Vcb
     )
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     UNICODE_STRING LocalPath;
     ULONG LastSector = 0;
     BOOLEAN UnlockVcb = FALSE;

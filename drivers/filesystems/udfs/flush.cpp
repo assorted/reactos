@@ -187,7 +187,7 @@ try_exit:   NOTHING;
 
         if (!_SEH2_AbnormalTermination()) {
 
-            NTSTATUS DriverStatus;
+            NTSTATUS DriverStatus = STATUS_SUCCESS;
 
             // Get the next stack location, and copy over the stack location
 
@@ -305,7 +305,7 @@ UDFFlushAFile(
     _SEH2_TRY {
         if (SetArchive &&
            (Fcb->Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ARCH_BIT)) {
-            ULONG Attr;
+            ULONG Attr = 0;
             PDIR_INDEX_ITEM DirNdx;
             DirNdx = UDFDirIndex(UDFGetDirIndexByFileInfo(Fcb->FileInfo), Fcb->FileInfo->Index);
             // Archive bit
@@ -627,7 +627,7 @@ Return Value:
 
 {
     KEVENT Event;
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION NextIrpSp;
 
     PAGED_CODE();

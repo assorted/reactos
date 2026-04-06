@@ -470,7 +470,7 @@ Return Value:
 --*/
 
 {
-    BOOLEAN RemovedFcb;
+    BOOLEAN RemovedFcb = FALSE;
 
     PAGED_CODE();
 
@@ -560,7 +560,7 @@ Return Value:
     THREAD_CONTEXT ThreadContext = {0};
 
     PFCB Fcb;
-    ULONG UserReference;
+    ULONG UserReference = 0;
 
     ULONG VcbHoldCount = 0;
     PVCB CurrentVcb = NULL;

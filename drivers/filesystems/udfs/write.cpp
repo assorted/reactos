@@ -451,7 +451,7 @@ UDFCommonWrite(
             !RecursiveWriteThrough &&
             !IsLazyWriteThread) {
 
-            BOOLEAN ExtendFS;
+            BOOLEAN ExtendFS = FALSE;
 
             ExtendFS = (StartingOffset + TruncatedLength > Fcb->Header.FileSize.QuadPart);
 
@@ -809,9 +809,9 @@ UDFPurgeCacheEx_(
     PFILE_OBJECT        FileObject
     )
 {
-    ULONG Off_l;
+    ULONG Off_l = 0;
 #ifdef USE_CcCopyWrite_TO_ZERO
-    ULONG PgLen;
+    ULONG PgLen = 0;
 #endif //USE_CcCopyWrite_TO_ZERO
 
     // We'll just purge cache section here,
@@ -974,7 +974,7 @@ UDFZeroData (
     LARGE_INTEGER ZeroStart = {0,0};
     LARGE_INTEGER BeyondZeroEnd = {0,0};
 
-    BOOLEAN Finished;
+    BOOLEAN Finished = FALSE;
 
     PAGED_CODE();
 

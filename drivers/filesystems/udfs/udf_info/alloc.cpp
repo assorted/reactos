@@ -854,7 +854,7 @@ UDFMarkSpaceAsXXXNoProtect_(
     uint32 root;
     BOOLEAN asUsed = (asXXX == AS_USED || (asXXX & AS_BAD));
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
-    BOOLEAN bit_before, bit_after;
+    BOOLEAN bit_before = FALSE, bit_after = FALSE;
 #endif //UDF_TRACK_ONDISK_ALLOCATION
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);

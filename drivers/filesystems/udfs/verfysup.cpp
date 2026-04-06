@@ -89,7 +89,7 @@ UDFVerifyVcb(
     IO_STATUS_BLOCK Iosb;
     ULONG MediaChangeCount = 0;
     BOOLEAN ForceVerify = FALSE;
-    BOOLEAN DevMarkedForVerify;
+    BOOLEAN DevMarkedForVerify = FALSE;
 
     ASSERT(ExIsResourceAcquiredExclusiveLite(&Vcb->VcbResource) ||
            ExIsResourceAcquiredSharedLite(&Vcb->VcbResource));
@@ -263,7 +263,7 @@ UDFVerifyVolume(
     PVCB NewVcb = NULL;
     IO_STATUS_BLOCK Iosb;
     ULONG MediaChangeCount = 0;
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     BOOLEAN ReleaseVcb = FALSE;
 
     PAGED_CODE();
@@ -736,7 +736,7 @@ UDFDismountVcb(
     BOOLEAN VcbPresent = TRUE;
     KIRQL SavedIrql;
 
-    BOOLEAN FinalReference;
+    BOOLEAN FinalReference = FALSE;
 
     ASSERT_EXCLUSIVE_CDDATA;
     ASSERT_EXCLUSIVE_VCB(Vcb);

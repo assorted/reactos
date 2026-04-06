@@ -228,7 +228,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     KEVENT Event;
     BOOLEAN VcbPresent = TRUE;
 
@@ -399,7 +399,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     KEVENT Event;
     BOOLEAN VcbPresent = TRUE;
 
@@ -542,7 +542,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
     KEVENT Event;
     BOOLEAN VcbPresent = TRUE;
 
@@ -660,7 +660,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     PAGED_CODE();
 
