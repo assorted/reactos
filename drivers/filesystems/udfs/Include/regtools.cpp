@@ -17,7 +17,7 @@ RegTGetKeyHandle(
 {
     OBJECT_ATTRIBUTES ObjectAttributes;
     UNICODE_STRING NameString;
-    NTSTATUS status;
+    NTSTATUS status = STATUS_SUCCESS;
 
     //UDFPrint(("RegTGetKeyHandle: h=%x, %S\n", hRootKey, KeyName));
 
@@ -107,8 +107,8 @@ RegTGetDwordValue(
     UNICODE_STRING NameString;
     PKEY_VALUE_PARTIAL_INFORMATION ValInfo;
 #endif //WIN_32_MODE
-    ULONG len;
-    NTSTATUS status;
+    ULONG len = 0;
+    NTSTATUS status = STATUS_SUCCESS;
     HKEY hKey;
     BOOLEAN retval = FALSE;
     BOOLEAN free_h = FALSE;
@@ -198,8 +198,8 @@ RegTGetStringValue(
     UNICODE_STRING NameString;
     PKEY_VALUE_PARTIAL_INFORMATION ValInfo;
 #endif //USER_MODE
-    ULONG len;
-    NTSTATUS status;
+    ULONG len = 0;
+    NTSTATUS status = STATUS_SUCCESS;
     HKEY hKey;
     BOOLEAN retval = FALSE;
     BOOLEAN free_h = FALSE;

@@ -183,10 +183,10 @@ UDFAttributesToUDF(
     IN ULONG NTAttr
     )
 {
-    PULONG attr; //permissions
-    PUSHORT Flags;
-    PUCHAR Type;
-    PUCHAR FCharact;
+    PULONG attr = NULL; //permissions
+    PUSHORT Flags = NULL;
+    PUCHAR Type = NULL;
+    PUCHAR FCharact = NULL;
 
     NTAttr &= UDF_VALID_FILE_ATTRIBUTES;
 
@@ -273,7 +273,7 @@ UDFFileDirInfoToNT(
     PEXTENDED_FILE_ENTRY ExFileEntry;
     USHORT Ident;
     BOOLEAN ReadSizes = FALSE;
-    NTSTATUS status;
+    NTSTATUS status = STATUS_SUCCESS;
     PFCB Fcb;
 
     UDFPrint(("@=%#x, FileDirNdx %x\n", &Vcb, FileDirNdx));
@@ -608,7 +608,7 @@ UDFDoesOSAllowFileToBeTargetForRename__(
     IN PUDF_FILE_INFO FileInfo
     )
 {
-    NTSTATUS RC;
+    NTSTATUS RC = STATUS_SUCCESS;
 
     if (UDFIsADirectory(FileInfo))
         return STATUS_ACCESS_DENIED;
