@@ -486,8 +486,10 @@ UDFDetermineVolumeLayout(
     )
 {
     NTSTATUS Status;
-    CDROM_TOC_LARGE* toc = NULL;
-    CDROM_TOC_SESSION_DATA* LastSes = NULL;
+    CDROM_TOC_LARGE tocBuffer;
+    CDROM_TOC_LARGE* toc = &tocBuffer;
+    CDROM_TOC_SESSION_DATA lastSesBuffer;
+    CDROM_TOC_SESSION_DATA* LastSes = &lastSesBuffer;
     ULONG LocalTrackCount;
     ULONG TocEntry;
     void* TempBuffer = NULL;
@@ -506,14 +508,7 @@ UDFDetermineVolumeLayout(
     //    return STATUS_SUCCESS;
     //}
 
-    toc = (CDROM_TOC_LARGE*)MyAllocatePool__(NonPagedPool, sizeof(CDROM_TOC_LARGE));
-    LastSes = (CDROM_TOC_SESSION_DATA*)MyAllocatePool__(NonPagedPool, sizeof(CDROM_TOC_SESSION_DATA));
-
     _SEH2_TRY {
-
-        if (!toc || !LastSes) {
-            try_return (Status = STATUS_INSUFFICIENT_RESOURCES);
-        }
 
         RtlZeroMemory(toc, sizeof(CDROM_TOC_LARGE));
 
@@ -772,8 +767,6 @@ UDFDetermineVolumeLayout(
 
 try_exit: NOTHING;
     } _SEH2_FINALLY {
-        if (toc) MyFreePool__(toc);
-        if (LastSes) MyFreePool__(LastSes);
         if (TempBuffer) MyFreePool__(TempBuffer);
     } _SEH2_END;
 

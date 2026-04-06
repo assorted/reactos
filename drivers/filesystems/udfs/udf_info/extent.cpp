@@ -2340,16 +2340,13 @@ UDFResizeExtent(
                 // last frag will be Not-Alloc-Not-Rec...
                 AdPrint(("Resize sparse (2)\n"));
                 RtlZeroMemory(&TmpExtInf, sizeof(EXTENT_INFO));
-                TmpExtInf.Mapping = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool , sizeof(EXTENT_MAP)*2,
-                                                                   MEM_EXTMAP_TAG);
-                if (!TmpExtInf.Mapping) return STATUS_INSUFFICIENT_RESOURCES;
+                TmpExtInf.Mapping = TmpMapping;
                 TmpExtInf.Mapping[0].extLength = (((uint32)(Length - l) + LBS-1) & ~(LBS-1)) | (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
                 TmpExtInf.Mapping[0].extLocation =// 0;
                 TmpExtInf.Mapping[1].extLength =
                 TmpExtInf.Mapping[1].extLocation = 0;
                 l = Length;
                 ExtInfo->Mapping = UDFMergeMappings(ExtInfo->Mapping, TmpExtInf.Mapping);
-                MyFreePool__(TmpExtInf.Mapping);
             } else
 #endif //ALLOW_SPARSE
             // allocate some sectors
