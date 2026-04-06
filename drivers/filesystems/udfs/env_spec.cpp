@@ -129,7 +129,8 @@ UDFPhReadSynchronous(
 {
     NTSTATUS            RC = STATUS_SUCCESS;
     LARGE_INTEGER       ROffset;
-    PUDF_PH_CALL_CONTEXT Context;
+    UDF_PH_CALL_CONTEXT ContextData;
+    PUDF_PH_CALL_CONTEXT Context = &ContextData;
     PIRP                Irp;
     PIO_STACK_LOCATION IrpSp;
     KIRQL               CurIrql = KeGetCurrentIrql();
@@ -150,11 +151,6 @@ UDFPhReadSynchronous(
     if (!IoBuf) {
         UDFPrint(("    !IoBuf\n"));
         return STATUS_INSUFFICIENT_RESOURCES;
-    }
-    Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
-    if (!Context) {
-        UDFPrint(("    !Context\n"));
-        try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
     }
     // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
@@ -214,7 +210,6 @@ UDFPhReadSynchronous(
 
 try_exit: NOTHING;
 
-    if (Context) MyFreePool__(Context);
     if (IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
 
     return(RC);
@@ -247,7 +242,8 @@ UDFPhWriteSynchronous(
 {
     NTSTATUS            RC = STATUS_SUCCESS;
     LARGE_INTEGER       ROffset;
-    PUDF_PH_CALL_CONTEXT Context = NULL;
+    UDF_PH_CALL_CONTEXT ContextData;
+    PUDF_PH_CALL_CONTEXT Context = &ContextData;
     PIRP                irp;
     KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
@@ -282,8 +278,6 @@ UDFPhWriteSynchronous(
         RtlCopyMemory(IoBuf, Buffer, ByteCount);
     }
 
-    Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
-    if (!Context) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
     // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
 
@@ -319,7 +313,6 @@ UDFPhWriteSynchronous(
 
 try_exit: NOTHING;
 
-    if (Context) MyFreePool__(Context);
     if (IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
     if (!NT_SUCCESS(RC)) {
         UDFPrint(("WriteError\n"));
@@ -392,13 +385,12 @@ UDFPhSendIOCTL(
 {
     NTSTATUS            RC = STATUS_SUCCESS;
     PIRP                irp;
-    PUDF_PH_CALL_CONTEXT Context;
+    UDF_PH_CALL_CONTEXT ContextData;
+    PUDF_PH_CALL_CONTEXT Context = &ContextData;
     LARGE_INTEGER timeout;
 
     UDFPrint(("UDFPhDevIOCTL: Code %8x  \n",IoControlCode));
 
-    Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
-    if (!Context) return STATUS_INSUFFICIENT_RESOURCES;
     //  Check if the user gave us an Iosb.
 
     // Create notification event object to be used to signal the request completion.
@@ -459,7 +451,6 @@ UDFPhSendIOCTL(
 
 try_exit: NOTHING;
 
-    if (Context) MyFreePool__(Context);
     return(RC);
 } // end UDFPhSendIOCTL()
 
