@@ -213,6 +213,7 @@ struct FCB {
 
     // UDF related data
     PUDF_FILE_INFO                      FileInfo;
+    UDF_FILE_INFO                       FileInfoStorage;
     // this FCB belongs to some mounted logical volume
     struct VCB*      Vcb;
 
@@ -526,6 +527,7 @@ struct VCB {
     uint32* Vat;
     uint32          VatPartNdx;
     PUDF_FILE_INFO  VatFileInfo;
+    UDF_FILE_INFO   VatFileInfoStorage;
     // sparing table
     ULONG           SparingCountFree;
     ULONG           SparingCount;
@@ -561,6 +563,7 @@ struct VCB {
 
     // System Stream Dir
     PUDF_FILE_INFO  SysSDirFileInfo;
+    UDF_FILE_INFO   SysSDirFileInfoStorage;
     // Non-alloc space
     PUDF_FILE_INFO  NonAllocFileInfo;
     // Unique ID Mapping

@@ -3616,8 +3616,8 @@ UDFLoadVAT(
         Vcb->VcbState |= VCB_STATE_VOLUME_READ_ONLY;
     }
 
-    VatFileInfo = Vcb->VatFileInfo = (PUDF_FILE_INFO)MyAllocatePoolTag__(UDF_FILE_INFO_MT, sizeof(UDF_FILE_INFO), MEM_VATFINF_TAG);
-    if (!VatFileInfo) return STATUS_INSUFFICIENT_RESOURCES;
+    VatFileInfo = Vcb->VatFileInfo = &Vcb->VatFileInfoStorage;
+    RtlZeroMemory(VatFileInfo, sizeof(UDF_FILE_INFO));
     // load VAT FE (we know its location)
     VatFELoc.partitionReferenceNum = PartNum;
 retry_load_vat:
@@ -3629,7 +3629,6 @@ retry_load_vat:
         if ( VatLba[i] &&
            (status != STATUS_FILE_CORRUPT_ERROR) &&
            (status != STATUS_CRC_ERROR)) goto retry_load_vat;
-        MyFreePool__(VatFileInfo);
         Vcb->VatFileInfo = NULL;
         return status;
     }
@@ -3698,7 +3697,6 @@ retry_load_vat:
     if (!NT_SUCCESS(status)) {
         UDFCloseFile__(IrpContext, Vcb, VatFileInfo);
         UDFCleanUpFile__(Vcb, VatFileInfo);
-        MyFreePool__(VatFileInfo);
         DbgFreePool(Vcb->Vat);
         DbgFreePool(VatOldData);
         Vcb->Vat = NULL;
@@ -3746,7 +3744,6 @@ retry_load_vat:
 err_vat_15:
     UDFCloseFile__(IrpContext, Vcb, VatFileInfo);
     UDFCleanUpFile__(Vcb, VatFileInfo);
-    MyFreePool__(VatFileInfo);
     Vcb->VatFileInfo = NULL;
     return status;
 } // end UDFLoadVAT()

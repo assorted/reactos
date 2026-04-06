@@ -954,17 +954,7 @@ UDFCompleteMount(
         if (!NT_SUCCESS(Status))
             goto insuf_res_1;
 
-        Vcb->RootIndexFcb->FileInfo = (PUDF_FILE_INFO)MyAllocatePool__(NonPagedPool,sizeof(UDF_FILE_INFO));
-
-        if (!Vcb->RootIndexFcb->FileInfo) {
-            Status = STATUS_INSUFFICIENT_RESOURCES;
-    insuf_res_1:
-            MyFreePool__(RootName->ObjectName.Buffer);
-            UDFReleaseObjectName(RootName);
-            UDFCleanUpFCB(Vcb->RootIndexFcb);
-            Vcb->RootIndexFcb = NULL;
-            try_return(Status);
-        }
+        Vcb->RootIndexFcb->FileInfo = &Vcb->RootIndexFcb->FileInfoStorage;
 
         UDFPrint(("UDFCompleteMount: open Root Dir\n"));
         // Open Root Directory
@@ -973,8 +963,13 @@ UDFCompleteMount(
         if (!NT_SUCCESS(Status)) {
 
             UDFCleanUpFile__(Vcb, Vcb->RootIndexFcb->FileInfo);
-            MyFreePool__(Vcb->RootIndexFcb->FileInfo);
-            goto insuf_res_1;
+            Vcb->RootIndexFcb->FileInfo = NULL;
+insuf_res_1:
+            MyFreePool__(RootName->ObjectName.Buffer);
+            UDFReleaseObjectName(RootName);
+            UDFCleanUpFCB(Vcb->RootIndexFcb);
+            Vcb->RootIndexFcb = NULL;
+            try_return(Status);
         }
 
         Vcb->RootIndexFcb->FileInfo->Fcb = Vcb->RootIndexFcb;
@@ -995,7 +990,7 @@ UDFCompleteMount(
             Vcb->RootIndexFcb->FcbReference = 0;
 
             UDFCleanUpFile__(Vcb, Vcb->RootIndexFcb->FileInfo);
-            MyFreePool__(Vcb->RootIndexFcb->FileInfo);
+            Vcb->RootIndexFcb->FileInfo = NULL;
             UDFCleanUpFCB(Vcb->RootIndexFcb);
             Vcb->RootIndexFcb = NULL;
             try_return(Status);
@@ -1013,16 +1008,11 @@ UDFCompleteMount(
                       &(Vcb->RootIndexFcb->LastWriteTime.QuadPart) );
 
         if (Vcb->SysStreamLbAddr.logicalBlockNum) {
-            Vcb->SysSDirFileInfo = (PUDF_FILE_INFO)MyAllocatePool__(NonPagedPool,sizeof(UDF_FILE_INFO));
-            if (!Vcb->SysSDirFileInfo) {
-                Status = STATUS_INSUFFICIENT_RESOURCES;
-                goto unwind_1;
-            }
+            Vcb->SysSDirFileInfo = &Vcb->SysSDirFileInfoStorage;
             // Open System SDir Directory
             Status = UDFOpenRootFile__(IrpContext, Vcb, &Vcb->SysStreamLbAddr, Vcb->SysSDirFileInfo);
             if (!NT_SUCCESS(Status)) {
                 UDFCleanUpFile__(Vcb, Vcb->SysSDirFileInfo);
-                MyFreePool__(Vcb->SysSDirFileInfo);
                 Vcb->SysSDirFileInfo = NULL;
                 goto unwind_1;
             } else {

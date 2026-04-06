@@ -393,7 +393,8 @@ UDFTeardownStructures(
                     // remove some references & free Fcb structure
                     CurrentFcb->ParentFcb = NULL;
                     UDFCleanUpFCB(CurrentFcb);
-                    MyFreePool__(CurrentFcb->FileInfo);
+                    if (CurrentFcb->FileInfo != &CurrentFcb->FileInfoStorage)
+                        MyFreePool__(CurrentFcb->FileInfo);
                     CurrentFcb->FileInfo = NULL;
 
                     // get pointer to parent FCB

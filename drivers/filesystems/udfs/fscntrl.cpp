@@ -596,7 +596,6 @@ UDFCloseResidual(
     if (Vcb->VatFileInfo) {
         UDFCloseFile__(IrpContext, Vcb,Vcb->VatFileInfo);
         UDFCleanUpFile__(Vcb, Vcb->VatFileInfo);
-        MyFreePool__(Vcb->VatFileInfo);
         Vcb->VatFileInfo = NULL;
     }
     //  System StreamDir
@@ -604,7 +603,6 @@ UDFCloseResidual(
     if (Vcb->SysSDirFileInfo) {
         UDFCloseFile__(IrpContext, Vcb, Vcb->SysSDirFileInfo);
         UDFCleanUpFile__(Vcb, Vcb->SysSDirFileInfo);
-        MyFreePool__(Vcb->SysSDirFileInfo);
         Vcb->SysSDirFileInfo = NULL;
     }
 /*    //  Deinitialize root dir fcb
