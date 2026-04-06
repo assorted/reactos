@@ -886,7 +886,8 @@ UDFGetFileStreamInformation(
     PDIR_INDEX_HDR  hSDirIndex;
     PDIR_INDEX_ITEM SDirIndex;
     PDIR_INDEX_ITEM DirNdx;
-    PFILE_BOTH_DIR_INFORMATION NTFileInfo = NULL;
+    UCHAR                       NTFileInfoBuffer[sizeof(FILE_BOTH_DIR_INFORMATION) + UDF_NAME_LEN * sizeof(WCHAR)];
+    PFILE_BOTH_DIR_INFORMATION  NTFileInfo = (PFILE_BOTH_DIR_INFORMATION)NTFileInfoBuffer;
 
     PFILE_STREAM_INFORMATION CurrentInfo = PtrBuffer;
     PFILE_STREAM_INFORMATION Previous = NULL;
@@ -911,9 +912,6 @@ UDFGetFileStreamInformation(
 
         DirNdx = UDFDirIndex(UDFGetDirIndexByFileInfo(FileInfo), FileInfo->Index);
         ASSERT(DirNdx);
-
-        NTFileInfo = (PFILE_BOTH_DIR_INFORMATION)MyAllocatePool__(NonPagedPool, sizeof(FILE_BOTH_DIR_INFORMATION)+UDF_NAME_LEN*sizeof(WCHAR));
-        if (!NTFileInfo) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
 
         RC = UDFFileDirInfoToNT(IrpContext, Vcb, DirNdx, NTFileInfo);
 
@@ -991,8 +989,6 @@ try_exit: NOTHING;
     } _SEH2_FINALLY {
         if (FcbAcquired)
             UDFReleaseResource(&(Fcb->Vcb->FileIdResource));
-        if (NTFileInfo)
-           MyFreePool__(NTFileInfo);
     } _SEH2_END;
     return(RC);
 } // end UDFGetFileStreamInformation()

@@ -164,7 +164,8 @@ UDFQueryDirectory(
     BOOLEAN                     AtLeastOneFound = FALSE;
     PUDF_FILE_INFO              DirFileInfo = NULL;
     PDIR_INDEX_HDR              hDirIndex = NULL;
-    PFILE_BOTH_DIR_INFORMATION  DirInformation = NULL;      // Returned from udf_info module
+    UCHAR                       DirInformationBuffer[sizeof(FILE_BOTH_DIR_INFORMATION) + UDF_NAME_LEN * sizeof(WCHAR)];
+    PFILE_BOTH_DIR_INFORMATION  DirInformation = (PFILE_BOTH_DIR_INFORMATION)DirInformationBuffer;  // Returned from udf_info module
     PFILE_BOTH_DIR_INFORMATION  BothDirInformation = NULL;  // Pointer in callers buffer
     PFILE_NAMES_INFORMATION     NamesInfo;
     PFILE_ID_BOTH_DIR_INFORMATION IdBothDirInfo = NULL;
@@ -363,12 +364,7 @@ UDFQueryDirectory(
         }
 
         RC = STATUS_SUCCESS;
-        // Allocate buffer enough to save both DirInformation and FileName
-        DirInformation = (PFILE_BOTH_DIR_INFORMATION)MyAllocatePool__(NonPagedPool,
-                            sizeof(FILE_BOTH_DIR_INFORMATION)+((ULONG)UDF_NAME_LEN*sizeof(WCHAR)) );
-        if (!DirInformation) {
-            try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-        }
+        // Buffer for DirInformation is stack-allocated above
         CurrentOffset=0;
         BytesRemainingInBuffer = IrpSp->Parameters.QueryDirectory.Length;
         RtlZeroMemory(Buffer,BytesRemainingInBuffer);
@@ -504,7 +500,6 @@ try_exit:   NOTHING;
         }
 
         if (SearchPattern.Buffer) RtlFreeUnicodeString(&SearchPattern);
-        if (DirInformation) MyFreePool__(DirInformation);
     } _SEH2_END;
 
     Irp->IoStatus.Information = Information;
