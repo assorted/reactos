@@ -976,7 +976,7 @@ try_exit:   NOTHING;
         UDFPrint(("UDF: Last LBA in last session: %x\n",Vcb->LastLBA));
         UDFPrint(("UDF: First writable LBA (NWA) in last session: %x\n",Vcb->NWA));
         UDFPrint(("UDF: Last available LBA beyond end of last session: %x\n",Vcb->LastPossibleLBA));
-        UDFPrint(("UDF: blocks per frame: %x\n",1 << Vcb->WCacheBlocksPerFrameSh));
+        UDFPrint(("UDF: blocks per frame: %x\n", Vcb->WriteBlockSize >> Vcb->SectorShift));
         UDFPrint(("UDF: Flags: %s%s\n",
                  Vcb->VcbState & UDF_VCB_FLAGS_RAW_DISK ? "RAW " : "",
                  Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY ? "R/O " : "WR "
