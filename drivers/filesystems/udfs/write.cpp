@@ -560,7 +560,7 @@ UDFCommonWrite(
 
             // Send the request to lower level drivers
             if (!Wait) {
-                UDFPrint(("UDFCommonWrite: Post physical write %x bytes at %x\n", TruncatedLength, StartingOffset.LowPart));
+                UDFPrint(("UDFCommonWrite: Post physical write %x bytes at %x\n", TruncatedLength, (ULONG)StartingOffset));
 
                 try_return(Status = STATUS_PENDING);
             }
