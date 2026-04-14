@@ -320,13 +320,11 @@ UDFPhWriteSynchronous(
                                 Context, TRUE, TRUE, TRUE);
     }
 
-    {
-        PIO_STACK_LOCATION IrpSp = IoGetNextIrpStackLocation(irp);
-        IrpSp->MajorFunction = IRP_MJ_WRITE;
-        IrpSp->Parameters.Write.Length = ByteCount;
-        IrpSp->Parameters.Write.ByteOffset = ROffset;
-        IrpSp->Flags |= SL_OVERRIDE_VERIFY_VOLUME;
-    }
+    PIO_STACK_LOCATION IrpSp = IoGetNextIrpStackLocation(irp);
+    IrpSp->MajorFunction = IRP_MJ_WRITE;
+    IrpSp->Parameters.Write.Length = ByteCount;
+    IrpSp->Parameters.Write.ByteOffset = ROffset;
+    IrpSp->Flags |= SL_OVERRIDE_VERIFY_VOLUME;
     RC = IoCallDriver(DeviceObject, irp);
 
     if (RC == STATUS_PENDING) {
