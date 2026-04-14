@@ -170,7 +170,17 @@ UDFPhReadSynchronous(
             UDFPrint(("    !Mdl\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        MmProbeAndLockPages(Mdl, KernelMode, IoWriteAccess);
+        NTSTATUS LockStatus = STATUS_SUCCESS;
+        _SEH2_TRY {
+            MmProbeAndLockPages(Mdl, KernelMode, IoWriteAccess);
+        } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+            LockStatus = _SEH2_GetExceptionCode();
+        } _SEH2_END;
+        if (!NT_SUCCESS(LockStatus)) {
+            UDFPrint(("    !MmProbeAndLockPages read\n"));
+            IoFreeMdl(Mdl);
+            try_return(RC = LockStatus);
+        }
         Irp = IoAllocateIrp(DeviceObject->StackSize, FALSE);
         if (!Irp) {
             UDFPrint(("    !irp\n"));
@@ -310,7 +320,17 @@ UDFPhWriteSynchronous(
             UDFPrint(("    !Mdl\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        MmProbeAndLockPages(Mdl, KernelMode, IoReadAccess);
+        NTSTATUS LockStatus = STATUS_SUCCESS;
+        _SEH2_TRY {
+            MmProbeAndLockPages(Mdl, KernelMode, IoReadAccess);
+        } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+            LockStatus = _SEH2_GetExceptionCode();
+        } _SEH2_END;
+        if (!NT_SUCCESS(LockStatus)) {
+            UDFPrint(("    !MmProbeAndLockPages write\n"));
+            IoFreeMdl(Mdl);
+            try_return(RC = LockStatus);
+        }
         irp = IoAllocateIrp(DeviceObject->StackSize, FALSE);
         if (!irp) {
             UDFPrint(("    !irp\n"));
