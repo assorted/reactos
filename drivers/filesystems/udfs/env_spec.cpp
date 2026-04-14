@@ -172,6 +172,7 @@ UDFPhReadSynchronous(
         }
         NTSTATUS LockStatus = STATUS_SUCCESS;
         _SEH2_TRY {
+            // IoWriteAccess: for READ we write data from disk into the buffer.
             MmProbeAndLockPages(Mdl, KernelMode, IoWriteAccess);
         } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
             LockStatus = _SEH2_GetExceptionCode();
@@ -322,6 +323,7 @@ UDFPhWriteSynchronous(
         }
         NTSTATUS LockStatus = STATUS_SUCCESS;
         _SEH2_TRY {
+            // IoReadAccess: for WRITE we read data from the buffer to send to disk.
             MmProbeAndLockPages(Mdl, KernelMode, IoReadAccess);
         } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
             LockStatus = _SEH2_GetExceptionCode();
