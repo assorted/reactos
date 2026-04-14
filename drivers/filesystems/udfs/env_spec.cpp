@@ -132,7 +132,6 @@ UDFPhReadSynchronous(
     PUDF_PH_CALL_CONTEXT Context;
     PIRP                Irp;
     PIO_STACK_LOCATION IrpSp;
-    KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
     PVCB Vcb = NULL;
 
@@ -159,30 +158,39 @@ UDFPhReadSynchronous(
     // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
 
-    if (TRUE || CurIrql > PASSIVE_LEVEL) {
-        Irp = IoBuildAsynchronousFsdRequest(IRP_MJ_READ, DeviceObject, IoBuf,
-                                               ByteCount, &ROffset, &(Context->IosbToUse) );
-        if (!Irp) {
-            UDFPrint(("    !irp Async\n"));
+    {
+        // Use MmCreateMdl instead of IoAllocateMdl so that large buffers
+        // (> ~64 MB) are not rejected on Windows XP/Server 2003, where
+        // IoAllocateMdl returns NULL when the MDL size exceeds MAXUSHORT.
+        PMDL Mdl = MmCreateMdl(NULL, IoBuf, ByteCount);
+        if (!Mdl) {
+            UDFPrint(("    !Mdl\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        MmPrint(("    Alloc async Irp MDL=%x, ctx=%x\n", Irp->MdlAddress, Context));
-        IoSetCompletionRoutine(Irp, &UDFAsyncCompletionRoutine,
-                                Context, TRUE, TRUE, TRUE );
-    } else {
-        Irp = IoBuildSynchronousFsdRequest(IRP_MJ_READ, DeviceObject, IoBuf,
-                                               ByteCount, &ROffset, &(Context->event), &(Context->IosbToUse) );
+        MmBuildMdlForNonPagedPool(Mdl);
+        Irp = IoAllocateIrp(DeviceObject->StackSize, FALSE);
         if (!Irp) {
-            UDFPrint(("    !irp Sync\n"));
+            UDFPrint(("    !irp\n"));
+            IoFreeMdl(Mdl);
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
+        Irp->MdlAddress = Mdl;
+        Irp->UserIosb = &(Context->IosbToUse);
+        Irp->UserEvent = NULL;
+        Irp->RequestorMode = KernelMode;
+        Irp->Tail.Overlay.Thread = PsGetCurrentThread();
         MmPrint(("    Alloc Irp MDL=%x, ctx=%x\n", Irp->MdlAddress, Context));
+        IoSetCompletionRoutine(Irp, &UDFAsyncCompletionRoutine,
+                                Context, TRUE, TRUE, TRUE);
     }
 
     // Setup the next IRP stack location in the associated Irp for the disk
     // driver beneath us.
 
     IrpSp = IoGetNextIrpStackLocation(Irp);
+    IrpSp->MajorFunction = IRP_MJ_READ;
+    IrpSp->Parameters.Read.Length = ByteCount;
+    IrpSp->Parameters.Read.ByteOffset = ROffset;
 
     //  If this Irp is the result of a WriteThough operation,
     //  tell the device to write it through.
@@ -249,7 +257,6 @@ UDFPhWriteSynchronous(
     LARGE_INTEGER       ROffset;
     PUDF_PH_CALL_CONTEXT Context = NULL;
     PIRP                irp;
-    KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
 
     PVCB Vcb = NULL;
@@ -273,7 +280,7 @@ UDFPhWriteSynchronous(
     (*WrittenBytes) = 0;
 
    // Utilizing a temporary buffer to circumvent the situation where the IO buffer contains TransitionPage pages.
-   // This typically occurs during IRP_NOCACHE. Otherwise, an assert occurs within IoBuildAsynchronousFsdRequest.
+   // This typically occurs during IRP_NOCACHE. The buffer must be in NonPagedPool for MmBuildMdlForNonPagedPool.
     if (Flags & PH_TMP_BUFFER) {
         IoBuf = Buffer;
     } else {
@@ -287,21 +294,39 @@ UDFPhWriteSynchronous(
     // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
 
-    if (TRUE || CurIrql > PASSIVE_LEVEL) {
-        irp = IoBuildAsynchronousFsdRequest(IRP_MJ_WRITE, DeviceObject, IoBuf,
-                                            ByteCount, &ROffset, &(Context->IosbToUse) );
-        if (!irp) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-        MmPrint(("    Alloc async Irp MDL=%x, ctx=%x\n", irp->MdlAddress, Context));
-        IoSetCompletionRoutine( irp, &UDFAsyncCompletionRoutine,
-                                Context, TRUE, TRUE, TRUE );
-    } else {
-        irp = IoBuildSynchronousFsdRequest(IRP_MJ_WRITE, DeviceObject, IoBuf,
-                                           ByteCount, &ROffset, &(Context->event), &(Context->IosbToUse) );
-        if (!irp) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-        MmPrint(("    Alloc Irp MDL=%x\n, ctx=%x", irp->MdlAddress, Context));
+    {
+        // Use MmCreateMdl instead of IoAllocateMdl so that large buffers
+        // (> ~64 MB) are not rejected on Windows XP/Server 2003, where
+        // IoAllocateMdl returns NULL when the MDL size exceeds MAXUSHORT.
+        PMDL Mdl = MmCreateMdl(NULL, IoBuf, ByteCount);
+        if (!Mdl) {
+            UDFPrint(("    !Mdl\n"));
+            try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        }
+        MmBuildMdlForNonPagedPool(Mdl);
+        irp = IoAllocateIrp(DeviceObject->StackSize, FALSE);
+        if (!irp) {
+            UDFPrint(("    !irp\n"));
+            IoFreeMdl(Mdl);
+            try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        }
+        irp->MdlAddress = Mdl;
+        irp->UserIosb = &(Context->IosbToUse);
+        irp->UserEvent = NULL;
+        irp->RequestorMode = KernelMode;
+        irp->Tail.Overlay.Thread = PsGetCurrentThread();
+        MmPrint(("    Alloc Irp MDL=%x, ctx=%x\n", irp->MdlAddress, Context));
+        IoSetCompletionRoutine(irp, &UDFAsyncCompletionRoutine,
+                                Context, TRUE, TRUE, TRUE);
     }
 
-    (IoGetNextIrpStackLocation(irp))->Flags |= SL_OVERRIDE_VERIFY_VOLUME;
+    {
+        PIO_STACK_LOCATION IrpSp = IoGetNextIrpStackLocation(irp);
+        IrpSp->MajorFunction = IRP_MJ_WRITE;
+        IrpSp->Parameters.Write.Length = ByteCount;
+        IrpSp->Parameters.Write.ByteOffset = ROffset;
+        IrpSp->Flags |= SL_OVERRIDE_VERIFY_VOLUME;
+    }
     RC = IoCallDriver(DeviceObject, irp);
 
     if (RC == STATUS_PENDING) {
