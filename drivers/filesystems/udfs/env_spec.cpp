@@ -162,15 +162,19 @@ UDFPhReadSynchronous(
         // Use MmCreateMdl instead of IoAllocateMdl so that large buffers
         // (> ~64 MB) are not rejected on Windows XP/Server 2003, where
         // IoAllocateMdl returns NULL when the MDL size exceeds MAXUSHORT.
+        // MmProbeAndLockPages (like IoBuildAsynchronousFsdRequest does) sets
+        // MDL_PAGES_LOCKED without MDL_SOURCE_IS_NONPAGED_POOL, making
+        // MmUnlockPages safe in the async completion routine.
         PMDL Mdl = MmCreateMdl(NULL, IoBuf, ByteCount);
         if (!Mdl) {
             UDFPrint(("    !Mdl\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        MmBuildMdlForNonPagedPool(Mdl);
+        MmProbeAndLockPages(Mdl, KernelMode, IoWriteAccess);
         Irp = IoAllocateIrp(DeviceObject->StackSize, FALSE);
         if (!Irp) {
             UDFPrint(("    !irp\n"));
+            MmUnlockPages(Mdl);
             IoFreeMdl(Mdl);
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
@@ -280,7 +284,7 @@ UDFPhWriteSynchronous(
     (*WrittenBytes) = 0;
 
    // Utilizing a temporary buffer to circumvent the situation where the IO buffer contains TransitionPage pages.
-   // This typically occurs during IRP_NOCACHE. The buffer must be in NonPagedPool for MmBuildMdlForNonPagedPool.
+   // This typically occurs during IRP_NOCACHE. The buffer must be in NonPagedPool for MmProbeAndLockPages.
     if (Flags & PH_TMP_BUFFER) {
         IoBuf = Buffer;
     } else {
@@ -298,15 +302,19 @@ UDFPhWriteSynchronous(
         // Use MmCreateMdl instead of IoAllocateMdl so that large buffers
         // (> ~64 MB) are not rejected on Windows XP/Server 2003, where
         // IoAllocateMdl returns NULL when the MDL size exceeds MAXUSHORT.
+        // MmProbeAndLockPages (like IoBuildAsynchronousFsdRequest does) sets
+        // MDL_PAGES_LOCKED without MDL_SOURCE_IS_NONPAGED_POOL, making
+        // MmUnlockPages safe in the async completion routine.
         PMDL Mdl = MmCreateMdl(NULL, IoBuf, ByteCount);
         if (!Mdl) {
             UDFPrint(("    !Mdl\n"));
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
-        MmBuildMdlForNonPagedPool(Mdl);
+        MmProbeAndLockPages(Mdl, KernelMode, IoReadAccess);
         irp = IoAllocateIrp(DeviceObject->StackSize, FALSE);
         if (!irp) {
             UDFPrint(("    !irp\n"));
+            MmUnlockPages(Mdl);
             IoFreeMdl(Mdl);
             try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
