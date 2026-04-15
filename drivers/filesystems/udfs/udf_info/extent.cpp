@@ -396,7 +396,7 @@ UDFShortAllocDescToMapping(
         }
         else {
 #ifdef UDF_CHECK_EXTENT_SIZE_ALIGNMENT
-            ASSERT(!(len & (Vcb->LBlockSize-1) ));
+            ASSERT(!(len & (Vcb->SectorSize-1) ));
 #endif //UDF_CHECK_EXTENT_SIZE_ALIGNMENT
             if (len & (Vcb->SectorSize-1)) {
                 w2k_compat = TRUE;
@@ -693,7 +693,7 @@ UDFExtAllocDescToMapping(
         }*/
         Extent[i].extLength = len;
 #ifdef UDF_CHECK_EXTENT_SIZE_ALIGNMENT
-        ASSERT(!(len & (Vcb->LBlockSize-1) ));
+        ASSERT(!(len & (Vcb->SectorSize-1) ));
 #endif //UDF_CHECK_EXTENT_SIZE_ALIGNMENT
         // Note: for compatibility Adaptec DirectCD we check 'len' here
         //       That strange implementation records bogus extLocation in terminal entries
@@ -1198,8 +1198,8 @@ UDFBuildExtAllocDescs(
     uint32 i, j;
     uint32 len=0, ac, len2;
     uint32 TagLoc, prevTagLoc;
-    uint32 LBS = Vcb->LBlockSize;
-    uint32 LBSh = Vcb->BlockSizeBits;
+    uint32 LBS = Vcb->SectorSize;
+    uint32 LBSh = Vcb->SectorShift;
     PEXTENT_MAP Extent = FileInfo->Dloc->DataLoc.Mapping;
     PEXTENT_INFO AllocExtent = &(FileInfo->Dloc->AllocLoc);
     PEXT_AD Alloc, saved_Alloc;
@@ -2952,7 +2952,7 @@ UDFReadExtentCached(
         to_read = (to_read < Length) ?
                    to_read : Length;
         if (flags == EXTENT_RECORDED_ALLOCATED) {
-            status = UDFReadDataCached(Vcb, TRUE, ( ((uint64)Lba) << Vcb->BlockSizeBits) + sect_offs, to_read, Buffer, &_ReadBytes);
+            status = UDFReadDataCached(Vcb, TRUE, ( ((uint64)Lba) << Vcb->SectorShift) + sect_offs, to_read, Buffer, &_ReadBytes);
             (*ReadBytes) += _ReadBytes;
         } else {
             RtlZeroMemory(Buffer, to_read);

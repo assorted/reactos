@@ -718,7 +718,7 @@ UDFDetermineVolumeLayout(
         // be unreadable. We should forget about them, because UDF needs
         // last _readable_ sector.
 
-        TempBuffer = MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
+        TempBuffer = MyAllocatePool__(PagedPool, Vcb->SectorSize);
 
         if (!TempBuffer) { 
             return STATUS_INSUFFICIENT_RESOURCES;
@@ -1066,7 +1066,7 @@ UDFReadInSector(
         return STATUS_INVALID_PARAMETER;
     }
 
-    tmp_buff = (int8*)MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
+    tmp_buff = (int8*)MyAllocatePool__(PagedPool, Vcb->SectorSize);
     if (!tmp_buff) return STATUS_INSUFFICIENT_RESOURCES;
     status = UDFReadSectors(IrpContext, Vcb, Translate, Lba, 1, FALSE, tmp_buff, &_ReadBytes);
     if (NT_SUCCESS(status)) {
@@ -1209,7 +1209,7 @@ UDFWriteInSector(
         BrutePoint();
         return STATUS_INVALID_PARAMETER;
     }
-    tmp_buff = (int8*)MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
+    tmp_buff = (int8*)MyAllocatePool__(PagedPool, Vcb->SectorSize);
     if (!tmp_buff) {
         BrutePoint();
         return STATUS_INSUFFICIENT_RESOURCES;

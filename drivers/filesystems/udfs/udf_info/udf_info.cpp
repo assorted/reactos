@@ -3698,7 +3698,7 @@ err_vat_15:
         goto err_vat_15;
     }
     // read VAT & remember old version
-    Vcb->Vat = (uint32*)DbgAllocatePool(NonPagedPool, (Vcb->LastPossibleLBA+1)*sizeof(uint32) );
+    Vcb->Vat = (uint32*)DbgAllocatePool(PagedPool, (Vcb->LastPossibleLBA+1)*sizeof(uint32) );
     if (!Vcb->Vat) {
         goto err_vat_15_2;
     }
@@ -3777,7 +3777,7 @@ UDFReadFileEA(
     if (FileDirNdx->FileInfo) {
         FileEntry = (PFILE_ENTRY)(FileDirNdx->FileInfo->Dloc->FileEntry);
     } else {
-        FileEntry = (PFILE_ENTRY)MyAllocatePool__(NonPagedPool, Vcb->BlockSize);
+        FileEntry = (PFILE_ENTRY)MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
         if (!FileEntry) return;
         if (!NT_SUCCESS(status = UDFReadFileEntry(Vcb, &(FileDirNdx->FileEntry), FileEntry, &Ident))) {
             MyFreePool__(FileEntry);

@@ -411,8 +411,8 @@ UDFCheckSpaceAllocation_(
 
     if (!Map) return;
 
-    BS = Vcb->BlockSize;
-    BSh = Vcb->BlockSizeBits;
+    BS = Vcb->SectorSize;
+    BSh = Vcb->SectorShift;
 
     UDFAcquireResourceShared(&(Vcb->BitMapResource1),TRUE);
     // walk through all frags in data area specified
@@ -570,7 +570,7 @@ UDFMarkSpaceAsXXXNoProtect_(
         AdPrint(("Alloc:%x:%s:%x:@:%x:File:%x:Line:%d\n",
             FE_lba,
             asUsed ? ((asXXX & AS_BAD) ? "B" : "U") : "F",
-            (Map[i].extLength & UDF_EXTENT_LENGTH_MASK) >> Vcb->BlockSizeBits,
+            (Map[i].extLength & UDF_EXTENT_LENGTH_MASK) >> Vcb->SectorShift,
             Map[i].extLocation,
             BugCheckId,
             Line

@@ -81,7 +81,7 @@ UDFPrepareXSpaceBitmap(
     LBS = Vcb->SectorSize;
 
     *XSl = sizeof(SPACE_BITMAP_DESC) + ((plen+7)>>3);
-    _XSBM = (int8*)DbgAllocatePool(NonPagedPool, (*XSl + BS - 1) & ~(BS-1) );
+    _XSBM = (int8*)DbgAllocatePool(PagedPool, (*XSl + BS - 1) & ~(BS-1) );
     *XSBM = _XSBM;
 
     switch (XSpaceBitmap->extLength >> 30) {
@@ -350,7 +350,7 @@ UDFUpdateUSpaceDesc(
 
     usd = (PUNALLOC_SPACE_DESC)Buf;
     usd->numAllocDescs = 0;
-    RtlZeroMemory(Buf+sizeof(UNALLOC_SPACE_DESC), Vcb->BlockSize - sizeof(UNALLOC_SPACE_DESC));
+    RtlZeroMemory(Buf+sizeof(UNALLOC_SPACE_DESC), Vcb->SectorSize - sizeof(UNALLOC_SPACE_DESC));
     UDFSetUpTag(Vcb, &(usd->descTag), 0, usd->descTag.tagLocation);
     UDFWriteSectors(Vcb, TRUE, usd->descTag.tagLocation, 1, FALSE, Buf, &WrittenBytes);
     return STATUS_SUCCESS;
@@ -703,7 +703,7 @@ UDFUpdateVDS(
             status = UDFReadTagged(Vcb, Buf, vds[i].block, vds[i].block, &ident);
             if (NT_SUCCESS(status) && (i == VDS_POS_PARTITION_DESC)) {
                 // load partition descriptor(s)
-                int8*  Buf2 = (int8*)DbgAllocatePool(NonPagedPool,Vcb->BlockSize);
+                int8*  Buf2 = (int8*)DbgAllocatePool(NonPagedPool,Vcb->SectorSize);
                 if (!Buf2) {
                     DbgFreePool(Buf);
                     return STATUS_INSUFFICIENT_RESOURCES;
@@ -1643,7 +1643,7 @@ UDFAddXSpaceBitmap(
     i=UDFPartStart(Vcb, RefPartNum);
     flags = bm->extLength >> 30;
     if (!flags /*|| flags == EXTENT_NOT_RECORDED_ALLOCATED*/) {
-        tmp = (int8*)DbgAllocatePool(NonPagedPool, max(Length, Vcb->SectorSize));
+        tmp = (int8*)DbgAllocatePool(PagedPool, max(Length, Vcb->SectorSize));
         if (!tmp) return STATUS_INSUFFICIENT_RESOURCES;
         locAddr.partitionReferenceNum = (uint16)RefPartNum;
         locAddr.logicalBlockNum = bm->extPosition;
@@ -1723,7 +1723,7 @@ UDFVerifyXSpaceBitmap(
 //    i=UDFPartStart(Vcb, RefPartNum);
     flags = bm->extLength >> 30;
     if (!flags /*|| flags == EXTENT_NOT_RECORDED_ALLOCATED*/) {
-        tmp = (int8*)DbgAllocatePool(NonPagedPool, max(Length, Vcb->SectorSize));
+        tmp = (int8*)DbgAllocatePool(PagedPool, max(Length, Vcb->SectorSize));
         if (!tmp) return STATUS_INSUFFICIENT_RESOURCES;
         locAddr.partitionReferenceNum = (uint16)RefPartNum;
         locAddr.logicalBlockNum = bm->extPosition;
@@ -1823,7 +1823,7 @@ UDFDelXSpaceBitmap(
             MyFreePool__(tmp);
             return status;
         }
-        if (!NT_SUCCESS(status = UDFReadData(Vcb, FALSE, ((uint64)j)<<Vcb->BlockSizeBits, Length, FALSE, tmp, &ReadBytes))) {
+        if (!NT_SUCCESS(status = UDFReadData(Vcb, FALSE, ((uint64)j)<<Vcb->SectorShift, Length, FALSE, tmp, &ReadBytes))) {
             MyFreePool__(tmp);
             return status;
         }
@@ -1964,13 +1964,13 @@ UDFBuildFreeSpaceBitmap(
 
     if (!(Vcb->FSBM_Bitmap)) {
         // init Bitmap buffer if necessary
-        Vcb->FSBM_Bitmap = (int8*)DbgAllocatePool(NonPagedPool, (i = (Vcb->LastPossibleLBA+1+7)>>3) );
+        Vcb->FSBM_Bitmap = (int8*)DbgAllocatePool(PagedPool, (i = (Vcb->LastPossibleLBA+1+7)>>3) );
         if (!(Vcb->FSBM_Bitmap)) return STATUS_INSUFFICIENT_RESOURCES;
 
         RtlZeroMemory(Vcb->FSBM_Bitmap, i);
 
 #ifdef UDF_TRACK_ONDISK_ALLOCATION_OWNERS
-        Vcb->FSBM_Bitmap_owners = (uint32*)DbgAllocatePool(NonPagedPool, (Vcb->LastPossibleLBA+1)*sizeof(uint32));
+        Vcb->FSBM_Bitmap_owners = (uint32*)DbgAllocatePool(PagedPool, (Vcb->LastPossibleLBA+1)*sizeof(uint32));
         if (!(Vcb->FSBM_Bitmap_owners)) {
             MyFreePool__(Vcb->ZSBM_Bitmap);
             Vcb->ZSBM_Bitmap = NULL;
@@ -2964,7 +2964,7 @@ UDFGetDiskInfoAndVerify(
 
         UDFLoadFileset(Vcb,FileSetDesc, &(Vcb->RootLbAddr), &(Vcb->SysStreamLbAddr));
 
-        Vcb->FSBM_OldBitmap = (int8*)DbgAllocatePool(NonPagedPool, Vcb->FSBM_ByteCount);
+        Vcb->FSBM_OldBitmap = (int8*)DbgAllocatePool(PagedPool, Vcb->FSBM_ByteCount);
         if (!(Vcb->FSBM_OldBitmap)) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
         RtlCopyMemory(Vcb->FSBM_OldBitmap, Vcb->FSBM_Bitmap, Vcb->FSBM_ByteCount);
 
