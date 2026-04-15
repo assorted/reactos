@@ -321,7 +321,6 @@ UDFPhWriteSynchronous(
             IoBuf = Buffer;
         }
     }
-    if (!IoBuf) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
 
     Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
     if (!Context) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
