@@ -134,6 +134,7 @@ UDFPhReadSynchronous(
     PIO_STACK_LOCATION IrpSp;
     PVOID               IoBuf = NULL;
     PVCB Vcb = NULL;
+    BOOLEAN             IoBufAllocated = FALSE;
 
     ROffset.QuadPart = Offset;
     (*ReadBytes) = 0;
@@ -145,6 +146,14 @@ UDFPhReadSynchronous(
         IoBuf = Buffer;
     } else {
         IoBuf = DbgAllocatePoolWithTag(NonPagedPool, ByteCount, 'bNWD');
+        if (IoBuf) {
+            IoBufAllocated = TRUE;
+        } else {
+            // For large transfers the NonPagedPool allocation may fail.
+            // Fall back to using Buffer directly; MmProbeAndLockPages will
+            // bring any TransitionPage pages into memory and lock them.
+            IoBuf = Buffer;
+        }
     }
     if (!IoBuf) {
         UDFPrint(("    !IoBuf\n"));
@@ -231,14 +240,14 @@ UDFPhReadSynchronous(
     if (NT_SUCCESS(RC)) {
         (*ReadBytes) = Context->IosbToUse.Information;
     }
-    if (!(Flags & PH_TMP_BUFFER)) {
+    if (IoBufAllocated) {
         RtlCopyMemory(Buffer, IoBuf, *ReadBytes);
     }
 
 try_exit: NOTHING;
 
     if (Context) MyFreePool__(Context);
-    if (IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
+    if (IoBufAllocated) DbgFreePool(IoBuf);
 
     return(RC);
 } // end UDFPhReadSynchronous()
@@ -273,6 +282,7 @@ UDFPhWriteSynchronous(
     PUDF_PH_CALL_CONTEXT Context = NULL;
     PIRP                irp;
     PVOID               IoBuf = NULL;
+    BOOLEAN             IoBufAllocated = FALSE;
 
     PVCB Vcb = NULL;
 
@@ -295,14 +305,23 @@ UDFPhWriteSynchronous(
     (*WrittenBytes) = 0;
 
    // Utilizing a temporary buffer to circumvent the situation where the IO buffer contains TransitionPage pages.
-   // This typically occurs during IRP_NOCACHE. The buffer must be in NonPagedPool for MmProbeAndLockPages.
+   // This typically occurs during IRP_NOCACHE. MmProbeAndLockPages will lock whatever pages Buffer points to,
+   // but copying to NonPagedPool first avoids holding those pages locked across the entire I/O.
     if (Flags & PH_TMP_BUFFER) {
         IoBuf = Buffer;
     } else {
         IoBuf = DbgAllocatePool(NonPagedPool, ByteCount);
-        if (!IoBuf) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
-        RtlCopyMemory(IoBuf, Buffer, ByteCount);
+        if (IoBuf) {
+            IoBufAllocated = TRUE;
+            RtlCopyMemory(IoBuf, Buffer, ByteCount);
+        } else {
+            // For large transfers the NonPagedPool allocation may fail.
+            // Fall back to using Buffer directly; MmProbeAndLockPages will
+            // bring any TransitionPage pages into memory and lock them.
+            IoBuf = Buffer;
+        }
     }
+    if (!IoBuf) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
 
     Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
     if (!Context) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
@@ -373,7 +392,7 @@ UDFPhWriteSynchronous(
 try_exit: NOTHING;
 
     if (Context) MyFreePool__(Context);
-    if (IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
+    if (IoBufAllocated) DbgFreePool(IoBuf);
     if (!NT_SUCCESS(RC)) {
         UDFPrint(("WriteError\n"));
     }
