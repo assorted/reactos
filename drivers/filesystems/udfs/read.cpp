@@ -523,9 +523,11 @@ UDFLockUserBuffer(
     // Is a MDL already present in the IRP
     if (!IrpContext->Irp->MdlAddress) {
 
-        // This will place allocated Mdl to Irp
-        if (!(Mdl = IoAllocateMdl(IrpContext->Irp->UserBuffer, BufferLength, FALSE, FALSE, IrpContext->Irp))) {
-
+        // Use MmCreateMdl instead of IoAllocateMdl so that large buffers
+        // (> ~64 MB) are not rejected on Windows XP/Server 2003, where
+        // IoAllocateMdl returns NULL when the MDL size exceeds MAXUSHORT.
+        Mdl = MmCreateMdl(NULL, IrpContext->Irp->UserBuffer, BufferLength);
+        if (!Mdl) {
             return(RC = STATUS_INSUFFICIENT_RESOURCES);
         }
 
@@ -542,10 +544,13 @@ UDFLockUserBuffer(
         } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
 
             IoFreeMdl(Mdl);
-            IrpContext->Irp->MdlAddress = NULL;
             RC = STATUS_INVALID_USER_BUFFER;
 
         } _SEH2_END;
+
+        if (NT_SUCCESS(RC)) {
+            IrpContext->Irp->MdlAddress = Mdl;
+        }
     }
 
     return(RC);
