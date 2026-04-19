@@ -111,7 +111,7 @@ UDFSyncCompletionRoutine2(
 
  Expected Interrupt Level (for execution) :
 
-  <= IRQL_DISPATCH_LEVEL
+  <= APC_LEVEL (MmProbeAndLockPages requires IRQL <= APC_LEVEL)
 
  Return Value: STATUS_SUCCESS/Error
 
@@ -166,6 +166,13 @@ UDFPhReadSynchronous(
     }
     // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
+
+    // MmProbeAndLockPages requires IRQL <= APC_LEVEL.
+    if (KeGetCurrentIrql() > APC_LEVEL) {
+        UDFPrint(("    UDFPhReadSynchronous: called above APC_LEVEL\n"));
+        ASSERT(FALSE);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
 
     {
         // Use MmCreateMdl instead of IoAllocateMdl so that large buffers
@@ -262,7 +269,7 @@ try_exit: NOTHING;
 
  Expected Interrupt Level (for execution) :
 
-  <= IRQL_DISPATCH_LEVEL
+  <= APC_LEVEL (MmProbeAndLockPages requires IRQL <= APC_LEVEL)
 
  Return Value: STATUS_SUCCESS/Error
 
@@ -326,6 +333,13 @@ UDFPhWriteSynchronous(
     if (!Context) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
     // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
+
+    // MmProbeAndLockPages requires IRQL <= APC_LEVEL.
+    if (KeGetCurrentIrql() > APC_LEVEL) {
+        UDFPrint(("    UDFPhWriteSynchronous: called above APC_LEVEL\n"));
+        ASSERT(FALSE);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
 
     {
         // Use MmCreateMdl instead of IoAllocateMdl so that large buffers
