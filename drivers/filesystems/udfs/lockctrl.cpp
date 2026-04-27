@@ -409,7 +409,6 @@ UDFFastUnlockAll(
 
         //  Release the Fcb, and return to our caller
 
-        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
         UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
         FsRtlExitFileSystem();
 
@@ -507,7 +506,6 @@ UDFFastUnlockAllByKey(
 
         //  Release the Fcb, and return to our caller
 
-        UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
         UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
         FsRtlExitFileSystem();
 

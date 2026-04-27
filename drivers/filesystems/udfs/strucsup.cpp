@@ -146,8 +146,7 @@ Return Value:
     ExInitializeResourceLite(&FcbNonpaged->FcbResource);
     ExInitializeFastMutex(&FcbNonpaged->FcbMutex);
     ExInitializeFastMutex(&FcbNonpaged->AdvancedFcbHeaderMutex);
-
-    ExInitializeResourceLite(&FcbNonpaged->CcbListResource);
+    ExInitializeFastMutex(&FcbNonpaged->FcbFastMutex);
 
     return FcbNonpaged;
 }
@@ -181,7 +180,6 @@ Return Value:
     
     ExDeleteResourceLite(&FcbNonpaged->FcbResource);
     ExDeleteResourceLite(&FcbNonpaged->FcbPagingIoResource);
-    ExDeleteResourceLite(&FcbNonpaged->CcbListResource);
 
     UDFDeallocateFcbNonpaged(FcbNonpaged);
 
@@ -243,15 +241,8 @@ Return Value:
     NT_ASSERT(IsListEmpty(&Fcb->ParentLcbQueue));
     NT_ASSERT(IsListEmpty(&Fcb->ChildLcbQueue));
 
-    // Deinitialize FCBName field.
-
-    if (Fcb->FCBName) {
-        if (Fcb->FCBName->ObjectName.Buffer) {
-            MyFreePool__(Fcb->FCBName->ObjectName.Buffer);
-        }
-        UDFReleaseObjectName(Fcb->FCBName);
-        Fcb->FCBName = NULL;
-    }
+    // NOTE: FCB no longer stores FCBName - all names are stored in LCB.
+    // No FCBName cleanup needed.
 
     // Release any Filter Context structures associated with this FCB.
     // Only if FCB was fully initialized (Header.Resource is set by
@@ -311,7 +302,7 @@ Return Value:
 
 /*
     This routine walks through the tree to RootDir & kills all unreferenced
-    structures using LCB-based parent traversal (similar to MS UdfTeardownStructures).
+    structures using LCB-based parent traversal.
 
     StartingFcb must be acquired exclusively by caller.
     This function will acquire locks for parent FCBs as needed.
@@ -415,7 +406,7 @@ UDFTeardownStructures(
                         UDFTeardownStructures(IrpContext, ParentFcb, TRUE, &Removed);
 
                         if (!Removed) {
-                            UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+                            UDFReleaseFcb(IrpContext, ParentFcb);
                         }
                     }
 
@@ -423,7 +414,7 @@ UDFTeardownStructures(
                     // Get this new parent Fcb to work on.
                     //
                     ParentFcb = Lcb->ParentFcb;
-                    UDFAcquireResourceExclusive(&ParentFcb->FcbNonpaged->FcbResource, TRUE);
+                    UDFAcquireFcbExclusive(IrpContext, ParentFcb, FALSE);
                 }
 
                 //
@@ -440,7 +431,7 @@ UDFTeardownStructures(
                     // stop right now.
                     //
                     UDFUnlockVcb(IrpContext, Vcb);
-                    UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+                    UDFReleaseFcb(IrpContext, ParentFcb);
                     ParentFcb = NULL;
                     Abort = TRUE;
                     break;
@@ -456,13 +447,13 @@ UDFTeardownStructures(
                          Lcb, ParentFcb, CurrentFcb));
 
                 //
-                // Remove LCB from queues
+                // Remove LCB from queues (this frees the LCB)
                 //
                 UDFRemovePrefix(IrpContext, Lcb);
 
                 //
-                // Decrement parent's references
-                // (UDFAcquirePrefix incremented both when LCB was created)
+                // Decrement parent's references,
+                // parent refs were incremented in UDFAcquirePrefix when LCB was created)
                 //
                 if (ParentFcb->FileInfo) {
                     UDFCloseFile__(IrpContext, Vcb, ParentFcb->FileInfo);
@@ -481,8 +472,9 @@ UDFTeardownStructures(
 
             //
             // Now that we have removed all of the prefixes of this Fcb we can make the final check.
-            // Lock the Vcb again so we can inspect the child's references.
+            // Lock ordering: FcbTableMutex (outer) before VcbMutex (inner).
             //
+            UDFLockFcbTable(IrpContext, Vcb);
             UDFLockVcb(IrpContext, Vcb);
 
             if (CurrentFcb->FcbReference != 0) {
@@ -490,9 +482,10 @@ UDFTeardownStructures(
                 // Nope, nothing more to do.  Stop right now.
                 //
                 UDFUnlockVcb(IrpContext, Vcb);
+                UDFUnlockFcbTable(IrpContext, Vcb);
 
                 if (ParentFcb != NULL) {
-                    UDFReleaseResource(&ParentFcb->FcbNonpaged->FcbResource);
+                    UDFReleaseFcb(IrpContext, ParentFcb);
                 }
                 break;
             }
@@ -510,6 +503,7 @@ UDFTeardownStructures(
             //
             BOOLEAN ShouldDelete = !CurrentFcb->FcbCleanup;
             UDFUnlockVcb(IrpContext, Vcb);
+            UDFUnlockFcbTable(IrpContext, Vcb);
 
             if (ShouldDelete && CurrentFcb->FileInfo) {
 
@@ -524,6 +518,29 @@ UDFTeardownStructures(
                 }
                 else if (!(CurrentFcb->FcbState & UDF_FCB_DELETED)) {
                     UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
+                }
+                else {
+                    // File is already deleted - clear Modified flags without flushing to disk.
+                    // The deletion was already written in cleanup.cpp via UDFUnlinkFile__.
+                    // Any pending modifications are irrelevant for deleted files.
+                    PUDF_FILE_INFO FileInfo = CurrentFcb->FileInfo;
+                    PUDF_DATALOC_INFO Dloc = FileInfo->Dloc;
+                    if (Dloc) {
+                        Dloc->FE_Flags &= ~UDF_FE_FLAG_FE_MODIFIED;
+                        Dloc->DataLoc.Modified = FALSE;
+                        Dloc->DataLoc.Flags &= ~EXTENT_FLAG_PREALLOCATED;
+                        Dloc->AllocLoc.Modified = FALSE;
+                        Dloc->FELoc.Modified = FALSE;
+                    }
+                    // Also clear FI_Modified flag in parent's DirIndex
+                    if (FileInfo->ParentFile && FileInfo->ParentFile->Dloc) {
+                        PDIR_INDEX_ITEM DirNdx = UDFDirIndex(
+                            FileInfo->ParentFile->Dloc->DirIndex,
+                            FileInfo->Index);
+                        if (DirNdx) {
+                            DirNdx->FI_Flags &= ~UDF_FI_FLAG_FI_MODIFIED;
+                        }
+                    }
                 }
 
                 // check if we should try to delete Parent for the next time
@@ -543,8 +560,7 @@ UDFTeardownStructures(
                     AdPrint(("UDFTeardownStructures, deleting Fcb %p\n", CurrentFcb));
 
                     // Release the exclusive FCB lock before deleting the FCB.
-                    UDF_CHECK_PAGING_IO_RESOURCE(CurrentFcb);
-                    UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+                    UDFReleaseFcb(IrpContext, CurrentFcb);
 
                     // Save FileInfo before freeing FCB (avoid use-after-free)
                     PUDF_FILE_INFO FileInfoToFree = CurrentFcb->FileInfo;
@@ -564,7 +580,7 @@ UDFTeardownStructures(
                         CurrentFcb->FileInfo->Dloc->CommonFcb = CurrentFcb;
                     }
 
-                    UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+                    UDFReleaseFcb(IrpContext, CurrentFcb);
                     CurrentFcb = ParentFcb;
                     ParentFcb = NULL;
                     AcquiredCurrentFcb = TRUE;
@@ -572,7 +588,7 @@ UDFTeardownStructures(
             } else {
                 // Cannot delete - release and move to parent
                 if (CurrentFcb != StartingFcb || AcquiredCurrentFcb) {
-                    UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+                    UDFReleaseFcb(IrpContext, CurrentFcb);
                 }
                 CurrentFcb = ParentFcb;
                 ParentFcb = NULL;
@@ -587,7 +603,7 @@ UDFTeardownStructures(
         // Release the current Fcb if we have acquired it.
         //
         if (AcquiredCurrentFcb && (CurrentFcb != NULL)) {
-            UDFReleaseResource(&CurrentFcb->FcbNonpaged->FcbResource);
+            UDFReleaseFcb(IrpContext, CurrentFcb);
         }
 
         //
@@ -855,9 +871,7 @@ NTSTATUS
 UDFInitializeFCB(
     IN PFCB             Fcb,            // FCB structure to be initialized
     IN PVCB             Vcb,            // logical volume (VCB) pointer
-    IN PtrUDFObjectName PtrObjectName,  // name of the object
-    IN ULONG            Flags,          // is this a file/directory, etc.
-    IN PFILE_OBJECT     FileObject)     // optional file object to be initialized
+    IN ULONG            Flags)          // is this a file/directory, etc.
 {
     ASSERT_LOCKED_VCB(Vcb);
 
@@ -873,19 +887,24 @@ UDFInitializeFCB(
     Fcb->FcbState = Flags;
 
     // NOTE: FCB is NOT added to FcbTable here.
-    // Caller is responsible for calling UDFInsertFcbTable after
-    // FCB is fully initialized (matching MS pattern where
-    // UdfInsertFcbTable is called at the END of initialization).
+    // Caller is responsible for calling UDFInsertFcbIntoTable after
+    // FCB is fully initialized.
 
     // initialize the various list heads
-    InitializeListHead(&Fcb->NextCCB);
     InitializeListHead(&Fcb->ParentLcbQueue);
     InitializeListHead(&Fcb->ChildLcbQueue);
+
+    // Splay tree roots for fast child lookup by name
+    Fcb->ExactCaseRoot = NULL;
+    Fcb->IgnoreCaseRoot = NULL;
+    Fcb->ShortNameRoot = NULL;
 
     Fcb->FcbReference = 0;
     Fcb->FcbCleanup = 0;
 
-    Fcb->FCBName = PtrObjectName;
+    // Initialize file name cache synchronization
+    Fcb->FcbLockThread = NULL;
+    Fcb->FcbLockCount = 0;
 
     Fcb->Vcb = Vcb;
 
@@ -1056,7 +1075,7 @@ UDFInitializeVCB(
 
         ExInitializeResourceLite(&Vcb->VcbResource);
         ExInitializeResourceLite(&Vcb->BitMapResource1);
-        ExInitializeResourceLite(&Vcb->FileIdResource);
+
         ExInitializeResourceLite(&Vcb->DlocResource);
         ExInitializeResourceLite(&Vcb->DlocResource2);
         ExInitializeResourceLite(&Vcb->FlushResource);
@@ -1064,6 +1083,7 @@ UDFInitializeVCB(
         ExInitializeResourceLite(&Vcb->IoResource);
 
         ExInitializeFastMutex(&Vcb->VcbMutex);
+        ExInitializeFastMutex(&Vcb->FcbTableMutex);
 
         // Initialize the generic Fcb Table.
 
@@ -1163,7 +1183,6 @@ UDFCompleteMount(
 {
     NTSTATUS Status;
     UNICODE_STRING LocalPath;
-    PtrUDFObjectName RootName;
     ULONG LastSector = 0;
     BOOLEAN UnlockVcb = FALSE;
     FILE_ID FileId{};
@@ -1199,30 +1218,13 @@ UDFCompleteMount(
         Vcb->RootIndexFcb->FileId = UdfGetFidFromLbAddr(Vcb->RootLbAddr);
         SetFlag(Vcb->RootIndexFcb->FileId.HighPart, FID_DIR_MASK);
 
-        // Allocate and set root FCB unique name
-        RootName = UDFAllocateObjectName();
+        Vcb->RootIndexFcb->FileInfo = (PUDF_FILE_INFO)MyAllocatePool__(NonPagedPool,sizeof(UDF_FILE_INFO));
 
-        if (!RootName) {
+        if (!Vcb->RootIndexFcb->FileInfo) {
 
             UDFDeleteFcb(IrpContext, Vcb->RootIndexFcb);
             Vcb->RootIndexFcb = NULL;
             try_return(Status = STATUS_INSUFFICIENT_RESOURCES);
-        }
-
-        Status = MyInitUnicodeString(&RootName->ObjectName, UDF_ROOTDIR_NAME);
-        if (!NT_SUCCESS(Status))
-            goto insuf_res_1;
-
-        Vcb->RootIndexFcb->FileInfo = (PUDF_FILE_INFO)MyAllocatePool__(NonPagedPool,sizeof(UDF_FILE_INFO));
-
-        if (!Vcb->RootIndexFcb->FileInfo) {
-            Status = STATUS_INSUFFICIENT_RESOURCES;
-    insuf_res_1:
-            MyFreePool__(RootName->ObjectName.Buffer);
-            UDFReleaseObjectName(RootName);
-            UDFDeleteFcb(IrpContext, Vcb->RootIndexFcb);
-            Vcb->RootIndexFcb = NULL;
-            try_return(Status);
         }
 
         UDFPrint(("UDFCompleteMount: open Root Dir\n"));
@@ -1233,7 +1235,9 @@ UDFCompleteMount(
 
             UDFCleanUpFile__(Vcb, Vcb->RootIndexFcb->FileInfo);
             MyFreePool__(Vcb->RootIndexFcb->FileInfo);
-            goto insuf_res_1;
+            UDFDeleteFcb(IrpContext, Vcb->RootIndexFcb);
+            Vcb->RootIndexFcb = NULL;
+            try_return(Status);
         }
 
         Vcb->RootIndexFcb->FileInfo->Fcb = Vcb->RootIndexFcb;
@@ -1245,7 +1249,7 @@ UDFCompleteMount(
         UDFLockVcb(IrpContext, Vcb);
         UnlockVcb = TRUE;
 
-        Status = UDFInitializeFCB(Vcb->RootIndexFcb, Vcb, RootName, UDF_FCB_ROOT_DIRECTORY | UDF_FCB_DIRECTORY, NULL);
+        Status = UDFInitializeFCB(Vcb->RootIndexFcb, Vcb, UDF_FCB_ROOT_DIRECTORY | UDF_FCB_DIRECTORY);
 
         if (!NT_SUCCESS(Status)) {
 
@@ -1301,11 +1305,8 @@ UDFCompleteMount(
         // Open Unallocatable space stream
         // Generally, it should be placed in SystemStreamDirectory, but some
         // stupid apps think that RootDirectory is much better place.... :((
-        Status = MyInitUnicodeString(&LocalPath, UDF_FN_NON_ALLOCATABLE);
-        if (NT_SUCCESS(Status)) {
-            Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &LocalPath, Vcb->RootIndexFcb->FileInfo, &Vcb->NonAllocFileInfo, NULL);
-            MyFreePool__(LocalPath.Buffer);
-        }
+        LocalPath = RTL_CONSTANT_STRING(UDF_FN_NON_ALLOCATABLE);
+        Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &LocalPath, Vcb->RootIndexFcb->FileInfo, &Vcb->NonAllocFileInfo, NULL);
 
         if (!NT_SUCCESS(Status) && (Status != STATUS_OBJECT_NAME_NOT_FOUND)) {
 
@@ -1327,12 +1328,8 @@ UDFCompleteMount(
             UDFDirIndex(UDFGetDirIndexByFileInfo(Vcb->NonAllocFileInfo), Vcb->NonAllocFileInfo->Index)->FI_Flags |= UDF_FI_FLAG_FI_INTERNAL;
         } else {
             /* try to read Non-allocatable from alternate locations */
-            Status = MyInitUnicodeString(&LocalPath, UDF_FN_NON_ALLOCATABLE_2);
-            if (!NT_SUCCESS(Status)) {
-                goto unwind_1;
-            }
+            LocalPath = RTL_CONSTANT_STRING(UDF_FN_NON_ALLOCATABLE_2);
             Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &LocalPath, Vcb->RootIndexFcb->FileInfo, &(Vcb->NonAllocFileInfo), NULL);
-            MyFreePool__(LocalPath.Buffer);
             if (!NT_SUCCESS(Status) && (Status != STATUS_OBJECT_NAME_NOT_FOUND)) {
                 goto unwind_1;
             }
@@ -1341,12 +1338,8 @@ UDFCompleteMount(
                 UDFDirIndex(UDFGetDirIndexByFileInfo(Vcb->NonAllocFileInfo), Vcb->NonAllocFileInfo->Index)->FI_Flags |= UDF_FI_FLAG_FI_INTERNAL;
             } else
             if (Vcb->SysSDirFileInfo) {
-                Status = MyInitUnicodeString(&LocalPath, UDF_SN_NON_ALLOCATABLE);
-                if (!NT_SUCCESS(Status)) {
-                    goto unwind_1;
-                }
+                LocalPath = RTL_CONSTANT_STRING(UDF_SN_NON_ALLOCATABLE);
                 Status = UDFOpenFile__(IrpContext, Vcb, FALSE, TRUE, &LocalPath, Vcb->SysSDirFileInfo , &(Vcb->NonAllocFileInfo), NULL);
-                MyFreePool__(LocalPath.Buffer);
                 if (!NT_SUCCESS(Status) && (Status != STATUS_OBJECT_NAME_NOT_FOUND)) {
                     goto unwind_1;
                 }
@@ -1427,8 +1420,6 @@ UDFCompleteMount(
 
         Vcb->VolumeDasdFcb = UDFCreateFcb(IrpContext, FileId, UDF_NODE_TYPE_DATA, NULL);
 
-        InitializeListHead(&Vcb->VolumeDasdFcb->NextCCB);
-
         UDFIncrementReferenceCounts(IrpContext, Vcb->VolumeDasdFcb, 1, 1);
         UDFUnlockVcb(IrpContext, Vcb);
         UnlockVcb = FALSE;
@@ -1484,3 +1475,61 @@ UDFCompleteMount(
 
     return Status;
 } // end UDFCompleteMount()
+
+/*************************************************************************
+*
+* Function: UDFDeallocateCcb()
+*
+* Description:
+*   Deallocate a previously allocated structure.
+*
+* Expected Interrupt Level (for execution) :
+*
+*  IRQL_PASSIVE_LEVEL
+*
+* Return Value: None
+*
+*************************************************************************/
+VOID
+UDFDeallocateCcb(
+    PCCB Ccb
+    )
+{
+    ASSERT_CCB(Ccb);
+
+    ExFreeToPagedLookasideList(&UdfData.CcbLookasideList, Ccb);
+
+} // end UDFDeallocateCcb()
+
+/*
+  Function: UDFDeleteCcb()
+
+  Description:
+    Cleanup and deallocate a previously allocated structure.
+
+  Expected Interrupt Level (for execution) :
+
+   IRQL_PASSIVE_LEVEL
+
+  Return Value: None
+
+*/
+VOID
+UDFDeleteCcb(
+    PCCB Ccb
+)
+{
+    if (Ccb->DirectorySearchPattern) {
+
+        if (Ccb->DirectorySearchPattern->Buffer) {
+
+            MyFreePool__(Ccb->DirectorySearchPattern->Buffer);
+            Ccb->DirectorySearchPattern->Buffer = NULL;
+        }
+
+        MyFreePool__(Ccb->DirectorySearchPattern);
+        Ccb->DirectorySearchPattern = NULL;
+    }
+
+    UDFDeallocateCcb(Ccb);
+} // end UDFDeleteCcb()

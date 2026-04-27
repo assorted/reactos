@@ -393,18 +393,14 @@ UDFBuildHashEntry(
         hashes->hPosix = crc32((uint8*)(Name->Buffer), Name->Length);
 
     if (Mask & HASH_ULFN) {
-/*        if (NT_SUCCESS(MyInitUnicodeString(&UName, L"")) &&
-           NT_SUCCESS(MyAppendUnicodeStringToStringTag(&UName, Name, MEM_USDIRHASH_TAG))) {*/
-        if (NT_SUCCESS(MyCloneUnicodeString(&UName, Name))) {
-            RtlUpcaseUnicodeString(&UName, &UName, FALSE);
-    /*        if (!RtlCompareUnicodeString(Name, &UName, FALSE)) {
-                RetFlags |= UDF_FI_FLAG_LFN;
-            }*/
-            hashes->hLfn = crc32((uint8*)(UName.Buffer), UName.Length);
-        } else {
-            BrutePoint();
-        }
-        MyFreePool__(UName.Buffer);
+
+        UName.Length = 0;
+        UName.MaximumLength = Name->Length;
+        UName.Buffer = (PWCHAR)FsRtlAllocatePoolWithTag(NonPagedPool, UName.MaximumLength, TAG_FILE_NAME);
+
+        RtlUpcaseUnicodeString(&UName, Name, FALSE);
+        hashes->hLfn = crc32((uint8*)(UName.Buffer), UName.Length);
+        ExFreePoolWithTag(UName.Buffer, TAG_FILE_NAME);
     }
 
     if (Mask & HASH_DOS) {
@@ -519,10 +515,6 @@ UDFIndexDirectory(
         }
         if (((ULONG)Offset & (Vcb->SectorSize-1)) > (Vcb->SectorSize-sizeof(FILE_IDENT_DESC))) {
             DirPrint(("  badly aligned\n", Offset));
-            if (Vcb->Modified) {
-                DirPrint(("  queue repack request\n"));
-                DelCount = Vcb->PackDirThreshold+1;
-            }
         }
 //        prevOffset = Offset;
         Offset += (FileId->lengthFileIdent + FileId->lengthOfImpUse + sizeof(FILE_IDENT_DESC) + 3) & (~((uint32)3));
@@ -621,14 +613,18 @@ UDFIndexDirectory(
             DirNdx->FI_Flags |= UDF_FI_FLAG_KEEP_NAME;
             DirNdx->FI_Flags |= UDFBuildHashEntry(Vcb, &(DirNdx->FName), &(DirNdx->hashes), HASH_ALL | HASH_KEEP_NAME);
         } else {
+
             // init plain file/dir entry
             ASSERT( (Offset+sizeof(FILE_IDENT_DESC)+FileId->lengthOfImpUse+FileId->lengthFileIdent) <=
                     ExtInfo->Length );
-            UDFDecompressUnicode(&(DirNdx->FName),
+
+            UDFDecompressUnicode(&DirNdx->FName,
                              ((uint8*)(FileId+1)) + (FileId->lengthOfImpUse),
                              FileId->lengthFileIdent,
                              &valueCRC);
+
             UDFNormalizeFileName(&(DirNdx->FName), valueCRC);
+
             DirNdx->FI_Flags |= UDFBuildHashEntry(Vcb, &(DirNdx->FName), &(DirNdx->hashes), HASH_ALL);
         }
         if ((FileId->fileCharacteristics & FILE_METADATA)
@@ -688,167 +684,6 @@ UDFIndexDirectory(
     return status;
 } // end UDFIndexDirectory()
 
-/*
-    This routine removes all DELETED entries from Dir & resizes it.
-    It must be called before closing, no files sould be opened.
- */
-NTSTATUS
-UDFPackDirectory__(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN OUT PUDF_FILE_INFO FileInfo   // source (opened)
-    )
-{
-#ifdef UDF_PACK_DIRS
-    uint32 d, LBS;
-    uint_di i, j;
-    uint32 IUl, FIl, l;
-    uint32 DataLocOffset;
-    uint32 Offset, curOffset;
-    int8* Buf;
-    NTSTATUS status;
-    ULONG ReadBytes;
-    SIZE_T WrittenBytes;
-    int8* storedFI;
-    PUDF_FILE_INFO curFileInfo;
-    PDIR_INDEX_ITEM DirNdx = NULL, DirNdx2;
-    UDF_DIR_SCAN_CONTEXT ScanContext;
-    uint_di dc=0;
-    uint16 PartNum;
-#endif //UDF_PACK_DIRS
-
-    ValidateFileInfo(FileInfo);
-    PDIR_INDEX_HDR hDirNdx = FileInfo->Dloc->DirIndex;
-    if (!hDirNdx) return STATUS_NOT_A_DIRECTORY;
-#ifndef UDF_PACK_DIRS
-    return STATUS_SUCCESS;
-#else // UDF_PACK_DIRS
-
-    // do not pack dirs on unchanged disks
-    if (!Vcb->Modified)
-        return STATUS_SUCCESS;
-    // start packing
-    LBS = Vcb->SectorSize;
-    Buf = (int8*)DbgAllocatePool(PagedPool, LBS*2);
-    if (!Buf) return STATUS_INSUFFICIENT_RESOURCES;
-    // we shall never touch 1st entry 'cause it can't be deleted
-    Offset = UDFDirIndex(hDirNdx,2)->Offset;
-    DataLocOffset = FileInfo->Dloc->DataLoc.Offset;
-
-    i=j=2;
-
-    if (!UDFDirIndexInitScan(FileInfo, &ScanContext, i)) {
-        DbgFreePool(Buf);
-        return STATUS_SUCCESS;
-    }
-
-    ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
-    PartNum = (uint16)UDFGetRefPartNumByPhysLba(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation);
-    ASSERT(PartNum != -1);
-
-    while((DirNdx = UDFDirIndexScan(&ScanContext, NULL))) {
-
-        if (UDFIsDeleted(DirNdx))
-            dc++;
-
-        if (!UDFIsDeleted(DirNdx) ||
-             DirNdx->FileInfo) {
-            // move down valid entry
-            status = UDFReadFile__(IrpContext, Vcb, FileInfo, curOffset = DirNdx->Offset,
-                                                          l = DirNdx->Length, FALSE, Buf, &ReadBytes);
-            if (!NT_SUCCESS(status)) {
-                DbgFreePool(Buf);
-                return status;
-            }
-            // remove ImpUse field
-            IUl = ((PFILE_IDENT_DESC)Buf)->lengthOfImpUse;
-            curFileInfo = DirNdx->FileInfo;
-
-            // The code below contains an error.
-            // We cannot extend the current FILE_IDENT_DESC to the sector boundary
-            // because the descriptor of the next file is stored there,
-            // and it will be overwritten. This has led to file overwrites, so this feature is disabled.
-
-            // align next entry
-            if (FALSE) {
-            // disabled if ((d = LBS - ((curOffset + (l - IUl) + DataLocOffset) & (LBS-1)) ) < sizeof(FILE_IDENT_DESC)) {
-
-                // insufficient space at the end of last sector for
-                // next FileIdent's tag. fill it with ImpUse data
-
-                // generally, all data should be DWORD-aligned, but if it is not so
-                // this opearation will help us to avoid glitches
-                d = (d+3) & ~(3);
-                if (d != IUl) {
-                    l = l + d - IUl;
-                    FIl = ((PFILE_IDENT_DESC)Buf)->lengthFileIdent;
-                    // copy filename to upper addr
-                    RtlMoveMemory(Buf+sizeof(FILE_IDENT_DESC)+d,
-                                  Buf+sizeof(FILE_IDENT_DESC)+IUl, FIl);
-                    RtlZeroMemory(Buf+sizeof(FILE_IDENT_DESC), d);
-                    ((PFILE_IDENT_DESC)Buf)->lengthOfImpUse = (uint16)d;
-
-                    if (curFileInfo && curFileInfo->FileIdent) {
-                        // update stored FI if any
-                        if (!MyReallocPool__((int8*)(curFileInfo->FileIdent), l,
-                                     (int8**)&(curFileInfo->FileIdent), (l+IUl-d) )) {
-                            DbgFreePool(Buf);
-                            return STATUS_INSUFFICIENT_RESOURCES;
-                        }
-                        storedFI = (int8*)(curFileInfo->FileIdent);
-                        RtlMoveMemory(storedFI+sizeof(FILE_IDENT_DESC)+d,
-                                      storedFI+sizeof(FILE_IDENT_DESC)+IUl, FIl);
-                        RtlZeroMemory(storedFI+sizeof(FILE_IDENT_DESC), d);
-                        ((PFILE_IDENT_DESC)storedFI)->lengthOfImpUse = (uint16)d;
-                        FileInfo->Dloc->FELoc.Modified = TRUE;
-                        FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FE_MODIFIED;
-                    }
-                }
-            } else {
-                d = 0;
-            }
-            // write modified to new addr
-            if ((d != IUl) ||
-               (curOffset != Offset)) {
-
-                UDFSetUpTag(Vcb, (tag*)Buf, (uint16)l,
-                          UDFPhysLbaToPart(Vcb, PartNum,
-                                     UDFExtentOffsetToLba(Vcb, FileInfo->Dloc->DataLoc.Mapping,
-                                                Offset, NULL, NULL, NULL, NULL)), 0);
-
-                status = UDFWriteFile__(IrpContext, Vcb, FileInfo, Offset, l, FALSE, Buf, &WrittenBytes);
-                if (!NT_SUCCESS(status)) {
-                    DbgFreePool(Buf);
-                    return status;
-                }
-            }
-            DirNdx2 = UDFDirIndex(hDirNdx, j);
-            *DirNdx2 = *DirNdx;
-            DirNdx2->Offset = Offset;
-            DirNdx2->Length = l;
-            if (curFileInfo) {
-                curFileInfo->Index = j;
-                DirNdx2->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
-            }
-            Offset += l;
-            j++;
-        }
-    }
-    // resize DirIndex
-    DbgFreePool(Buf);
-    if (dc) {
-        if (!NT_SUCCESS(status = UDFDirIndexTrunc(&(FileInfo->Dloc->DirIndex), dc))) {
-            return status;
-        }
-    }
-    // terminator is set by UDFDirIndexTrunc()
-    FileInfo->Dloc->DirIndex->DelCount = 0;
-    ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
-
-    // now Offset points to EOF. Let's truncate directory
-    return UDFResizeFile__(IrpContext, Vcb, FileInfo, Offset);
-#endif // UDF_PACK_DIRS
-} // end UDFPackDirectory__()
 
 /*
     This routine rebuilds tags for all entries from Dir.

@@ -75,11 +75,14 @@ extern NTSTATUS UDFTWriteAsync(
     IN BOOLEAN FreeBuffer);
 
 VOID
-UDFNotifyFullReportChange(
+UDFNotifyReportChange(
+    PIRP_CONTEXT IrpContext,
     PVCB Vcb,
     PFCB Fcb,
     ULONG Filter,
-    ULONG Action
+    ULONG Action,
+    PLCB Lcb,
+    PFILE_OBJECT FileObject
     );
 
 NTSTATUS NTAPI UDFAsyncCompletionRoutine(IN PDEVICE_OBJECT DeviceObject,

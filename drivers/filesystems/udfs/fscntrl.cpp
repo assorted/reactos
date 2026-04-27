@@ -425,7 +425,7 @@ UDFMountVolume(
 
         IrpContext->Vcb = Vcb;
 
-        UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE );
+        UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
         VcbAcquired = TRUE;
 
         // Let's reference the Vpb to make sure we are the one to
@@ -1015,7 +1015,7 @@ Return Value:
     //  race with the lazy writer tearing down his references to the file.
     //
 
-    UDFReleaseResource(&Vcb->VcbResource);
+    UDFReleaseVcb(IrpContext, Vcb);
 
     Status = CcWaitForCurrentLazyWriterActivity();
 
@@ -1026,16 +1026,15 @@ Return Value:
     //
 
     SetFlag( IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT );
-    UDFAcquireResourceExclusive(&Vcb->VcbResource, TRUE);
+    UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
     
     if (!NT_SUCCESS( Status )) {
 
         return Status;
     }
 
-#ifdef UDF_DELAYED_CLOSE
-        UDFFspClose(Vcb);
-#endif //UDF_DELAYED_CLOSE
+    UDFFspClose(Vcb);
+
     //
     //  If the volume is already explicitly locked then fail.  We use the
     //  Vpb locked flag as an 'explicit lock' flag in the same way as Fat.

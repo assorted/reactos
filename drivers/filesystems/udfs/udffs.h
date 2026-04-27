@@ -21,8 +21,6 @@
 
 /**************** OPTIONS *****************/
 
-//#define UDF_TRACK_UNICODE_STR
-
 //#define UDF_LIMIT_NAME_LEN
 
 //#define UDF_LIMIT_DIR_SIZE
@@ -35,20 +33,9 @@
   #define UDF_X_PATH_LEN UDF_PATH_LEN
 #endif //UDF_LIMIT_NAME_LEN
 
-#define IFS_40
-
 //#define UDF_ASYNC_IO
 
-// WCACHE was disabled due to errors in it.
-// Test case: Running 'git clone https://github.com/reactos/reactos' under ReactOS results in an error.
-
 #define UDF_ALLOW_FRAG_AD
-
-#ifndef UDF_LIMIT_DIR_SIZE
-    #define UDF_DEFAULT_DIR_PACK_THRESHOLD (128)
-#else // UDF_LIMIT_DIR_SIZE
-    #define UDF_DEFAULT_DIR_PACK_THRESHOLD (16)
-#endif // UDF_LIMIT_DIR_SIZE
 
 // Read ahead amount used for normal data files
 
@@ -57,10 +44,6 @@
 #define UDF_DEFAULT_SPARSE_THRESHOLD (256*PACKETSIZE_UDF)
 
 //#define ALLOW_SPARSE
-
-#define UDF_PACK_DIRS
-
-#define MOUNT_ERR_THRESHOLD   256
 
 #define UDF_VALID_FILE_ATTRIBUTES \
    (FILE_ATTRIBUTE_READONLY   | \
@@ -77,24 +60,14 @@
 
 #define UDF_DELAYED_CLOSE
 
-#ifdef UDF_DELAYED_CLOSE
-#define UDF_FE_ALLOCATION_CHARGE
-#endif //UDF_DELAYED_CLOSE
-
-#define UDF_ALLOW_HARD_LINKS
-
-#ifdef UDF_ALLOW_HARD_LINKS
-//#define UDF_ALLOW_LINKS_TO_STREAMS
-#endif //UDF_ALLOW_HARD_LINKS
-
-//#define UDF_ALLOW_PRETEND_DELETED
+//#define UDF_ALLOW_HARD_LINKS
 
 #define UDF_DEFAULT_BM_FLUSH_TIMEOUT 16         // seconds
 #define UDF_DEFAULT_TREE_FLUSH_TIMEOUT 5        // seconds
 
 /************* END OF OPTIONS **************/
 
-// Common include files - should be in the include dir of the MS supplied IFS Kit
+// Common include files - should be in the include dir of the IFS Kit
 
 #pragma warning(disable : 4996)
 #pragma warning(disable : 4995)
@@ -118,6 +91,11 @@ typedef FILE_ID                     *PFILE_ID;
 #undef MdlMappingNoExecute
 #define MdlMappingNoExecute 0
 #define NonPagedPoolNx NonPagedPool
+// POOL_NX_ALLOCATION (0x200) is a Windows 8+ flag not recognized on XP-based
+// systems. Passing it to ExInitialize*LookasideList would result in an invalid
+// pool type on Windows XP / POSReady 2009.
+#undef POOL_NX_ALLOCATION
+#define POOL_NX_ALLOCATION 0
 #endif
 
 // #define NDEBUG
@@ -149,7 +127,6 @@ extern UDFData              UdfData;
 #include "protos.h"
 
 #include "Include/phys_lib.h"
-#include "errmsg.h"
 #include "mem.h"
 
 #define Add2Ptr(PTR,INC,CAST) ((CAST)((PUCHAR)(PTR) + (INC)))

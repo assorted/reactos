@@ -779,9 +779,6 @@ UDFReadMappingFromXEntry(
         return NULL;
     }
 
-    // for compatibility with Adaptec DirectCD
-//    if (!(Vcb->UDF_VCB_IC_ADAPTEC_NONALLOC_COMPAT))
-
     AllocLoc->Length=len;
 
     switch (AllocMode) {
@@ -869,7 +866,7 @@ UDFBuildShortAllocDescs(
         Alloc[i].extLength = Extent[i].extLength;
         Alloc[i].extPosition = UDFPhysLbaToPart(Vcb, PartNum, Extent[i].extLocation);
     }
-    if ((Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) && i) {
+    if (i) {
         Alloc[i-1].extLength -= (ph_len - (ULONG)(FileInfo->Dloc->DataLoc.Length)) &
                                 (Vcb->SectorSize-1);
         ExtPrint(("bShExt: cut tail -> %x\n",
@@ -1056,7 +1053,7 @@ UDFBuildLongAllocDescs(
         Alloc[i].extLocation.partitionReferenceNum = (uint16)PartNum;
         RtlZeroMemory(&(Alloc[i].impUse), sizeof(Alloc[i].impUse));
     }
-    if ((Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) && i) {
+    if (i) {
         Alloc[i-1].extLength -= (ph_len - (ULONG)(FileInfo->Dloc->DataLoc.Length)) &
                                 (Vcb->SectorSize-1);
         ExtPrint(("bLnExt: cut tail -> %x\n",
@@ -1326,37 +1323,6 @@ UDFBuildExtAllocDescs(
     return status;
 } // end UDFBuildExtAllocDescs()*/
 
-void
-UDFDiscardFESpace(
-    IN PVCB Vcb,
-    IN PEXTENT_MAP Mapping,
-    IN uint32 lim
-    )
-{
-#ifdef UDF_FE_ALLOCATION_CHARGE // UDF_FE_ALLOCATION_CHARGE
-    PEXTENT_MAP Mapping2;
-    uint32 i;
-
-    UDFPrint(("  UDFDiscardFESpace\n"));
-    Mapping2 = Mapping;
-    for(i=0;i<lim;i++, Mapping++) {
-        // we should not discard allocated FEs
-        if ( (Mapping->extLength >> 30) == EXTENT_RECORDED_ALLOCATED) {
-            UDFPrint(("  used @ %x\n", Mapping->extLocation));
-            Mapping->extLength = Vcb->SectorSize | (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
-            Mapping->extLocation = 0;
-        } else {
-            UDFPrint(("  free @ %x\n", Mapping->extLocation));
-        }
-    }
-    UDFMarkSpaceAsXXX(Vcb, 0, Mapping2, AS_DISCARDED);
-
-    MyFreePool__(Mapping2);
-#else // UDF_FE_ALLOCATION_CHARGE
-    ASSERT(!Dloc->DirIndex->FECharge.Mapping);
-    return;
-#endif // UDF_FE_ALLOCATION_CHARGE
-} // end UDFDiscardFESpace()
 
 NTSTATUS
 UDFInitAllocationCache(
@@ -1373,12 +1339,6 @@ UDFInitAllocationCache(
     uint32* plim;
 
     switch(AllocClass) {
-    case UDF_PREALLOC_CLASS_FE:
-        UDFPrint(("AllocationCache FE:\n"));
-        pAllocCache = &(Vcb->FEChargeCache);
-        plim = &(Vcb->FEChargeCacheMaxSize);
-        lim = 32;
-        break;
     case UDF_PREALLOC_CLASS_DIR:
         UDFPrint(("AllocationCache DIR:\n"));
         pAllocCache = &(Vcb->PreallocCache);
@@ -1488,14 +1448,7 @@ UDFStoreCachedAllocation(
     }
     //
     AdPrint(("    drop map %x (%x)\n", AllocCache[lim-1].Ext.Mapping, lim-1));
-    switch(AllocClass) {
-    case UDF_PREALLOC_CLASS_FE:
-        UDFDiscardFESpace(Vcb, AllocCache[lim-1].Ext.Mapping, AllocCache[lim-1].Items);
-        break;
-    case UDF_PREALLOC_CLASS_DIR:
-        UDFMarkSpaceAsXXX(Vcb, 0, AllocCache[lim-1].Ext.Mapping, AS_DISCARDED);
-        break;
-    }
+    UDFMarkSpaceAsXXX(Vcb, 0, AllocCache[lim-1].Ext.Mapping, AS_DISCARDED);
     RtlMoveMemory(&(AllocCache[1]), &(AllocCache[0]), sizeof(UDF_ALLOCATION_CACHE_ITEM)*(lim-1));
     AllocCache[0].Ext = (*Ext);
     AllocCache[0].Items = Items;
@@ -1526,39 +1479,20 @@ UDFFlushAllCachedAllocations(
 
     for(i=0; i<lim; i++) {
         if (AllocCache[i].ParentLocation != LBA_NOT_ALLOCATED) {
-            switch(AllocClass) {
-            case UDF_PREALLOC_CLASS_FE:
-                UDFDiscardFESpace(Vcb, AllocCache[i].Ext.Mapping, AllocCache[i].Items);
-                break;
-            case UDF_PREALLOC_CLASS_DIR:
-                UDFMarkSpaceAsXXX(Vcb, 0, AllocCache[i].Ext.Mapping, AS_DISCARDED);
-                break;
-            }
+            UDFMarkSpaceAsXXX(Vcb, 0, AllocCache[i].Ext.Mapping, AS_DISCARDED);
         }
     }
     MyFreePool__(AllocCache);
-    switch(AllocClass) {
-    case UDF_PREALLOC_CLASS_FE:
-        Vcb->FEChargeCache = NULL;
-        Vcb->FEChargeCacheMaxSize = 0;
-        break;
-    case UDF_PREALLOC_CLASS_DIR:
-        Vcb->PreallocCache = NULL;
-        Vcb->PreallocCacheMaxSize = 0;
-        break;
-    }
+    Vcb->PreallocCache = NULL;
+    Vcb->PreallocCacheMaxSize = 0;
     UDFReleaseResource(&(Vcb->PreallocResource));
     //
     return STATUS_SUCCESS;
 } // end UDFFlushAllCachedAllocations()
 
 /*
-    This routine allocates space for FE of the file being created
-    If FE-Charge is enabled it reserves an extent & allocates
-    space in it. It works much faster then usual way both while
-    allocating & accessing on disk
-    If FE-Charge is disabled FE may be allocated at any suitable
-    location
+    This routine allocates space for FE of the file being created.
+    Allocates a single block from the partition bitmap.
  */
 NTSTATUS
 UDFAllocateFESpace(
@@ -1570,154 +1504,9 @@ UDFAllocateFESpace(
     IN uint32 Len
     )
 {
-#ifdef UDF_FE_ALLOCATION_CHARGE // UDF_FE_ALLOCATION_CHARGE
-    NTSTATUS status;
-    PEXTENT_INFO Ext;
-    EXTENT_AD Extent;
-    BOOLEAN retry = FALSE;
-    uint32 i, lim;
-
-/*
-    1. #Dir1#->*File*                ->  Dir1's FECharge
-    2. #Dir1#->*Dir*                 ->  Dir1's FECharge
-    3. #Dir1#->*SDir*                ->  Dir1's FECharge
-    4. Dir1->#SDir#->*Stream*        ->  Dir1's FEChargeSDir
-    5. Dir1->#File#->*SDir*          ->  Dir1's FEChargeSDir
-    6. Dir1->#Dir#->*SDir*           ->  (see p.2)
-    7. Dir1->File->#SDir#->*Stream*  ->  Dir1's FEChargeSDir
-    8. Dir1->Dir->#SDir#->*Stream*   ->  (see p.4)
-
-## ~ DirInfo
-** ~ Object to be created
-
-*/
-
-//    ASSERT(!FEExtInfo->Mapping);
-    // check if DirInfo we are called with is a Directory
-    // (it can be a file with SDir)
-    if (!DirInfo || !DirInfo->Dloc->DirIndex ||
-       ((lim = ((DirInfo->Dloc->FE_Flags & UDF_FE_FLAG_IS_SDIR) ? Vcb->FEChargeSDir : Vcb->FECharge)) <= 1))
-#endif // UDF_FE_ALLOCATION_CHARGE
-        return UDFAllocFreeExtent(IrpContext, Vcb, Len,
-               UDFPartStart(Vcb, PartNum), UDFPartEnd(Vcb, PartNum), FEExtInfo, EXTENT_FLAG_VERIFY);
-#ifdef UDF_FE_ALLOCATION_CHARGE // UDF_FE_ALLOCATION_CHARGE
-
-    Ext = &(DirInfo->Dloc->DirIndex->FECharge);
-
-    while(TRUE) {
-
-        if (!Ext->Mapping) {
-            ULONG p_start;
-            ULONG p_end;
-            ULONG fe_loc;
-            ULONG l1, l2;
-
-            p_start = UDFPartStart(Vcb, PartNum);
-            p_end   = UDFPartEnd(Vcb, PartNum);
-            fe_loc  = DirInfo->Dloc->FELoc.Mapping[0].extLocation;
-
-            status = UDFGetCachedAllocation(Vcb, fe_loc, Ext, NULL, UDF_PREALLOC_CLASS_FE);
-            if (NT_SUCCESS(status)) {
-                // do nothing, even do not unpack
-            } else
-            if (Vcb->LowFreeSpace) {
-                status = UDFAllocFreeExtent(IrpContext, Vcb, Len << Vcb->SectorShift,p_start, p_end, FEExtInfo, EXTENT_FLAG_VERIFY);
-                if (NT_SUCCESS(status)) {
-                    UDFPrint(("FE @ %x (1)\n", FEExtInfo->Mapping[0].extLocation ));
-                }
-                return status;
-            } else {
-                if (fe_loc > p_start + 512*16) {
-                    l1 = fe_loc - 512*16;
-                } else {
-                    l1 = p_start;
-                }
-                if (fe_loc + 512*16 < p_end) {
-                    l2 = fe_loc + 512*16;
-                } else {
-                    l2 = p_end;
-                }
-                status = UDFAllocFreeExtent(IrpContext, Vcb, lim << Vcb->SectorShift, l1, l2, Ext, EXTENT_FLAG_VERIFY);
-                if (!NT_SUCCESS(status)) {
-                    status = UDFAllocFreeExtent(IrpContext, Vcb, lim << Vcb->SectorShift, (p_start+fe_loc)/2, (fe_loc+p_end)/2, Ext, EXTENT_FLAG_VERIFY);
-                }
-                if (!NT_SUCCESS(status)) {
-                    status = UDFAllocFreeExtent(IrpContext, Vcb, lim << Vcb->SectorShift, p_start, p_end, Ext, EXTENT_FLAG_VERIFY);
-                }
-                if (!NT_SUCCESS(status)) {
-                    status = UDFAllocFreeExtent(IrpContext, Vcb, lim << Vcb->SectorShift, p_start+1024, p_end-1024, Ext, EXTENT_FLAG_VERIFY);
-                }
-                if (!NT_SUCCESS(status = UDFAllocFreeExtent(IrpContext, Vcb, lim << Vcb->SectorShift, p_start, p_end, Ext, EXTENT_FLAG_VERIFY) )) {
-                    // can't pre-allocate space for multiple FEs. Try single FE
-                    UDFPrint(("allocate single FE entry\n"));
-                    status = UDFAllocFreeExtent(IrpContext, Vcb, Len,
-                           p_start, p_end, FEExtInfo, EXTENT_FLAG_VERIFY);
-                    if (NT_SUCCESS(status)) {
-                        UDFPrint(("FE @ %x (2)\n", FEExtInfo->Mapping[0].extLocation ));
-                    }
-                    return status;
-                }
-                status = UDFUnPackMapping(Vcb, Ext);
-                if (!NT_SUCCESS(status)) {
-                    MyFreePool__(Ext->Mapping);
-                    Ext->Mapping = NULL;
-                    return status;
-                }
-            }
-        }
-
-        for(i=0;i<lim;i++) {
-            if ( (Ext->Mapping[i].extLength >> 30) == EXTENT_NOT_RECORDED_ALLOCATED ) {
-                Ext->Mapping[i].extLength &= UDF_EXTENT_LENGTH_MASK; // EXTENT_RECORDED_ALLOCATED
-
-                Extent.extLength = Vcb->SectorSize | (EXTENT_NOT_RECORDED_ALLOCATED << 30);
-                Extent.extLocation = Ext->Mapping[i].extLocation;
-
-                if (Vcb->BSBM_Bitmap) {
-                    uint32 lba = Ext->Mapping[i].extLocation;
-                    if (UDFGetBadBit((uint32*)(Vcb->BSBM_Bitmap), lba)) {
-                        UDFPrint(("Remove BB @ %x from FE charge\n", lba));
-                        Ext->Mapping[i].extLength |= (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
-                        Ext->Mapping[i].extLocation = 0;
-                        continue;
-                    }
-                }
-
-                FEExtInfo->Mapping = UDFExtentToMapping(&Extent);
-                if (!FEExtInfo->Mapping) {
-                    ASSERT(!(Ext->Mapping[i].extLength >> 30));
-                    Ext->Mapping[i].extLength |= (EXTENT_NOT_RECORDED_ALLOCATED << 30);
-                    return STATUS_INSUFFICIENT_RESOURCES;
-                }
-                UDFPrint(("FE @ %x (3)\n", FEExtInfo->Mapping[0].extLocation ));
-                FEExtInfo->Length = Len;
-                FEExtInfo->Offset = 0;
-                FEExtInfo->Modified = TRUE;
-                return STATUS_SUCCESS;
-            }
-        }
-
-        if (Vcb->LowFreeSpace) {
-            status = UDFAllocFreeExtent(IrpContext, Vcb, Len,
-                   UDFPartStart(Vcb, PartNum), UDFPartEnd(Vcb, PartNum), FEExtInfo, EXTENT_FLAG_VERIFY);
-            if (NT_SUCCESS(status)) {
-                UDFPrint(("FE @ %x (4)\n", FEExtInfo->Mapping[0].extLocation ));
-            }
-            return status;
-        }
-        if (retry)
-            return STATUS_INSUFFICIENT_RESOURCES;
-
-        // we can get here if there are no free slots in
-        // preallocated FE charge. So, we should release
-        // memory and try to allocate space for new FE charge.
-        MyFreePool__(Ext->Mapping);
-        Ext->Mapping = NULL;
-        retry = TRUE;
-    }
-    return STATUS_INSUFFICIENT_RESOURCES;
-#endif // UDF_FE_ALLOCATION_CHARGE
-
+    UNREFERENCED_PARAMETER(DirInfo);
+    return UDFAllocFreeExtent(IrpContext, Vcb, Len,
+           UDFPartStart(Vcb, PartNum), UDFPartEnd(Vcb, PartNum), FEExtInfo, EXTENT_FLAG_VERIFY);
 } // end UDFAllocateFESpace()
 
 /*
@@ -1730,81 +1519,11 @@ UDFFreeFESpace(
     IN PEXTENT_INFO FEExtInfo
     )
 {
-#ifdef UDF_FE_ALLOCATION_CHARGE // UDF_FE_ALLOCATION_CHARGE
-    PEXTENT_INFO Ext;
-    uint32 i, lim, j=-1;
-    uint32 Lba;
-
-    // check if the DirInfo we are called with is a Directory
-    // (it can be a file with SDir)
-    if (DirInfo && DirInfo->Dloc->DirIndex &&
-       (Ext = &(DirInfo->Dloc->DirIndex->FECharge))->Mapping) {
-        if (!FEExtInfo->Mapping)
-            return;
-        Lba = FEExtInfo->Mapping[0].extLocation;
-
-        lim = (DirInfo->Dloc->FE_Flags & UDF_FE_FLAG_IS_SDIR) ? Vcb->FEChargeSDir : Vcb->FECharge;
-        for(i=0;i<lim;i++) {
-            if (Ext->Mapping[i].extLocation == Lba) {
-                ASSERT(!(Ext->Mapping[i].extLength >> 30));
-                Ext->Mapping[i].extLength |= (EXTENT_NOT_RECORDED_ALLOCATED << 30);
-                goto clean_caller;
-            }
-            if (!Ext->Mapping[i].extLocation) {
-                j = i;
-            }
-        }
-        if (j != (ULONG)-1) {
-            i = j;
-            Ext->Mapping[i].extLocation = Lba;
-            Ext->Mapping[i].extLength   = Vcb->SectorSize | (EXTENT_NOT_RECORDED_ALLOCATED << 30);
-            goto clean_caller;
-        }
-    }
-#endif // UDF_FE_ALLOCATION_CHARGE
+    UNREFERENCED_PARAMETER(DirInfo);
     UDFMarkSpaceAsXXX(Vcb, 0, FEExtInfo->Mapping, AS_DISCARDED); // free
-clean_caller:
     FEExtInfo->Mapping[0].extLocation = 0;
     FEExtInfo->Mapping[0].extLength = (EXTENT_NOT_RECORDED_NOT_ALLOCATED << 30);
-    return;
 } // end UDFFreeFESpace()
-
-/*
-    This routine flushes FE-Charge buffer, marks unused blocks as free
-    in bitmap & releases memory allocated for FE-Charge management
- */
-void
-UDFFlushFESpace(
-    IN PVCB Vcb,
-    IN PUDF_DATALOC_INFO Dloc,
-    IN BOOLEAN Discard
-    )
-{
-#ifdef UDF_FE_ALLOCATION_CHARGE // UDF_FE_ALLOCATION_CHARGE
-    PEXTENT_MAP Mapping;
-    uint32 lim;
-
-    if (!(Mapping = Dloc->DirIndex->FECharge.Mapping))
-        return;
-
-    lim = (Dloc->FE_Flags & UDF_FE_FLAG_IS_SDIR) ? Vcb->FEChargeSDir : Vcb->FECharge;
-
-    if (!Discard) {
-        // cache it!
-        if (NT_SUCCESS(UDFStoreCachedAllocation(Vcb,
-                                 Dloc->FELoc.Mapping[0].extLocation,
-                                 &Dloc->DirIndex->FECharge, lim, UDF_PREALLOC_CLASS_FE))) {
-            Dloc->DirIndex->FECharge.Mapping = NULL;
-            return;
-        }
-    }
-    Dloc->DirIndex->FECharge.Mapping = NULL;
-    UDFDiscardFESpace(Vcb, Mapping, lim);
-#else // UDF_FE_ALLOCATION_CHARGE
-    ASSERT(!Dloc->DirIndex->FECharge.Mapping);
-    return;
-#endif // UDF_FE_ALLOCATION_CHARGE
-} // end UDFFlushFESpace()
 
 /*
     This routine rebuilds mapping on write attempts to Alloc-Not-Rec area.
@@ -1979,7 +1698,7 @@ UDFMarkNotAllocatedAsAllocated(
     // length of existing Not-Alloc-Not-Rec frag
     sLen = (( (((uint32)Offset) & (LBS-1)) + Length+LBS-1) & ~(LBS-1)) >> BSh;
     // required allocation length increment (in bytes)
-    aLen = (uint32)( ((Offset+Length+LBS-1) & ~(LBS-1)) - (Offset & ~(LBS-1)));
+    aLen = (uint32)( ((Offset+Length+LBS-1) & ~((ULONGLONG)LBS-1)) - (Offset & ~((ULONGLONG)LBS-1)));
 
     // try to extend previous frag or allocate space _after_ it to
     // avoid backward seeks, if previous frag is not Not-Rec-Not-Alloc
@@ -2148,7 +1867,7 @@ UDFMarkAllocatedAsNotXXX(
     // length of existing Alloc-(Not-)Rec frag (in sectors)
     sLen = (( (((uint32)Offset) & (LBS-1)) + Length+LBS-1) & ~(LBS-1)) >> BSh;
     // required deallocation length increment (in bytes)
-    aLen = (uint32)( ((Offset+Length+LBS-1) & ~(LBS-1)) - (Offset & ~(LBS-1)) );
+    aLen = (uint32)( ((Offset+Length+LBS-1) & ~((ULONGLONG)LBS-1)) - (Offset & ~((ULONGLONG)LBS-1)) );
 
     l=0;
     for(j=0; j<i; j++) {
@@ -2379,8 +2098,8 @@ UDFResizeExtent(
                         lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS) >> BSh;
                     }
                     // required last extent length
-                    req_s = s + (uint32)( (((Length + LBS - 1) & ~(LBS-1)) -
-                                           ((l      + LBS - 1) & ~(LBS-1))   ) >> BSh);
+                    req_s = s + (uint32)( (((Length + LBS - 1) & ~((ULONGLONG)LBS-1)) -
+                                           ((l      + LBS - 1) & ~((ULONGLONG)LBS-1))   ) >> BSh);
                     if (lim > req_s) {
                         lim = req_s;
                     }
@@ -2418,6 +2137,7 @@ UDFResizeExtent(
                             UDFMarkSpaceAsXXXNoProtect(Vcb, 0, &(ExtInfo->Mapping[i]), AS_USED); // mark as used
                         }*/
                         AdPrint(("Resize reloc last Not-Rec (5)\n"));
+                        RtlZeroMemory(&TmpExtInf, sizeof(EXTENT_INFO));
                         TmpExtInf.Mapping = (PEXTENT_MAP)MyAllocatePoolTag__(NonPagedPool , (i+1)*sizeof(EXTENT_MAP),
                                                                            MEM_EXTMAP_TAG);
                         if (!TmpExtInf.Mapping) {
@@ -2452,8 +2172,8 @@ UDFResizeExtent(
                         lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS) >> BSh;
                     }
                     // required last extent length
-                    req_s = s + (uint32)( (((Length + LBS - 1) & ~(LBS-1)) -
-                                           ((l      + LBS - 1) & ~(LBS-1))   ) >> BSh);
+                    req_s = s + (uint32)( (((Length + LBS - 1) & ~((ULONGLONG)LBS-1)) -
+                                           ((l      + LBS - 1) & ~((ULONGLONG)LBS-1))   ) >> BSh);
                     if (lim > req_s) {
                         lim = req_s;
                     }

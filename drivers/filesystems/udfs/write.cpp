@@ -218,20 +218,8 @@ UDFCommonWrite(
                 try_return(Status = STATUS_ACCESS_DENIED);
             }
 
-            if (IrpContext->Flags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
-
-                UDFPrint(("  UDF_IRP_CONTEXT_FLUSH2_REQUIRED\n"));
-                IrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
-
-
-#ifdef UDF_DELAYED_CLOSE
-                UDFFspClose(Vcb);
-#endif //UDF_DELAYED_CLOSE
-
-            }
-
             // Acquire the volume resource exclusive
-            UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE);
+            UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
             VcbAcquired = TRUE;
 
             // I dislike the idea of writing to mounted media too, but M$ has another point of view...
@@ -420,7 +408,7 @@ UDFCommonWrite(
                     try_return(Status = STATUS_PENDING);
 //                CanWait = TRUE;
 
-                UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
+                UDFAcquirePagingIoExclusive(IrpContext, Fcb);
                 PagingIoResourceAcquired = TRUE;
 
                 if (ExtendFS) {
@@ -440,7 +428,7 @@ UDFCommonWrite(
                     }
                 }
 
-                UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
+                UDFReleasePagingIo(IrpContext, Fcb);
                 PagingIoResourceAcquired = FALSE;
 
                 if (CcIsFileCached(FileObject)) {
@@ -588,6 +576,18 @@ UDFCommonWrite(
                 try_return(Status = STATUS_INVALID_USER_BUFFER);
             }
             Fcb->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
+
+            // Acquire PagingIoResource exclusive to serialize with
+            // UDFMarkAllocatedAsRecorded which may free and replace
+            // ExtInfo->Mapping during NOT_RECORDED -> RECORDED conversion.
+            // Without this, a concurrent UDFResizeExtent (holding PagingIoResource
+            // exclusive for file extension) can use a stale Mapping pointer
+            // that was freed by our UDFMarkAllocatedAsRecorded call.
+            if (!PagingIoResourceAcquired) {
+                UDFAcquirePagingIoExclusive(IrpContext, Fcb);
+                PagingIoResourceAcquired = TRUE;
+            }
+
             Status = UDFWriteFile__(IrpContext, Vcb, Fcb->FileInfo, StartingOffset, TruncatedLength,
                            FALSE, (PCHAR)SystemBuffer, &NumberBytesWritten);
 
@@ -652,16 +652,15 @@ try_exit:   NOTHING;
         // Release any resources acquired here ...
 
         if (PagingIoResourceAcquired) {
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
+            UDFReleasePagingIo(IrpContext, Fcb);
         }
 
         if (MainResourceAcquired) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
+            UDFReleaseFcb(IrpContext, Fcb);
         }
 
         if (VcbAcquired) {
-            UDFReleaseResource(&Vcb->VcbResource);
+            UDFReleaseVcb(IrpContext, Vcb);
         }
 
     } _SEH2_END; // end of "__finally" processing

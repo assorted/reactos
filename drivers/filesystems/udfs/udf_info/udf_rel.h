@@ -131,8 +131,6 @@ typedef struct _DIR_INDEX_HDR {
     uint_di     FrameCount;
     uint_di     LastFrameCount;  // in items
     uint_di     DelCount;
-    EXTENT_INFO FECharge;        // file entry charge
-    EXTENT_INFO FEChargeSDir;    // file entry charge for streams
     ULONG       DIFlags;
 //    struct _DIR_INDEX_ITEM* FrameList[0];
 } DIR_INDEX_HDR, *PDIR_INDEX_HDR;
@@ -503,8 +501,6 @@ typedef struct _UDF_ALLOCATION_CACHE_ITEM {
 
 #define UDF_DEFAULT_LAST_LBA_CD     276159
 #define UDF_DEFAULT_LAST_LBA_DVD    0x23053f
-#define UDF_DEFAULT_FE_CHARGE       128
-#define UDF_DEFAULT_FE_CHARGE_SDIR  1
 #define UDF_WRITE_MAX_RETRY         4
 #define UDF_READ_MAX_RETRY          4
 #define UDF_READY_MAX_RETRY         5
