@@ -20,8 +20,6 @@
 
 //======================================
 
-//#define ALWAYS_CHECK_WAIT_TIMEOUT
-
 #ifdef UDF_DBG
 
 //#define CHECK_ALLOC_FRAMES
@@ -105,18 +103,6 @@
   #define ExtPrint(_x_)  {NOTHING;}
 
 #endif // defined UDF_DBG || defined PRINT_ALWAYS
-
-NTSTATUS
-DbgWaitForSingleObject_(
-    IN PVOID Object,
-    IN PLARGE_INTEGER Timeout OPTIONAL
-    );
-
-#if defined ALWAYS_CHECK_WAIT_TIMEOUT
-  #define DbgWaitForSingleObject(o, to)   DbgWaitForSingleObject_(o, to)
-#else
-  #define DbgWaitForSingleObject(o, to)   KeWaitForSingleObject(o, Executive, KernelMode, FALSE, to);
-#endif
 
 #ifdef UDF_DBG
 

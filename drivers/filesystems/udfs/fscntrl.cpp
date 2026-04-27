@@ -323,7 +323,7 @@ UDFMountVolume(
     }
 
     //  Do a CheckVerify here to lift the MediaChange ticker from the driver
-    RC = UDFPhSendIOCTL((RealDevice->DeviceType == FILE_DEVICE_CD_ROM ?
+    RC = UDFPerformDevIoCtrl((RealDevice->DeviceType == FILE_DEVICE_CD_ROM ?
         IOCTL_CDROM_CHECK_VERIFY :
         IOCTL_DISK_CHECK_VERIFY),
         DeviceObjectWeTalkTo,
@@ -338,7 +338,7 @@ UDFMountVolume(
         return RC;
     }
 
-    RC = UDFPhSendIOCTL((RealDevice->DeviceType == FILE_DEVICE_CD_ROM ?
+    RC = UDFPerformDevIoCtrl((RealDevice->DeviceType == FILE_DEVICE_CD_ROM ?
             IOCTL_CDROM_GET_DRIVE_GEOMETRY :
             IOCTL_DISK_GET_DRIVE_GEOMETRY),
             DeviceObjectWeTalkTo,

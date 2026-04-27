@@ -2469,7 +2469,10 @@ try_exit:   NOTHING;
             //  TeardownStructures walks parent chain and may free parents.
             //
 
-            ASSERT(!LastGoodFileInfo || !LastGoodFileInfo->Fcb || CurrentFcb == LastGoodFileInfo->Fcb);
+            // CurrentFcb may be NULL on early failures (e.g. FILE_CREATE on existing root)
+            // while LastGoodFileInfo->Fcb is valid from path traversal. This is expected.
+            ASSERT(!LastGoodFileInfo || !LastGoodFileInfo->Fcb ||
+                   !CurrentFcb || CurrentFcb == LastGoodFileInfo->Fcb);
 
             if (Vcb && (PtrNewFcb != Vcb->RootIndexFcb) && LastGoodFileInfo) {
 

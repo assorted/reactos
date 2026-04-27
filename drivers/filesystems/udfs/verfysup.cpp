@@ -309,7 +309,7 @@ UDFVerifyVolume(
  
         // Verify that there is a disk here.
 
-        Status = UDFPhSendIOCTL((Vpb->RealDevice->DeviceType == FILE_DEVICE_CD_ROM ?
+        Status = UDFPerformDevIoCtrl((Vpb->RealDevice->DeviceType == FILE_DEVICE_CD_ROM ?
                             IOCTL_CDROM_CHECK_VERIFY :
                             IOCTL_DISK_CHECK_VERIFY),
                             Vcb->TargetDeviceObject,

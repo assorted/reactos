@@ -54,8 +54,7 @@ UDFTSendIOCTL(
     );
 
 NTSTATUS
-NTAPI
-UDFPhSendIOCTL(
+UDFPerformDevIoCtrl(
     IN ULONG IoControlCode,
     IN PDEVICE_OBJECT DeviceObject,
     IN PVOID InputBuffer ,

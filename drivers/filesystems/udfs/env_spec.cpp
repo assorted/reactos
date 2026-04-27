@@ -19,10 +19,6 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID        UDF_FILE_ENV_SPEC
 
-#ifdef DBG
-ULONG UDF_SIMULATE_WRITES=0;
-#endif //DBG
-
 /*
 
  */
@@ -127,7 +123,7 @@ UDFPhReadSynchronous(
     ULONG Flags
     )
 {
-    NTSTATUS            RC = STATUS_SUCCESS;
+    NTSTATUS            Status = STATUS_SUCCESS;
     LARGE_INTEGER       ROffset;
     PUDF_PH_CALL_CONTEXT Context;
     PIRP                Irp;
@@ -135,6 +131,8 @@ UDFPhReadSynchronous(
     KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
     PVCB Vcb = NULL;
+
+    PAGED_CODE();
 
     ROffset.QuadPart = Offset;
     (*ReadBytes) = 0;
@@ -154,7 +152,7 @@ UDFPhReadSynchronous(
     Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
     if (!Context) {
         UDFPrint(("    !Context\n"));
-        try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        try_return(Status = STATUS_INSUFFICIENT_RESOURCES);
     }
     // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
@@ -164,7 +162,7 @@ UDFPhReadSynchronous(
                                                ByteCount, &ROffset, &(Context->IosbToUse) );
         if (!Irp) {
             UDFPrint(("    !irp Async\n"));
-            try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+            try_return(Status = STATUS_INSUFFICIENT_RESOURCES);
         }
         MmPrint(("    Alloc async Irp MDL=%x, ctx=%x\n", Irp->MdlAddress, Context));
         IoSetCompletionRoutine(Irp, &UDFAsyncCompletionRoutine,
@@ -174,7 +172,7 @@ UDFPhReadSynchronous(
                                                ByteCount, &ROffset, &(Context->event), &(Context->IosbToUse) );
         if (!Irp) {
             UDFPrint(("    !irp Sync\n"));
-            try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+            try_return(Status = STATUS_INSUFFICIENT_RESOURCES);
         }
         MmPrint(("    Alloc Irp MDL=%x, ctx=%x\n", Irp->MdlAddress, Context));
     }
@@ -194,18 +192,23 @@ UDFPhReadSynchronous(
 
     SetFlag(IrpSp->Flags, SL_OVERRIDE_VERIFY_VOLUME);
 
-    RC = IoCallDriver(DeviceObject, Irp);
+    // Send the request down to the driver. If an error occurs return
+    // it to the caller.
 
-    if (RC == STATUS_PENDING) {
-        DbgWaitForSingleObject(&(Context->event), NULL);
-        if ((RC = Context->IosbToUse.Status) == STATUS_DATA_OVERRUN) {
-            RC = STATUS_SUCCESS;
-        }
-//        *ReadBytes = Context->IosbToUse.Information;
-    } else {
-//        *ReadBytes = irp->IoStatus.Information;
+    Status = IoCallDriver(DeviceObject, Irp);
+
+    // If the status was STATUS_PENDING then wait on the event.
+
+    if (Status == STATUS_PENDING) {
+
+        Status = KeWaitForSingleObject(&Context->event,
+                                       Executive,
+                                       KernelMode,
+                                       FALSE,
+                                       NULL);
     }
-    if (NT_SUCCESS(RC)) {
+
+    if (NT_SUCCESS(Status)) {
         (*ReadBytes) = Context->IosbToUse.Information;
     }
     if (!(Flags & PH_TMP_BUFFER)) {
@@ -217,7 +220,7 @@ try_exit: NOTHING;
     if (Context) MyFreePool__(Context);
     if (IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
 
-    return(RC);
+    return(Status);
 } // end UDFPhReadSynchronous()
 
 
@@ -245,29 +248,16 @@ UDFPhWriteSynchronous(
     ULONG Flags
     )
 {
-    NTSTATUS            RC = STATUS_SUCCESS;
+    NTSTATUS            Status = STATUS_SUCCESS;
     LARGE_INTEGER       ROffset;
     PUDF_PH_CALL_CONTEXT Context = NULL;
     PIRP                irp;
     KIRQL               CurIrql = KeGetCurrentIrql();
     PVOID               IoBuf = NULL;
 
-    PVCB Vcb = NULL;
+    PAGED_CODE();
 
-#ifdef DBG
-    if (UDF_SIMULATE_WRITES) {
-/* FIXME ReactOS
-   If this function is to force a read from the bufffer to simulate any segfaults, then it makes sense.
-   Else, this forloop is useless.
-        UCHAR a;
-        for(ULONG i=0; i<Length; i++) {
-            a = ((PUCHAR)Buffer)[i];
-        }
-*/
-        *WrittenBytes = ByteCount;
-        return STATUS_SUCCESS;
-    }
-#endif //DBG
+    PVCB Vcb = NULL;
 
     ROffset.QuadPart = Offset;
     (*WrittenBytes) = 0;
@@ -278,42 +268,45 @@ UDFPhWriteSynchronous(
         IoBuf = Buffer;
     } else {
         IoBuf = DbgAllocatePool(NonPagedPool, ByteCount);
-        if (!IoBuf) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
+        if (!IoBuf) try_return (Status = STATUS_INSUFFICIENT_RESOURCES);
         RtlCopyMemory(IoBuf, Buffer, ByteCount);
     }
 
     Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
-    if (!Context) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
+    if (!Context) try_return (Status = STATUS_INSUFFICIENT_RESOURCES);
     // Create notification event object to be used to signal the request completion.
     KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
 
     if (TRUE || CurIrql > PASSIVE_LEVEL) {
         irp = IoBuildAsynchronousFsdRequest(IRP_MJ_WRITE, DeviceObject, IoBuf,
                                             ByteCount, &ROffset, &(Context->IosbToUse) );
-        if (!irp) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        if (!irp) try_return(Status = STATUS_INSUFFICIENT_RESOURCES);
         MmPrint(("    Alloc async Irp MDL=%x, ctx=%x\n", irp->MdlAddress, Context));
         IoSetCompletionRoutine( irp, &UDFAsyncCompletionRoutine,
                                 Context, TRUE, TRUE, TRUE );
     } else {
         irp = IoBuildSynchronousFsdRequest(IRP_MJ_WRITE, DeviceObject, IoBuf,
                                            ByteCount, &ROffset, &(Context->event), &(Context->IosbToUse) );
-        if (!irp) try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+        if (!irp) try_return(Status = STATUS_INSUFFICIENT_RESOURCES);
         MmPrint(("    Alloc Irp MDL=%x\n, ctx=%x", irp->MdlAddress, Context));
     }
 
     (IoGetNextIrpStackLocation(irp))->Flags |= SL_OVERRIDE_VERIFY_VOLUME;
-    RC = IoCallDriver(DeviceObject, irp);
 
-    if (RC == STATUS_PENDING) {
-        DbgWaitForSingleObject(&(Context->event), NULL);
-        if ((RC = Context->IosbToUse.Status) == STATUS_DATA_OVERRUN) {
-            RC = STATUS_SUCCESS;
-        }
-//        *WrittenBytes = Context->IosbToUse.Information;
-    } else {
-//        *WrittenBytes = irp->IoStatus.Information;
+    Status = IoCallDriver(DeviceObject, irp);
+
+    if (Status == STATUS_PENDING) {
+
+        Status = KeWaitForSingleObject(&Context->event,
+                                       Executive,
+                                       KernelMode,
+                                       FALSE,
+                                       NULL);
+
     }
-    if (NT_SUCCESS(RC)) {
+
+    if (NT_SUCCESS(Status)) {
+
         (*WrittenBytes) = Context->IosbToUse.Information;
     }
 
@@ -321,11 +314,8 @@ try_exit: NOTHING;
 
     if (Context) MyFreePool__(Context);
     if (IoBuf && !(Flags & PH_TMP_BUFFER)) DbgFreePool(IoBuf);
-    if (!NT_SUCCESS(RC)) {
-        UDFPrint(("WriteError\n"));
-    }
 
-    return(RC);
+    return(Status);
 } // end UDFPhWriteSynchronous()
 
 NTSTATUS
@@ -348,7 +338,7 @@ UDFTSendIOCTL(
 
     _SEH2_TRY {
 
-        RC = UDFPhSendIOCTL(IoControlCode,
+        RC = UDFPerformDevIoCtrl(IoControlCode,
                             Vcb->TargetDeviceObject,
                             InputBuffer ,
                             InputBufferLength,
@@ -368,7 +358,7 @@ UDFTSendIOCTL(
 
 /*
 
- Function: UDFPhSendIOCTL()
+ Function: UDFPerformDevIoCtrl()
 
  Description:
     UDF FSD will invoke this rotine to send IOCTL's to physical
@@ -378,8 +368,7 @@ UDFTSendIOCTL(
 
 */
 NTSTATUS
-NTAPI
-UDFPhSendIOCTL(
+UDFPerformDevIoCtrl(
     IN ULONG IoControlCode,
     IN PDEVICE_OBJECT DeviceObject,
     IN PVOID InputBuffer ,
@@ -390,78 +379,72 @@ UDFPhSendIOCTL(
     OUT PIO_STATUS_BLOCK Iosb OPTIONAL
     )
 {
-    NTSTATUS            RC = STATUS_SUCCESS;
-    PIRP                irp;
-    PUDF_PH_CALL_CONTEXT Context;
-    LARGE_INTEGER timeout;
+    NTSTATUS Status;
+    KEVENT Event;
+    PIRP Irp;
+    IO_STATUS_BLOCK LocalIosb;
+    PIO_STATUS_BLOCK IosbToUse = &LocalIosb;
 
-    UDFPrint(("UDFPhDevIOCTL: Code %8x  \n",IoControlCode));
+    PAGED_CODE();
 
-    Context = (PUDF_PH_CALL_CONTEXT)MyAllocatePool__( NonPagedPool, sizeof(UDF_PH_CALL_CONTEXT) );
-    if (!Context) return STATUS_INSUFFICIENT_RESOURCES;
-    //  Check if the user gave us an Iosb.
+    // Check if the user gave us an Iosb.
 
-    // Create notification event object to be used to signal the request completion.
-    KeInitializeEvent(&(Context->event), NotificationEvent, FALSE);
+    if (ARGUMENT_PRESENT(Iosb)) {
 
-    irp = IoBuildDeviceIoControlRequest(IoControlCode, DeviceObject, InputBuffer ,
-        InputBufferLength, OutputBuffer, OutputBufferLength,FALSE,&(Context->event),&(Context->IosbToUse));
-
-    if (!irp) try_return (RC = STATUS_INSUFFICIENT_RESOURCES);
-    MmPrint(("    Alloc Irp MDL=%x, ctx=%x\n", irp->MdlAddress, Context));
-/*
-    if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
-        UDFPrint(("Setting completion routine\n"));
-        IoSetCompletionRoutine( irp, &UDFSyncCompletionRoutine,
-                                Context, TRUE, TRUE, TRUE );
+        IosbToUse = Iosb;
     }
-*/
+
+    IosbToUse->Status = 0;
+    IosbToUse->Information = 0;
+
+    // Initialize the event.
+
+    KeInitializeEvent(&Event, NotificationEvent, FALSE);
+
+    // Attempt to allocate the IRP.  If unsuccessful, raise
+    // STATUS_INSUFFICIENT_RESOURCES.
+
+    Irp = IoBuildDeviceIoControlRequest(IoControlCode,
+        DeviceObject,
+        InputBuffer,
+        InputBufferLength,
+        OutputBuffer,
+        OutputBufferLength,
+        FALSE,
+        &Event,
+        IosbToUse);
+
+    if (!Irp) {
+
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
     if (OverrideVerify) {
-        (IoGetNextIrpStackLocation(irp))->Flags |= SL_OVERRIDE_VERIFY_VOLUME;
+
+        SetFlag(IoGetNextIrpStackLocation(Irp)->Flags, SL_OVERRIDE_VERIFY_VOLUME);
     }
 
-    RC = IoCallDriver(DeviceObject, irp);
+    Status = IoCallDriver(DeviceObject, Irp);
 
-    if (RC == STATUS_PENDING) {
-        ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
-        UDFPrint(("Enter wait state on evt %x\n", Context));
+    // We check for device not ready by first checking Status
+    // and then if status pending was returned, the Iosb status
+    // value.
 
-        if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
-            timeout.QuadPart = -1000;
-            UDFPrint(("waiting, TO=%I64d\n", timeout.QuadPart));
-            RC = DbgWaitForSingleObject(&(Context->event), &timeout);
-            while(RC == STATUS_TIMEOUT) {
-                timeout.QuadPart *= 2;
-                UDFPrint(("waiting, TO=%I64d\n", timeout.QuadPart));
-                RC = DbgWaitForSingleObject(&(Context->event), &timeout);
-            }
+    if (Status == STATUS_PENDING) {
 
-        } else {
-            DbgWaitForSingleObject(&(Context->event), NULL);
-        }
-        if ((RC = Context->IosbToUse.Status) == STATUS_DATA_OVERRUN) {
-            RC = STATUS_SUCCESS;
-        }
-        UDFPrint(("Exit wait state on evt %x, status %8.8x\n", Context, RC));
-/*        if (Iosb) {
-            (*Iosb) = Context->IosbToUse;
-        }*/
-    } else {
-        UDFPrint(("No wait completion on evt %x\n", Context));
-/*        if (Iosb) {
-            (*Iosb) = irp->IoStatus;
-        }*/
+        Status = KeWaitForSingleObject(&Event,
+                                       Executive,
+                                       KernelMode,
+                                       FALSE,
+                                       NULL);
+
+        Status = IosbToUse->Status;
     }
 
-    if (Iosb) {
-        (*Iosb) = Context->IosbToUse;
-    }
+    NT_ASSERT(!(OverrideVerify && (STATUS_VERIFY_REQUIRED == Status)));
 
-try_exit: NOTHING;
-
-    if (Context) MyFreePool__(Context);
-    return(RC);
-} // end UDFPhSendIOCTL()
+    return Status;
+} // end UDFPerformDevIoCtrl()
 
 VOID
 UDFNotifyReportChange(

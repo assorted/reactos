@@ -18,29 +18,6 @@
 
 #define         UDF_BUG_CHECK_ID                UDF_FILE_UDF_INFO
 
-#ifdef _X86_
-static const int8 valid_char_arr[] =
-              {1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
-               1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1,
-               1,0,1,0, 0,0,0,0, 0,0,1,1, 1,0,0,1,
-               0,0,0,0, 0,0,0,0, 0,0,1,1, 1,1,1,1,
-               0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,  // @ABCDE....
-               0,0,0,0, 0,0,0,0, 0,0,0,1, 1,1,0,0,  // ....Z[/]^_
-               0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,  // `abcde....
-               0,0,0,0, 0,0,0,0, 0,0,0,1, 1,1,0,1,  // ....z{|}~
-
-               0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-               0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-               0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-               0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-               0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-               1,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-               0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
-               0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0};
-#else   // NO X86 optimization , use generic C/C++
-static const char valid_char_arr[] = {"*/:?\"<>|\\"};
-#endif // _X86_
-
 #define DOS_CRC_MODULUS 41
 #define hexChar crcChar
 static const char crcChar[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ#_~-@";
@@ -301,43 +278,23 @@ UDFReadFileEntry(
 } // UDFReadFileEntry()
 
 /*
-    Decides if a Unicode character matches one of a list
-    of ASCII characters.
-    Used by DOS version of UDFIsIllegalChar for readability, since all of the
-    illegal characters above 0x0020 are in the ASCII subset of Unicode.
-    Works very similarly to the standard C function strchr().
- */
-__inline
-BOOLEAN
-UDFUnicodeInString(
-    IN uint8* string, // String to search through.
-    IN WCHAR ch       // Unicode char to search for.
-    )
-{
-    BOOLEAN found = FALSE;
-
-    while(*string != '\0' && !found) {
-        // These types should compare, since both are unsigned numbers.
-        if (*string == ch) {
-            found = TRUE;
-        }
-        string++;
-    }
-    return(found);
-} // end UDFUnicodeInString()
-
-/*
     Decides whether character passed is an illegal character for a
     DOS file name.
 */
 BOOLEAN
-__fastcall
 UDFIsIllegalChar(
-    IN WCHAR chr
+    IN WCHAR Char,
+    IN BOOLEAN IsStream
     )
 {
-    // Genuine illegal char's for DOS.
-    return ((chr < 0x20) || UDFUnicodeInString((uint8*)&valid_char_arr, chr));
+    if (Char < 0xFF &&
+        !FsRtlIsAnsiCharacterLegal((UCHAR)Char,
+                                   IsStream ? FSRTL_NTFS_STREAM_LEGAL : FSRTL_HPFS_LEGAL)) {
+
+        return FALSE;
+    }
+
+    return TRUE;
 } // end UDFIsIllegalChar()
 
 /*
@@ -447,14 +404,14 @@ UDFDOSName100(
                     needsCRC = TRUE;
                 } else {
                     // Look for illegal or unprintable characters.
-                    if (UDFIsIllegalChar(current) /*|| !UnicodeIsPrint(current)*/) {
+                    if (UDFIsIllegalChar(current, FALSE) /*|| !UnicodeIsPrint(current)*/) {
                         needsCRC = TRUE;
                         current = ILLEGAL_CHAR_MARK;
                         /* Skip Illegal characters(even spaces),
                         * but not periods.
                         */
                         while(index+1 < udfLen &&
-                              (UDFIsIllegalChar(udfName[index+1]) /*||
+                              (UDFIsIllegalChar(udfName[index+1], FALSE) /*||
                               !UnicodeIsPrint(udfName[index+1])*/) &&
                               udfName[index+1] != UNICODE_PERIOD)
                             index++;
@@ -565,14 +522,14 @@ UDFDOSName200(
                     needsCRC = TRUE;
                 } else {
                     // Look for illegal or unprintable characters.
-                    if (UDFIsIllegalChar(current) /*|| !UnicodeIsPrint(current)*/) {
+                    if (UDFIsIllegalChar(current, FALSE) /*|| !UnicodeIsPrint(current)*/) {
                         needsCRC = TRUE;
                         current = ILLEGAL_CHAR_MARK;
                         /* Skip Illegal characters(even spaces),
                         * but not periods.
                         */
                         while(index+1 < udfLen &&
-                              (UDFIsIllegalChar(udfName[index+1]) /*||
+                              (UDFIsIllegalChar(udfName[index+1], FALSE) /*||
                               !UnicodeIsPrint(udfName[index+1])*/) &&
                               udfName[index+1] != UNICODE_PERIOD)
                             index++;
@@ -695,7 +652,7 @@ UDFDOSName201(
                 /* length (zero if the char is not legal or */
                 /* undisplayable on this system). */
 
-                charLen = (UDFIsIllegalChar(current)
+                charLen = (UDFIsIllegalChar(current, FALSE)
                            /*|| !UnicodeIsPrint(current)*/) ? 0 : 1;
 
                 /* If the char is larger than the available space */
@@ -713,7 +670,7 @@ UDFDOSName201(
                 /* Skip over any following undiplayable or */
                 /* illegal chars. */
                 while (index +1 <udfLen &&
-                        (UDFIsIllegalChar(udfName[index+1])
+                        (UDFIsIllegalChar(udfName[index+1], FALSE)
                        /*|| !UnicodeIsPrint(udfName[index+1])*/))
                     index++;
                 }
@@ -751,7 +708,7 @@ UDFDOSName201(
             /* length (zero if the char is not legal or */
             /* undisplayable on this system). */
 
-            charLen = (UDFIsIllegalChar(current)
+            charLen = (UDFIsIllegalChar(current, FALSE)
                        /*|| !UnicodeIsPrint(current)*/) ? 0 : 1;
 
             /* If the char is larger than the available space in */
@@ -770,7 +727,7 @@ UDFDOSName201(
                 /* Skip over any following undisplayable or illegal */
                 /* chars. */
                 while (index +1 <nameLen &&
-                       (UDFIsIllegalChar(udfName[index+1])
+                       (UDFIsIllegalChar(udfName[index+1], FALSE)
                         /*|| !UnicodeIsPrint(udfName[index+1])*/))
                     index++;
                 /* Terminate loop if at the end of the file name. */

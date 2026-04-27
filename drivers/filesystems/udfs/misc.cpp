@@ -1529,7 +1529,7 @@ UDFToggleMediaEjectDisable (
 
     Prevent.PreventMediaRemoval = PreventRemoval;
 
-    return UDFPhSendIOCTL(IOCTL_DISK_MEDIA_REMOVAL,
+    return UDFPerformDevIoCtrl(IOCTL_DISK_MEDIA_REMOVAL,
                           Vcb->TargetDeviceObject,
                           &Prevent,
                           sizeof(Prevent),
