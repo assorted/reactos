@@ -112,11 +112,9 @@ UDFCommonFlush(
         // action we take.
         if ((Fcb == Fcb->Vcb->VolumeDasdFcb) || (Fcb->FcbState & UDF_FCB_ROOT_DIRECTORY)) {
 
-#ifdef UDF_DELAYED_CLOSE
             UDFFspClose(Vcb);
-#endif //UDF_DELAYED_CLOSE
 
-            UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE);
+            UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
             AcquiredVCB = TRUE;
             // The caller wishes to flush all files for the mounted
             // logical volume. The flush volume routine below should simply
@@ -129,7 +127,7 @@ UDFCommonFlush(
 
             UDFFlushVolume(IrpContext, Vcb);
 
-            UDFReleaseResource(&(Vcb->VcbResource));
+            UDFReleaseVcb(IrpContext, Vcb);
             AcquiredVCB = FALSE;
 
             try_return(Status);
@@ -139,15 +137,17 @@ UDFCommonFlush(
             Vcb = Fcb->Vcb;
             ASSERT(Vcb);
 
+            // Child-first lock ordering
+            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
+            UDFAcquireFcbExclusive(IrpContext, Fcb, FALSE);
+            AcquiredFCB = TRUE;
+
+            // Parent second (needed for DirIndex modification in UDFSetFileSizeInDirNdx)
             if (Fcb->FileInfo->ParentFile && Fcb->FileInfo->ParentFile->Fcb) {
                 UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
-                UDFAcquireResourceExclusive(&Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource, TRUE);
+                UDFAcquireFcbExclusive(IrpContext, Fcb->FileInfo->ParentFile->Fcb, FALSE);
                 AcquiredParentFcb = TRUE;
             }
-
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, TRUE);
-            AcquiredFCB = TRUE;
 
             // Request the Cache Manager to perform a flush operation.
             // Further, instruct the Cache Manager that we wish to flush the
@@ -168,20 +168,19 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
-        if (AcquiredFCB) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
-            AcquiredFCB = FALSE;
-        }
-
+        // Release in reverse order of acquisition (parent first, then child)
         if (AcquiredParentFcb) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb->FileInfo->ParentFile->Fcb);
-            UDFReleaseResource(&Fcb->FileInfo->ParentFile->Fcb->FcbNonpaged->FcbResource);
+            UDFReleaseFcb(IrpContext, Fcb->FileInfo->ParentFile->Fcb);
             AcquiredParentFcb = FALSE;
         }
 
+        if (AcquiredFCB) {
+            UDFReleaseFcb(IrpContext, Fcb);
+            AcquiredFCB = FALSE;
+        }
+
         if (AcquiredVCB) {
-            UDFReleaseResource(&Vcb->VcbResource);
+            UDFReleaseVcb(IrpContext, Vcb);
             AcquiredVCB = FALSE;
         }
 
