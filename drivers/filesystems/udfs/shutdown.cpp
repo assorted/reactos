@@ -59,7 +59,7 @@ UDFCommonShutdown(
 
     // Indicate that shutdown has started.
 
-    SetFlag(UdfData.Flags, UDFS_FLAGS_SHUTDOWN);
+    SetFlag(UdfData.Flags, UDF_DATA_FLAGS_SHUTDOWN);
 
     // Get everyone else out of the way
 
@@ -177,12 +177,6 @@ UDFCommonShutdown(
         IoUnregisterFileSystem(UdfData.UDFDeviceObject_HDD);
         if (UdfData.UDFDeviceObject_HDD) {
             IoDeleteDevice(UdfData.UDFDeviceObject_HDD);
-        }
-
-        // free up any memory we might have reserved for zones/lookaside
-        //  lists
-        if (UdfData.Flags & UDF_DATA_FLAGS_ZONES_INITIALIZED) {
-            UDFDestroyZones();
         }
 
         UDFCompleteRequest(IrpContext, Irp, STATUS_SUCCESS);

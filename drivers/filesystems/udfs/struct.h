@@ -36,6 +36,7 @@
 struct IRP_CONTEXT_LITE;
 struct IO_CONTEXT;
 struct IRP_CONTEXT;
+struct LCB;
 
 /**************************************************************************
     every structure has a node type, and a node size associated with it.
@@ -80,21 +81,31 @@ using PtrUDFObjectName = UDFObjectName*;
 **************************************************************************/
 struct CCB {
     UDFIdentifier                       NodeIdentifier;
-    // ptr to the associated FCB
-    FCB*                                Fcb;
-    // all CCB structures for a FCB are linked together
-    LIST_ENTRY                          NextCCB;
+
+    // Fcb for the file being opened.
+
+    FCB* Fcb;
+
+    // Lcb for the file being opened.
+
+    LCB* Lcb;
+
     // each CCB is associated with a file object
     PFILE_OBJECT                        FileObject;
-    // flags (see below) associated with this CCB
-    uint32                              Flags;
+
+    // Flags. Indicates flags to apply for the current open.
+
+    ULONG Flags;
+
     // current index in directory is required sometimes
+
     ULONG                               CurrentIndex;
+
     // if this CCB represents a directory object open, we may
     //  need to maintain a search pattern
+
     PUNICODE_STRING                     DirectorySearchPattern;
     HASH_ENTRY                          hashes;
-    ULONG                               TreeLength;
 };
 using PCCB = CCB*;
 
@@ -140,8 +151,6 @@ struct FCB_NONPAGED {
 
     ERESOURCE FcbPagingIoResource;
 
-    ERESOURCE CcbListResource;
-
     // This is the FastMutex for this Fcb.
 
     FAST_MUTEX FcbMutex;
@@ -150,6 +159,10 @@ struct FCB_NONPAGED {
     // FastMutex field
 
     FAST_MUTEX AdvancedFcbHeaderMutex;
+
+    // Fast mutex for file name cache synchronization
+    // Protects LCB->FileName when used as full path cache
+    FAST_MUTEX FcbFastMutex;
 
 };
 using PFCB_NONPAGED = FCB_NONPAGED*;
@@ -220,9 +233,6 @@ struct FCB {
 
     FILE_ID FileId;
 
-    // all CCB's for this particular FCB are linked off the following
-    //  list head.
-    LIST_ENTRY                          NextCCB;
     // whenever a file stream has a create/open operation performed,
     //  the Reference count below is incremented AND the OpenHandle count
     //  below is also incremented.
@@ -246,9 +256,14 @@ struct FCB {
 
     ULONG FileAttributes;
 
-    // for the UDF fsd, there exists a 1-1 correspondence between a
-    //  full object pathname and a FCB
-    PtrUDFObjectName FCBName;
+    // File name cache synchronization
+    // FcbLockThread - owner of the file name cache mutex
+    // FcbLockCount - reference count for cached names in LCBs
+    PVOID FcbLockThread;                // Thread owning the cache mutex
+    ULONG FcbLockCount;                 // Reference count for cache
+
+    // NOTE: FCBName field REMOVED - all names are now stored in LCB.
+    // Full paths are built dynamically from LCB chain via UDFBuildFullPathFromLcb().
 
     // Pointer to the Fcb non-paged structures.
 
@@ -267,9 +282,22 @@ struct FCB {
     PVOID LazyWriteThread;
 
     FCB* ParentFcb;
+
+    // LCB queues for parent-child relationships
+    // ParentLcbQueue - LCBs linking this FCB to parent directories (for hardlinks, usually 1)
+    LIST_ENTRY ParentLcbQueue;
+    // ChildLcbQueue - LCBs linking child files to this directory FCB
+    LIST_ENTRY ChildLcbQueue;
+
+    // Splay tree roots for fast child LCB lookup by name.
+    // Protected by this FCB's FcbResource (exclusive for insert/remove,
+    // shared is NOT safe — splay rebalances on lookup).
+    PRTL_SPLAY_LINKS ExactCaseRoot;
+    PRTL_SPLAY_LINKS IgnoreCaseRoot;
+    PRTL_SPLAY_LINKS ShortNameRoot;
+
     // Pointer to IrpContextLite in delayed queue.
     IRP_CONTEXT_LITE* IrpContextLite;
-    uint32                              CcbCount;
 
     //  The following field is used by the filelock module
     //  to maintain current byte range locking information.
@@ -309,8 +337,10 @@ using PFCB = FCB*;
 #define     UDF_FCB_READ_ONLY                           (0x00001000)
 #define     UDF_FCB_DELAY_CLOSE                         (0x00002000)
 #define     UDF_FCB_DELETED                             (0x00004000)
-#define     UDF_FCB_POSTED_RENAME                       (0x00010000)
-
+// Verification failed — FID/ICB data on disk does not match FCB
+#define     UDF_FCB_NEEDS_VERIFICATION                  (0x00008000)
+// Object not found on media during verification — stale FCB
+#define     UDF_FCB_NOT_FOUND_ON_MEDIA                  (0x00010000)
 #define     FCB_STATE_INITIALIZED                       (0x00020000)
 #define     FCB_STATE_IN_FCB_TABLE                      (0x00040000)
 
@@ -336,6 +366,104 @@ enum UDFFSD_MEDIA_TYPE {
     MediaDvdr,
     MediaDvdrw
 };
+
+//***************************************************************************
+//                      LCB (Link Control Block)
+//***************************************************************************
+
+/**
+    Link Control Block (LCB) - links parent directory to child file.
+
+    Used to defer directory linkage until create operation completes successfully.
+    This prevents partial creates from being visible in directory lookups.
+*/
+struct LCB {
+    UDFIdentifier NodeIdentifier;      // +0x00 Node type = UDFS_NTC_LCB
+
+    UCHAR Reserved1[4];                // +0x04 Padding for alignment
+
+    // Links in parent FCB's ChildLcbQueue
+    LIST_ENTRY ParentFcbLinks;         // +0x08 Links in parent FCB list
+
+    // Parent directory FCB
+    PFCB ParentFcb;                    // +0x18 Pointer to parent FCB
+
+    // Links in child FCB's ParentLcbQueue
+    LIST_ENTRY ChildFcbLinks;          // +0x20 Links in child FCB list
+
+    // Child file FCB
+    PFCB ChildFcb;                     // +0x30 Pointer to child FCB
+
+    // Initial directory offset (for hard links and directory entries)
+    ULONGLONG InitialOffset;           // +0x38 Initial offset
+
+    // Reference count (incremented by CCB, decremented on cleanup)
+    ULONG Reference;                   // +0x40 Reference count
+
+    // LCB flags
+    ULONG Flags;                       // +0x44 LCB flags
+
+    // File attributes from directory entry
+    ULONG FileAttributes;              // +0x48 File attributes
+
+    UCHAR Reserved2[4];                // +0x4C Padding
+
+    // ANSI name (for compatibility)
+    STRING Name;                       // +0x50 ANSI name (size 0x10)
+
+    UCHAR Reserved3[8];                // +0x60 Padding
+
+    // Splay tree links for exact case name matching
+    RTL_SPLAY_LINKS ExactCaseLinks;    // +0x68 Exact case splay links
+
+    // Exact case name (preserves original case from disk)
+    UNICODE_STRING ExactCaseLinkName;  // +0x80 Exact case link name
+
+    // Splay tree links for case-insensitive name matching
+    RTL_SPLAY_LINKS IgnoreCaseLinks;   // +0x90 Ignore case splay links
+
+    // Case-insensitive name (uppercased for fast comparison)
+    UNICODE_STRING IgnoreCaseLinkName; // +0xA8 Ignore case link name
+
+    // Splay tree links for short (8.3) name matching
+    RTL_SPLAY_LINKS ShortNameLinks;    // +0xB8 Short name splay links
+
+    // Short (8.3) name for DOS compatibility
+    UNICODE_STRING ShortName;          // +0xD0 Short name
+
+    // Buffer pointer for dynamically allocated name data
+    // Points to memory immediately after LCB structure in most cases
+    PVOID NameBuffer;                  // +0xE0 Buffer pointer
+
+    // Full file name (component name, not full path)
+    UNICODE_STRING FileName;           // +0xE8 File name
+};
+
+using PLCB = LCB*;
+
+// LCB Flags
+#define UDF_LCB_FLAG_POOL_ALLOCATED         0x00000001  // Allocated from pool (not lookaside)
+#define UDF_LCB_FLAG_LINK_DELETED           0x00000002  // Link has been deleted
+#define UDF_LCB_FLAG_HAS_NAME_BUFFER        0x00000004  // Name buffer needs freeing (separately allocated)
+#define UDF_LCB_FLAG_DELETE_ON_CLEANUP      0x00000008  // Delete file on cleanup
+#define UDF_LCB_FLAG_EXACT_CASE_IN_TREE     0x00000010  // In exact case splay tree
+#define UDF_LCB_FLAG_IGNORE_CASE_IN_TREE    0x00000020  // In ignore case splay tree
+#define UDF_LCB_FLAG_SHORT_NAME_IN_TREE     0x00000040  // In short name splay tree
+#define UDF_LCB_FLAG_SHORT_NAME_CREATED     0x00000200  // Short name was created (bit 9)
+
+// LCB size constants
+// Zero 0xF0 bytes (up to +0xE8, excluding FileName UNICODE_STRING buffer pointer)
+// Actual structure size is 0xF8 (248 bytes) but we only zero first 0xF0 bytes
+#define UDF_LCB_BASE_SIZE               0xF0    // 240 bytes - bytes to zero in RtlZeroMemory (excludes FileName buffer ptr)
+#define UDF_LCB_LOOKASIDE_SIZE          0x158   // 344 bytes - max size for lookaside allocation
+
+// LCB lookaside size - fits LCB + 16 WCHARs for short names
+// NOTE: SIZEOF_LOOKASIDE_LCB must be at least UDF_LCB_LOOKASIDE_SIZE (0x158)
+#define SIZEOF_LOOKASIDE_LCB            UDF_LCB_LOOKASIDE_SIZE
+
+//***************************************************************************
+//                      VCB (Volume Control Block)
+//***************************************************************************
 
 enum VCB_CONDITION {
 
@@ -421,7 +549,7 @@ struct VCB {
     // a resource to protect the fields contained within the VCB
     ERESOURCE                           VcbResource;
     ERESOURCE                           BitMapResource1;
-    ERESOURCE                           FileIdResource;
+
     ERESOURCE                           DlocResource;
     ERESOURCE                           DlocResource2;
     ERESOURCE                           PreallocResource;
@@ -429,12 +557,19 @@ struct VCB {
 
     // Vcb fast mutex.  This is used to synchronize the fields in the Vcb
     // when modified when the Vcb is not held exclusively.  Included here
-    // are the count fields and Fcb table.
+    // are the count fields.
 
     // We also use this to synchronize changes to the Fcb reference field.
 
     FAST_MUTEX VcbMutex;
     PVOID VcbLockThread;
+
+    // FcbTable fast mutex.  Protects Vcb->FcbTable operations (lookup,
+    // insert, delete) and ensures atomicity of FCB create + init sequence.
+    // Lock ordering: FcbTableMutex (outer) before VcbMutex (inner).
+
+    FAST_MUTEX FcbTableMutex;
+    PVOID FcbTableLockThread;
 
     //---------------
     // Physical media parameters
@@ -576,7 +711,6 @@ struct VCB {
     PUDF_DATALOC_INDEX DlocList;
     ULONG           DlocCount;
     // FS compatibility
-    USHORT          DefaultAllocMode; // Default alloc mode (from registry)
     BOOLEAN         LowFreeSpace;
     UDFFSD_MEDIA_TYPE MediaTypeEx;
     ULONG           DefaultAttr;      // Default file attributes (NT-style)
@@ -586,20 +720,14 @@ struct VCB {
     UCHAR           Reserved5[3];
 
     //
-    ULONG           FECharge;
-    ULONG           FEChargeSDir;
-    ULONG           PackDirThreshold;
     ULONG           SparseThreshold;  // in blocks
-
-    PUDF_ALLOCATION_CACHE_ITEM    FEChargeCache;
-    ULONG                         FEChargeCacheMaxSize;
 
     PUDF_ALLOCATION_CACHE_ITEM    PreallocCache;
     ULONG                         PreallocCacheMaxSize;
 
     uint32          CompatFlags;
 
-    // Fcb table.  Synchronized with the Vcb fast mutex.
+    // Fcb table.  Synchronized with FcbTableMutex.
 
     RTL_GENERIC_TABLE FcbTable;
 
@@ -707,7 +835,6 @@ struct IRP_CONTEXT {
     NTSTATUS                        ExceptionStatus;
     // For queued close operation we save Fcb
     FCB*                            Fcb;
-    ULONG                           TreeLength;
 
     // Io context for a read request.
     // Address of Fcb for teardown oplock in create case.
@@ -745,7 +872,6 @@ using PIRP_CONTEXT = IRP_CONTEXT*;
 #define IRP_CONTEXT_FLAG_TRAIL_BACKSLASH        (0x00080000)
 #define UDF_IRP_CONTEXT_NOT_TOP_LEVEL           (0x10000000)
 #define UDF_IRP_CONTEXT_FLUSH_REQUIRED          (0x20000000)
-#define UDF_IRP_CONTEXT_FLUSH2_REQUIRED         (0x40000000)
 #define IRP_CONTEXT_FLAG_ALLOW_MEDIA_EJECT      (0x80000000)
 
 //  The following flags need to be cleared when a request is posted.
@@ -792,7 +918,6 @@ struct IRP_CONTEXT_LITE {
     ULONG                           UserReference;
     //  Real device object.  This represents the physical device closest to the media.
     PDEVICE_OBJECT                  RealDevice;
-    ULONG                           TreeLength;
 };
 using PIRP_CONTEXT_LITE = IRP_CONTEXT_LITE*;
 
@@ -837,6 +962,7 @@ typedef struct _UDFData {
     PAGED_LOOKASIDE_LIST UDFFcbDataLookasideList;
 
     PAGED_LOOKASIDE_LIST CcbLookasideList;
+    PAGED_LOOKASIDE_LIST LcbLookasideList;
 
     LIST_ENTRY AsyncCloseQueue;
     ULONG AsyncCloseCount;
@@ -869,7 +995,7 @@ typedef struct _UDFData {
 
 } UDFData, *PUDFData;
 
-#define UDFS_FLAGS_SHUTDOWN                   (0x0001)
+#define     UDF_DATA_FLAGS_SHUTDOWN                 (0x00000001)
 
 #define TAG_IRP_CONTEXT         'cidU'
 #define TAG_IRP_CONTEXT_LITE    'lidU'
@@ -877,6 +1003,7 @@ typedef struct _UDFData {
 #define TAG_FCB_NONPAGED        'nfdU'
 #define TAG_FCB                 'pfdU'
 #define TAG_CCB                 'ccdU'
+#define TAG_LCB                 'lcdU'
 #define TAG_VPB                 'pvdU'
 #define TAG_FCB_TABLE           'tfdU'
 #define TAG_FILE_NAME           'nFdU'
@@ -913,9 +1040,7 @@ typedef struct _UDFData {
 #define         UDF_VCB_IC_UPDATE_ARCH_BIT             (0x00000008)
 #define         UDF_VCB_IC_UPDATE_DIR_WRITE            (0x00000010)
 #define         UDF_VCB_IC_UPDATE_DIR_READ             (0x00000020)
-#define         UDF_VCB_IC_WRITE_IN_RO_DIR             (0x00000040)
 #define         UDF_VCB_IC_UPDATE_UCHG_DIR_ACCESS_TIME (0x00000080)
-#define         UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS      (0x00000100)
 #define         UDF_VCB_IC_IGNORE_SEQUENTIAL_IO        (0x00002000)
 #define         UDF_VCB_IC_NO_SYNCCACHE_AFTER_WRITE    (0x00004000)
 #define         UDF_VCB_IC_BAD_RW_SEEK                 (0x00008000)
@@ -924,12 +1049,6 @@ typedef struct _UDFData {
 #define         UDF_VCB_IC_INSTANT_COMPAT_ALLOC_DESCS  (0x00100000)
 
 #define         UDF_VCB_IC_DIRTY_RO                    (0x04000000)
-#define         UDF_VCB_IC_W2K_COMPAT_VLABEL           (0x08000000)
-#define         UDF_VCB_IC_ADAPTEC_NONALLOC_COMPAT     (0x80000000)
-
-// valid flag values for the global data structure
-#define     UDF_DATA_FLAGS_ZONES_INITIALIZED        (0x00000002)
-#define     UDF_DATA_FLAGS_SHUTDOWN                 (0x00000004)
 
 #define FILE_ID_CACHE_GRANULARITY 16
 #define DLOC_LIST_GRANULARITY 16

@@ -131,8 +131,6 @@ typedef struct _DIR_INDEX_HDR {
     uint_di     FrameCount;
     uint_di     LastFrameCount;  // in items
     uint_di     DelCount;
-    EXTENT_INFO FECharge;        // file entry charge
-    EXTENT_INFO FEChargeSDir;    // file entry charge for streams
     ULONG       DIFlags;
 //    struct _DIR_INDEX_ITEM* FrameList[0];
 } DIR_INDEX_HDR, *PDIR_INDEX_HDR;
@@ -441,6 +439,18 @@ typedef struct _UDF_DIR_SCAN_CONTEXT {
     uint_di i;
 } UDF_DIR_SCAN_CONTEXT, *PUDF_DIR_SCAN_CONTEXT;
 
+/**
+    Directory enumeration context for find/open operations.
+    Separates directory search from file open operations.
+*/
+typedef struct _DIR_ENUM_CONTEXT {
+    PUDF_FILE_INFO ParentInfo;        // Parent directory FileInfo
+    PDIR_INDEX_HDR DirIndex;          // Directory index header
+    PDIR_INDEX_ITEM DirNdx;           // Found directory entry (or NULL)
+    uint_di Index;                    // Index of found entry
+    BOOLEAN ShortNameMatch;           // TRUE if matched by 8.3 short name
+} DIR_ENUM_CONTEXT, *PDIR_ENUM_CONTEXT;
+
 typedef EXT_RELOCATION_ENTRY  EXT_RELOC_MAP;
 typedef PEXT_RELOCATION_ENTRY PEXT_RELOC_MAP;
 
@@ -491,8 +501,6 @@ typedef struct _UDF_ALLOCATION_CACHE_ITEM {
 
 #define UDF_DEFAULT_LAST_LBA_CD     276159
 #define UDF_DEFAULT_LAST_LBA_DVD    0x23053f
-#define UDF_DEFAULT_FE_CHARGE       128
-#define UDF_DEFAULT_FE_CHARGE_SDIR  1
 #define UDF_WRITE_MAX_RETRY         4
 #define UDF_READ_MAX_RETRY          4
 #define UDF_READY_MAX_RETRY         5

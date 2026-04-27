@@ -44,7 +44,9 @@ UDFCommonWrite(
     NTSTATUS Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
     LONGLONG StartingOffset;
-    ULONG                   ByteCount = 0, TruncatedLength = 0;
+    ULONG ByteCount;
+    LONGLONG ByteRange;
+    ULONG TruncatedLength;
     SIZE_T                  NumberBytesWritten = 0;
     PFILE_OBJECT            FileObject = NULL;
     TYPE_OF_OPEN TypeOfOpen;
@@ -60,9 +62,6 @@ UDFCommonWrite(
     BOOLEAN                 MainResourceAcquired = FALSE;
     BOOLEAN                 VcbAcquired = FALSE;
 
-    BOOLEAN                 MainResourceAcquiredExclusive = FALSE;
-    BOOLEAN                 MainResourceCanDemoteToShared = FALSE;
-
     BOOLEAN                 Wait = FALSE;
     BOOLEAN                 PagingIo = FALSE;
     BOOLEAN                 NonCachedIo = FALSE;
@@ -73,6 +72,14 @@ UDFCommonWrite(
     BOOLEAN                 RecursiveWriteThrough = FALSE;
     BOOLEAN                 ZeroBlock = FALSE;
     BOOLEAN                 ZeroBlockDone = FALSE;
+
+    // Examine our input parameters to determine if this is noncached and/or
+    // a paging io operation.
+
+    Wait = BooleanFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
+    PagingIo = FlagOn(Irp->Flags, IRP_PAGING_IO);
+    NonCachedIo = FlagOn(Irp->Flags, IRP_NOCACHE);
+    SynchronousIo = FlagOn(IrpSp->FileObject->Flags, FO_SYNCHRONOUS_IO);
 
     FileObject = IrpSp->FileObject;
 
@@ -93,14 +100,6 @@ UDFCommonWrite(
     ASSERT_CCB(Ccb);
     ASSERT_FCB(Fcb);
     ASSERT_VCB(Vcb);
-
-    // Examine our input parameters to determine if this is noncached and/or
-    // a paging io operation.
-
-    Wait = BooleanFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
-    PagingIo = FlagOn(Irp->Flags, IRP_PAGING_IO);
-    NonCachedIo = FlagOn(Irp->Flags, IRP_NOCACHE);
-    SynchronousIo = FlagOn(IrpSp->FileObject->Flags, FO_SYNCHRONOUS_IO);
 
     // Check if this volume has already been shut down.  If it has, fail
     // this write request.
@@ -139,6 +138,7 @@ UDFCommonWrite(
 
     StartingOffset = IrpSp->Parameters.Write.ByteOffset.QuadPart;
     ByteCount = IrpSp->Parameters.Write.Length;
+    ByteRange = StartingOffset + ByteCount;
 
     Irp->IoStatus.Information = 0;
 
@@ -218,20 +218,8 @@ UDFCommonWrite(
                 try_return(Status = STATUS_ACCESS_DENIED);
             }
 
-            if (IrpContext->Flags & UDF_IRP_CONTEXT_FLUSH2_REQUIRED) {
-
-                UDFPrint(("  UDF_IRP_CONTEXT_FLUSH2_REQUIRED\n"));
-                IrpContext->Flags &= ~UDF_IRP_CONTEXT_FLUSH2_REQUIRED;
-
-
-#ifdef UDF_DELAYED_CLOSE
-                UDFFspClose(Vcb);
-#endif //UDF_DELAYED_CLOSE
-
-            }
-
             // Acquire the volume resource exclusive
-            UDFAcquireResourceExclusive(&(Vcb->VcbResource), TRUE);
+            UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
             VcbAcquired = TRUE;
 
             // I dislike the idea of writing to mounted media too, but M$ has another point of view...
@@ -334,8 +322,6 @@ UDFCommonWrite(
             if (!SuccessfulPurge) {
                 try_return(Status = STATUS_PURGE_FAILED);            
             }
-
-            MainResourceCanDemoteToShared = TRUE;
         }
 
         // Determine if we were called by the lazywriter.
@@ -422,20 +408,7 @@ UDFCommonWrite(
                     try_return(Status = STATUS_PENDING);
 //                CanWait = TRUE;
 
-                // Try to acquire the FCB MainResource exclusively
-                if (!MainResourceAcquiredExclusive) {
-
-                    UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
-                    MainResourceAcquired = FALSE;
-
-                    UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-                    if (!UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbResource, Wait)) {
-                        try_return(Status = STATUS_PENDING);
-                    }
-                    MainResourceAcquired = TRUE;
-                }
-
-                UDFAcquireResourceExclusive(&Fcb->FcbNonpaged->FcbPagingIoResource, TRUE);
+                UDFAcquirePagingIoExclusive(IrpContext, Fcb);
                 PagingIoResourceAcquired = TRUE;
 
                 if (ExtendFS) {
@@ -455,7 +428,7 @@ UDFCommonWrite(
                     }
                 }
 
-                UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
+                UDFReleasePagingIo(IrpContext, Fcb);
                 PagingIoResourceAcquired = FALSE;
 
                 if (CcIsFileCached(FileObject)) {
@@ -603,6 +576,18 @@ UDFCommonWrite(
                 try_return(Status = STATUS_INVALID_USER_BUFFER);
             }
             Fcb->NtReqFCBFlags |= UDF_NTREQ_FCB_MODIFIED;
+
+            // Acquire PagingIoResource exclusive to serialize with
+            // UDFMarkAllocatedAsRecorded which may free and replace
+            // ExtInfo->Mapping during NOT_RECORDED -> RECORDED conversion.
+            // Without this, a concurrent UDFResizeExtent (holding PagingIoResource
+            // exclusive for file extension) can use a stale Mapping pointer
+            // that was freed by our UDFMarkAllocatedAsRecorded call.
+            if (!PagingIoResourceAcquired) {
+                UDFAcquirePagingIoExclusive(IrpContext, Fcb);
+                PagingIoResourceAcquired = TRUE;
+            }
+
             Status = UDFWriteFile__(IrpContext, Vcb, Fcb->FileInfo, StartingOffset, TruncatedLength,
                            FALSE, (PCHAR)SystemBuffer, &NumberBytesWritten);
 
@@ -667,16 +652,15 @@ try_exit:   NOTHING;
         // Release any resources acquired here ...
 
         if (PagingIoResourceAcquired) {
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbPagingIoResource);
+            UDFReleasePagingIo(IrpContext, Fcb);
         }
 
         if (MainResourceAcquired) {
-            UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-            UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
+            UDFReleaseFcb(IrpContext, Fcb);
         }
 
         if (VcbAcquired) {
-            UDFReleaseResource(&Vcb->VcbResource);
+            UDFReleaseVcb(IrpContext, Vcb);
         }
 
     } _SEH2_END; // end of "__finally" processing

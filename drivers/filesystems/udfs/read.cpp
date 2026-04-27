@@ -284,7 +284,7 @@ UDFCommonRead(
                 if (StartingOffset < ValidDataLength.QuadPart) {
 
                     ULONG LBS = Vcb->SectorSize;
-                    ULONG ZeroingOffset = ((ValidDataLength.QuadPart - StartingOffset) + (LBS - 1)) & ~(LBS - 1);
+                    ULONG ZeroingOffset = (ULONG)(((ValidDataLength.QuadPart - StartingOffset) + (LBS - 1)) & ~((ULONGLONG)LBS - 1));
 
                     // If the offset is at or above the byte count, no harm: just means
                     // that the read ends in the last sector and the zeroing will be
@@ -308,6 +308,7 @@ UDFCommonRead(
 
             Status = UDFReadFile__(IrpContext, Vcb, Fcb->FileInfo, StartingOffset, ByteCount,
                            FALSE, (PCHAR)SystemBuffer, &NumberBytesRead);
+
 /*                // AFAIU, CacheManager wants this:
             if (!NT_SUCCESS(RC)) {
                 NumberBytesRead = 0;

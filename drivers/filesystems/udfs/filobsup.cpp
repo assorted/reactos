@@ -184,13 +184,5 @@ Return Value:
             FlagOn( (ULONG_PTR) FileObject->FsContext2, TYPE_OF_OPEN_MASK );
 }
 
-PCCB
-UDFDecodeFileObjectCcb(
-    _In_ PFILE_OBJECT FileObject
-    )
-{
-    return (PCCB)((ULONG_PTR)FileObject->FsContext2 & ~TYPE_OF_OPEN_MASK);
-}
-
 
 
