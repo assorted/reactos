@@ -96,11 +96,9 @@ UdfIsVolumeModifyingScsiOp(
 NTSTATUS
 UDFCommonDevControl(PIRP_CONTEXT IrpContext, PIRP Irp)
 {
-    BOOLEAN FcbAcquired = FALSE;
     BOOLEAN DeviceAcquired = FALSE;
     BOOLEAN IsOpticalWriteRModeActive = FALSE;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
-    BOOLEAN CanWait;
     PCDB Cdb = NULL;
     PVCB Vcb;
     PFCB Fcb;
@@ -108,12 +106,6 @@ UDFCommonDevControl(PIRP_CONTEXT IrpContext, PIRP Irp)
     NTSTATUS Status;
     TYPE_OF_OPEN TypeOfOpen;
     ULONG IoControlCode;
-
-    PAGED_CODE();
-
-    UDFPrint(("UDFCommonDevControl\n"));
-    UDFPrint(("Irp           = %p\n", Irp));
-    UDFPrint(("MinorFunction = %08lx\n", IrpSp->MinorFunction));
 
     PAGED_CODE();
 
@@ -135,13 +127,10 @@ UDFCommonDevControl(PIRP_CONTEXT IrpContext, PIRP Irp)
         IsOpticalWriteRModeActive = TRUE;
     }
 
-    CanWait = FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
-
     if (TypeOfOpen == UserFileOpen) {
 
         UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-        UDFAcquireResourceShared(&Fcb->FcbNonpaged->FcbResource, CanWait);
-        FcbAcquired = TRUE;
+        UDFAcquireFcbShared(IrpContext, Fcb, FALSE);
 
         _SEH2_TRY {
 
@@ -184,10 +173,7 @@ UDFCommonDevControl(PIRP_CONTEXT IrpContext, PIRP Irp)
             if (DeviceAcquired)
                 UDFReleaseDevice(IrpContext, Vcb, NULL);
 
-            if (FcbAcquired) {
-                UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
-                UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
-            }
+            UDFReleaseFcb(IrpContext, Fcb);
         } _SEH2_END;
 
         return Status;
@@ -232,7 +218,7 @@ UDFCommonDevControl(PIRP_CONTEXT IrpContext, PIRP Irp)
 
         if (!FlagOn(Vcb->VcbState, VCB_STATE_PNP_NOTIFICATION)) {
 
-            UDFAcquireResourceExclusive(&Vcb->VcbResource, CanWait);
+            UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
             if (Vcb->VcbCondition == VcbMounted && FALSE /*IsWritableOpticalMedia()*/) {
 
@@ -247,7 +233,7 @@ UDFCommonDevControl(PIRP_CONTEXT IrpContext, PIRP Irp)
                 }
             }
 
-            UDFReleaseResource(&(Vcb->VcbResource));
+            UDFReleaseVcb(IrpContext, Vcb);
         }
 
         break;

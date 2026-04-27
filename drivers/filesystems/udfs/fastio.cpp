@@ -538,7 +538,6 @@ UDFRelReadAhead(
     MmPrint(("  RelFromReadAhead()\n"));
 
     // Release the acquired resource.
-    UDF_CHECK_PAGING_IO_RESOURCE(Fcb);
     UDFReleaseResource(&Fcb->FcbNonpaged->FcbResource);
 
     // Of course, the FSD should undo whatever else seems appropriate at this

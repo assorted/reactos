@@ -96,55 +96,6 @@ if (Vcb->CompatFlags & UDF_VCB_IC_UPDATE_ATTR_TIME) {         \
 VOID     UDFNormalizeFileName(IN PUNICODE_STRING FName,
                               IN USHORT valueCRC);
 
-NTSTATUS MyAppendUnicodeStringToString_(IN PUNICODE_STRING Str1,
-                                        IN PUNICODE_STRING Str2
-#ifdef UDF_TRACK_UNICODE_STR
-                                       ,IN PCHAR Tag
-#endif
-                                       );
-
-NTSTATUS MyAppendUnicodeToString_(IN PUNICODE_STRING Str1,
-                                  IN PCWSTR Str2
-#ifdef UDF_TRACK_UNICODE_STR
-                                 ,IN PCHAR Tag
-#endif
-                                 );
-
-#ifdef UDF_TRACK_UNICODE_STR
-  #define MyAppendUnicodeStringToString(s1,s2)         MyAppendUnicodeStringToString_(s1,s2,"AppUStr")
-  #define MyAppendUnicodeStringToStringTag(s1,s2,tag)  MyAppendUnicodeStringToString_(s1,s2,tag)
-  #define MyAppendUnicodeToString(s1,s2)               MyAppendUnicodeToString_(s1,s2,"AppStr")
-  #define MyAppendUnicodeToStringTag(s1,s2,tag)        MyAppendUnicodeToString_(s1,s2,tag)
-#else
-  #define MyAppendUnicodeStringToString(s1,s2)  MyAppendUnicodeStringToString_(s1,s2)
-  #define MyAppendUnicodeStringToStringTag(s1,s2,tag)  MyAppendUnicodeStringToString_(s1,s2)
-  #define MyAppendUnicodeToString(s1,s2)               MyAppendUnicodeToString_(s1,s2)
-  #define MyAppendUnicodeToStringTag(s1,s2,tag)        MyAppendUnicodeToString_(s1,s2)
-#endif
-
-NTSTATUS MyInitUnicodeString(IN PUNICODE_STRING Str1,
-                             IN PCWSTR Str2);
-
-NTSTATUS MyCloneUnicodeString(IN PUNICODE_STRING Str1,
-                              IN PUNICODE_STRING Str2);
-
-/*ULONG    MyCompareUnicodeString(PUNICODE_STRING s1,
-                                PUNICODE_STRING s2,
-                                BOOLEAN UpCase);*/
-
-/*
-#define UDFAllocFileInfo() \
-    ExAllocateFromZone(&(UDFGlobalData.FileInfoZoneHeader))
-*/
-
-#define UDFIsDataCached(Vcb,Lba,BCount) \
-    ( WCacheIsInitialized__(&((Vcb)->FastCache)) &&        \
-     (KeGetCurrentIrql() < DISPATCH_LEVEL) && \
-      WCacheIsCached__(&((Vcb)->FastCache),Lba, BCount) )
-
-BOOLEAN  UDFIsDirInfoCached(IN PVCB Vcb,
-                            IN PUDF_FILE_INFO DirInfo);
-
 __inline LARGE_INTEGER UDFMakeLargeInteger(LONGLONG value) {
     LARGE_INTEGER result;
     result.QuadPart = value;

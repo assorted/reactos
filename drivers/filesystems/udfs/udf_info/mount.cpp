@@ -616,10 +616,6 @@ UDFUpdateLogicalVol(
 
     status = UDFUpdateSparingTable(IrpContext, Vcb);
 
-    if (!(Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_VLABEL)) {
-        goto Err_SetVI;
-    }
-
     lvd = (LogicalVolDesc*)MyAllocatePool__(NonPagedPool, max(Vcb->SectorSize, sizeof(LogicalVolDesc)) );
 
     if (!lvd) {
@@ -946,7 +942,6 @@ UDFUmount__(
         return UDFRecordVAT(IrpContext, Vcb);
     }
 
-    UDFFlushAllCachedAllocations(Vcb, UDF_PREALLOC_CLASS_FE);
     UDFFlushAllCachedAllocations(Vcb, UDF_PREALLOC_CLASS_DIR);
 
     // synchronize BAD Block bitmap and NonAllocatable

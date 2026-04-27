@@ -139,34 +139,9 @@ static const uint32 crc32_tab[] = {
 };
 
 /*
-   This routine allocates new memory block, copies data there & free old one
-*/
-/*uint32
-UDFMemRealloc(
-    int8* OldBuff,
-    uint32 OldLength,
-    int8** NewBuff,
-    uint32 NewLength
-    )
-{
-    int8* new_buff;
-
-    (*NewBuff) = OldBuff;
-    if (OldLength == NewLength) return OldLength;
-    new_buff = (int8*)MyAllocatePool__(NonPagedPool, NewLength);
-    if (!new_buff) return 0;
-    if (OldLength > NewLength) OldLength = NewLength;
-    RtlCopyMemory(new_buff, OldBuff, OldLength);
-    MyFreePool__(OldBuff);
-    (*NewBuff) = new_buff;
-    return OldLength;
-} // end UDFMemRealloc()*/
-
-/*
     This routine converts compressed Unicode to standard
  */
-void
-__fastcall
+VOID
 UDFDecompressUnicode(
     IN OUT PUNICODE_STRING UName,
     IN uint8* CS0,
@@ -1257,8 +1232,7 @@ UDFSetAllocDescLen(
             fe->lengthAllocDescs = min(FileInfo->Dloc->AllocLoc.Mapping[0].extLength -
                                        FileInfo->Dloc->AllocLoc.Offset,
                                        (uint32)(FileInfo->Dloc->AllocLoc.Length));
-        } else
-        if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
+        } else {
             fe->lengthAllocDescs = (uint32)(FileInfo->Dloc->DataLoc.Length);
         }
     } else if (Ident == TID_EXTENDED_FILE_ENTRY) {
@@ -1267,8 +1241,7 @@ UDFSetAllocDescLen(
             fe->lengthAllocDescs = min(FileInfo->Dloc->AllocLoc.Mapping[0].extLength -
                                        FileInfo->Dloc->AllocLoc.Offset,
                                        (uint32)(FileInfo->Dloc->AllocLoc.Length));
-        } else
-        if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
+        } else {
             fe->lengthAllocDescs = (uint32)(FileInfo->Dloc->DataLoc.Length);
         }
     }
@@ -1614,14 +1587,7 @@ UDFWriteFile__(
             elen - Dloc->DataLoc.Offset,
             Dloc->DataLoc.Length));
         UDFSetFileSize(FileInfo, t);
-        if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
-            ExtPrint(("  w2k-compat -> rebuild allocs\n"));
-            Dloc->DataLoc.Modified = TRUE;
-        } else
-        if ((ULONG)((elen+Vcb->SectorSize-1) >> Vcb->SectorShift) != (ULONG)((t+Vcb->SectorSize-1) >> Vcb->SectorShift)) {
-            ExtPrint(("  LBS boundary crossed -> rebuild allocs\n"));
-            Dloc->DataLoc.Modified = TRUE;
-        }
+        Dloc->DataLoc.Modified = TRUE;
         Dloc->DataLoc.Length = t;
         return UDFWriteExtent(IrpContext, Vcb, &Dloc->DataLoc, Offset, Length, Direct, Buffer, WrittenBytes);
     }
@@ -1643,11 +1609,13 @@ UDFWriteFile__(
     ExtPrint(("  init Alloc mode\n"));
     if ((((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK) == ICB_FLAG_AD_IN_ICB) {
         ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags &= ~ICB_FLAG_ALLOC_MASK;
-        ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags |= Vcb->DefaultAllocMode;
+        ((PFILE_ENTRY)(Dloc->FileEntry))->icbTag.flags |= ICB_FLAG_AD_SHORT;
         WasInIcb = TRUE;
         // Clear embedded data flag since file is no longer in ICB mode
-        ASSERT(FileInfo->Fcb);
-        FileInfo->Fcb->FcbState &= ~UDF_FCB_EMBEDDED_DATA;
+        // Fcb may be NULL during directory operations (FCB not yet created)
+        if (FileInfo->Fcb) {
+            FileInfo->Fcb->FcbState &= ~UDF_FCB_EMBEDDED_DATA;
+        }
     }
     // increase extent
     ExtPrint(("  %s %s %s\n",
@@ -1656,7 +1624,7 @@ UDFWriteFile__(
         Vcb->LowFreeSpace ? "LowSpace" : ""));
     if (UDFIsADirectory(FileInfo) && !WasInIcb && !Vcb->LowFreeSpace) {
         FileInfo->Dloc->DataLoc.Flags |= EXTENT_FLAG_ALLOC_SEQUENTIAL;
-        status = UDFResizeExtent(IrpContext, Vcb, PartNum, (t*2+Vcb->WriteBlockSize-1) & ~(SIZE_T)(Vcb->WriteBlockSize-1), FALSE, &(Dloc->DataLoc));
+        status = UDFResizeExtent(IrpContext, Vcb, PartNum, (t*2+Vcb->WriteBlockSize-1) & ~(ULONGLONG)(Vcb->WriteBlockSize-1), FALSE, &(Dloc->DataLoc));
         if (NT_SUCCESS(status)) {
             AdPrint(("  preallocated space for Dir\n"));
             FileInfo->Dloc->DataLoc.Flags |= EXTENT_FLAG_PREALLOCATED;
@@ -1713,14 +1681,7 @@ UDFWriteFile__(
         return status;
     UDFSetFileSize(FileInfo, t);
     Dloc->DataLoc.Modified = TRUE;
-#ifdef UDF_DBG
-    if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
-        ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
-    } else {
-        ASSERT(((UDFGetFileSize(FileInfo)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)) ==
-               ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)));
-    }
-#endif // UDF_DBG
+    ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
     return STATUS_SUCCESS;
 } // end UDFWriteFile__()
 
@@ -1758,11 +1719,30 @@ UDFUnlinkFile__(
 
     // check references
     Dloc = FileInfo->Dloc;
-    if ((FileInfo->OpenCount /*> (uint32)(UDFHasAStreamDir(FileInfo) ? 1 : 0)*/) ||
-       (FileInfo->RefCount>1)) return STATUS_CANNOT_DELETE;
-    if (Dloc->SDirInfo)
-        return STATUS_CANNOT_DELETE;
-    ASSERT(FileInfo->RefCount == 1);
+    // Original check was too strict: (OpenCount) || (RefCount > 1)
+    // Problem: When we open a file via UDFOpenFile__ to delete it during rename,
+    // that adds +1 to RefCount. If there's also a delayed-close reference,
+    // RefCount becomes 2 and unlink fails even though OpenCount=0.
+    // Fix: Only check OpenCount. RefCount will be properly managed by Close/CleanUp.
+    // The key insight is: OpenCount tracks actual user handles, RefCount tracks
+    // internal references. If no user has the file open (OpenCount=0), we should
+    // be able to unlink it.
+    // When FreeSpace=FALSE (rename/move), we only unlink the FID from the
+    // directory — the file data stays intact. OpenCount/RefCount/SDirInfo checks
+    // are not relevant because the file remains alive under a new name.
+    if (FreeSpace) {
+        if (FileInfo->OpenCount) {
+            AdPrint(("UDFUnlinkFile__: OpenCount=%d, cannot delete\n", FileInfo->OpenCount));
+            return STATUS_CANNOT_DELETE;
+        }
+        if (FileInfo->RefCount > 2) {
+            AdPrint(("UDFUnlinkFile__: RefCount=%d > 2, cannot delete\n", FileInfo->RefCount));
+            return STATUS_CANNOT_DELETE;
+        }
+        if (Dloc->SDirInfo)
+            return STATUS_CANNOT_DELETE;
+    }
+    ASSERT(FileInfo->RefCount >= 1);
     DirInfo = FileInfo->ParentFile;
     // root dir or self
     if (!DirInfo || ((FileInfo->Index < 2) && !UDFIsAStreamDir(FileInfo))) return STATUS_CANNOT_DELETE;
@@ -1892,9 +1872,6 @@ cleanup_SDir:
                                                      UDF_FE_FLAG_HAS_DEL_SDIR);
             FileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_IS_DEL_SDIR;
             UDFDecFileLinkCount(FileInfo->ParentFile);
-        }
-        if (Dloc->DirIndex) {
-            UDFFlushFESpace(Vcb, Dloc, FLUSH_FE_FOR_DEL);
         }
         // flush file
         UDFFlushFile__(IrpContext, Vcb, FileInfo);
@@ -2072,8 +2049,10 @@ UDFOpenFile__(
     // init pointers to linked files (if any)
     if (FileInfo->Dloc->LinkedFileInfo != FileInfo)
         UDFInsertLinkedFile(FileInfo, FileInfo->Dloc->LinkedFileInfo);
-    if (FileInfo->Dloc->FileEntry)
+    if (FileInfo->Dloc->FileEntry) {
+        // Dloc cached in UDFOpenFile__ — skip FE read from disk
         goto init_tree_entry;
+    }
     // read (Ex)FileEntry
     FileInfo->Dloc->FileEntry = (tag*)MyAllocatePoolTag__(NonPagedPool, Vcb->SectorSize, MEM_FE_TAG);
     if (!(FileInfo->Dloc->FileEntry)) return STATUS_INSUFFICIENT_RESOURCES;
@@ -2133,13 +2112,6 @@ init_tree_entry:
         status = UDFIndexDirectory(IrpContext, Vcb, FileInfo);
         if (!NT_SUCCESS(status))
             return status;
-
-        if ((FileInfo->Dloc->DirIndex->DelCount > Vcb->PackDirThreshold) &&
-           !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)) {
-            status = UDFPackDirectory__(IrpContext, Vcb, FileInfo);
-            if (!NT_SUCCESS(status))
-                return status;
-        }
     }
     UDFReferenceFile__(FileInfo);
     UDFReleaseDloc(Vcb, FileInfo->Dloc);
@@ -2154,7 +2126,7 @@ init_tree_entry:
     This is called after UDFFindDirEntry to open the found file.
  */
 NTSTATUS
-UDFOpenObjectFromDirContext(
+UDFOpenFileInfoFromDirContext(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
     IN PDIR_ENUM_CONTEXT DirContext,
@@ -2305,20 +2277,13 @@ init_tree_entry:
         status = UDFIndexDirectory(IrpContext, Vcb, FileInfo);
         if (!NT_SUCCESS(status))
             return status;
-
-        if ((FileInfo->Dloc->DirIndex->DelCount > Vcb->PackDirThreshold) &&
-           !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)) {
-            status = UDFPackDirectory__(IrpContext, Vcb, FileInfo);
-            if (!NT_SUCCESS(status))
-                return status;
-        }
     }
     UDFReferenceFile__(FileInfo);
     UDFReleaseDloc(Vcb, FileInfo->Dloc);
     ASSERT(FileInfo->ParentFile == DirInfo);
 
     return status;
-} // end UDFOpenObjectFromDirContext()
+} // end UDFOpenFileInfoFromDirContext()
 
 
 /*
@@ -2397,12 +2362,6 @@ init_tree_entry:
         if (!NT_SUCCESS(status))
             return status;
 
-        if ((FileInfo->Dloc->DirIndex->DelCount > Vcb->PackDirThreshold) &&
-           !(Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY)) {
-            status = UDFPackDirectory__(IrpContext, Vcb, FileInfo);
-            if (!NT_SUCCESS(status))
-                return status;
-        }
     }
     UDFReferenceFile__(FileInfo);
     UDFReleaseDloc(Vcb, FileInfo->Dloc);
@@ -2498,11 +2457,70 @@ UDFCleanUpFile__(
             for(i=2; (DirNdx = UDFDirIndex(Dloc->DirIndex,i)); i++) {
                 if (DirNdx->FileInfo) {
                     if (!KeepDloc) {
-                        ASSERT(FALSE);
-                        UDFPrint(("UDF: Found not cleaned up reference.\n"));
-                        UDFPrint(("     Skipping cleanup (1)\n"));
-//                        BrutePoint();
-                        return UDF_FREE_NOTHING;
+                        // Orphaned FileInfo in DirIndex: loaded by
+                        // UDFOpenFileInfoFromDirContext during path traversal
+                        // but never opened as final component (no LCB).
+                        // Recursively clean up instead of ASSERTing.
+                        UDFPrint(("UDF: Cleaning orphaned FileInfo %x in DirIndex[%d]\n",
+                                  DirNdx->FileInfo, i));
+                        PUDF_FILE_INFO OrphanFi = DirNdx->FileInfo;
+                        // Orphan must have a valid Dloc (loaded by UDFOpenFileInfoFromDirContext)
+                        ASSERT(OrphanFi->Dloc);
+                        // Orphan should be self-linked (not part of a parallel/linked chain)
+                        ASSERT(OrphanFi->NextLinkedFile == OrphanFi);
+                        // ParentFile must point to the FileInfo we're currently cleaning up
+                        ASSERT(OrphanFi->ParentFile == FileInfo);
+                        // Clear CommonFcb to ensure KeepDloc=FALSE in recursive call
+                        // (floating FCB may have set CommonFcb != NULL).
+                        // The floating FCB itself will leak until unmount — acceptable.
+                        if (OrphanFi->Dloc->CommonFcb) {
+                            UDFPrint(("UDF: Orphan %x has floating CommonFcb %x\n",
+                                      OrphanFi, OrphanFi->Dloc->CommonFcb));
+                            OrphanFi->Dloc->CommonFcb = NULL;
+                        }
+                        // Clear Fcb so UDFCleanUpFile__ doesn't bail at line 2465
+                        if (OrphanFi->Fcb) {
+                            UDFPrint(("UDF: Orphan %x has floating Fcb %x\n",
+                                      OrphanFi, OrphanFi->Fcb));
+                            OrphanFi->Fcb->FileInfo = NULL;
+                            OrphanFi->Fcb = NULL;
+                        }
+                        // Log original counts for diagnostics
+                        UDFPrint(("UDF: Orphan counts: RefCount=%d, LinkRefCount=%d, OpenCount=%d\n",
+                                  OrphanFi->RefCount,
+                                  OrphanFi->Dloc->LinkRefCount,
+                                  OrphanFi->OpenCount));
+                        // Reset OpenCount — orphan's children (also orphans) may
+                        // have incremented it via UDFReferenceFile__. These children
+                        // will be recursively cleaned up by UDFCleanUpFile__.
+                        OrphanFi->OpenCount = 0;
+                        // Reset RefCount/LinkRefCount — may be non-zero if
+                        // UDFCloseFile__ was never called for this orphan
+                        OrphanFi->RefCount = 0;
+                        OrphanFi->Dloc->LinkRefCount = 0;
+                        // Clear Modified flags — orphan is being discarded along
+                        // with the parent directory's DirIndex, so unflushed
+                        // modifications would be lost anyway. Without this,
+                        // recursive UDFCleanUpFile__ asserts !Modified when
+                        // KeepDloc=FALSE (e.g., after rename-replace sets
+                        // FI_MODIFIED on directory entries during UDFUnlinkFile__).
+                        DirNdx->FI_Flags &= ~UDF_FI_FLAG_FI_MODIFIED;
+                        OrphanFi->Dloc->FE_Flags &= ~UDF_FE_FLAG_FE_MODIFIED;
+                        OrphanFi->Dloc->DataLoc.Modified = FALSE;
+                        OrphanFi->Dloc->DataLoc.Flags &= ~EXTENT_FLAG_PREALLOCATED;
+                        OrphanFi->Dloc->AllocLoc.Modified = FALSE;
+                        OrphanFi->Dloc->FELoc.Modified = FALSE;
+                        // UDFCleanUpFile__ handles Dloc cleanup (frees via
+                        // UDFRemoveDloc/UDFFreeDloc) and sets DirNdx->FileInfo=NULL
+                        // in parent's DirIndex. We also free the FileInfo struct.
+                        ULONG cleanupResult = UDFCleanUpFile__(Vcb, OrphanFi);
+                        // Cleanup must have freed the Dloc (KeepDloc=FALSE path)
+                        ASSERT(OrphanFi->Dloc == NULL);
+                        ASSERT(cleanupResult & UDF_FREE_FILEINFO);
+                        // Only free the FileInfo struct itself.
+                        MyFreePool__(OrphanFi);
+                        DirNdx->FileInfo = NULL;
+                        continue;
                     }
                     // The file being cleaned up may have not closed Dirs
                     // (linked Dir). In this case each of them may have
@@ -2592,8 +2610,6 @@ UDFCleanUpFile__(
                     if (DirNdx->FName.Buffer)
                         MyFreePool__(DirNdx->FName.Buffer);
                 }
-                // The only place where we can free FE_Charge extent is here
-                UDFFlushFESpace(Vcb, Dloc);
                 UDFDirIndexFree(Dloc->DirIndex);
                 Dloc->DirIndex = NULL;
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
@@ -2886,31 +2902,23 @@ CreateUndel:
         // try to find suitable unused FileIdent in DirIndex
         l = FileInfo->FileIdentLen;
         if (undel) goto CrF__2;
-#ifndef UDF_LIMIT_DIR_SIZE
-        if (Vcb->CDR_Mode) {
-#endif // UDF_LIMIT_DIR_SIZE
-            // search for suitable unused entry
-            if (UDFDirIndexInitScan(DirInfo, &ScanContext, 2)) {
-                while((DirNdx = UDFDirIndexScan(&ScanContext, NULL))) {
-                    if ((DirNdx->Length == l) && UDFIsDeleted(DirNdx) &&
-                       !DirNdx->FileInfo ) {
-                        // free unicode-buffer with old name
-                        if (DirNdx->FName.Buffer) {
-                            MyFreePool__(DirNdx->FName.Buffer);
-                            DirNdx->FName.Buffer = NULL;
-                        }
-                        i = ScanContext.i;
-                        goto CrF__1;
+        // search for suitable unused (deleted) entry to reuse
+        if (UDFDirIndexInitScan(DirInfo, &ScanContext, 2)) {
+            while((DirNdx = UDFDirIndexScan(&ScanContext, NULL))) {
+                if ((DirNdx->Length == l) && UDFIsDeleted(DirNdx) &&
+                   !DirNdx->FileInfo ) {
+                    // free unicode-buffer with old name
+                    if (DirNdx->FName.Buffer) {
+                        MyFreePool__(DirNdx->FName.Buffer);
+                        DirNdx->FName.Buffer = NULL;
                     }
+                    i = ScanContext.i;
+                    goto CrF__1;
                 }
             }
-#ifndef UDF_LIMIT_DIR_SIZE
-        } else {
-#endif // UDF_LIMIT_DIR_SIZE
-            i = UDFDirIndexGetLastIndex(hDirNdx); // 'i' points beyond EO DirIndex
-#ifndef UDF_LIMIT_DIR_SIZE
         }
-#endif // UDF_LIMIT_DIR_SIZE
+        // no suitable deleted entry found, append new one
+        i = UDFDirIndexGetLastIndex(hDirNdx);
 
         // append entry
         if (!NT_SUCCESS(status = UDFDirIndexGrow(&(DirInfo->Dloc->DirIndex), 1))) {
@@ -2962,11 +2970,12 @@ CrF__1:
         RtlCopyMemory(DirNdx->FName.Buffer, _fn->Buffer, _fn->Length);
         DirNdx->FName.Buffer[_fn->Length/sizeof(WCHAR)] = 0;
 CrF__2:
-        DirNdx->FI_Flags |= UDFBuildHashEntry(Vcb, &(DirNdx->FName), &(DirNdx->hashes), HASH_ALL);
+        // Reset all flags: stale FI_INTERNAL from deleted entry would
+        // hide the new file from enumeration.
+        DirNdx->FI_Flags = UDFBuildHashEntry(Vcb, &(DirNdx->FName), &(DirNdx->hashes), HASH_ALL)
+                         | UDF_FI_FLAG_FI_MODIFIED;
         // we get here immediately when 'undel' occured
         FileInfo->Index = i;
-        DirNdx->FI_Flags |= UDF_FI_FLAG_FI_MODIFIED;
-        DirNdx->FI_Flags &= ~UDF_FI_FLAG_SYS_ATTR;
         ASSERT(!DirNdx->FileInfo);
         DirNdx->FileInfo = FileInfo;
         DirNdx->FileEntryLoc = FEicb.extLocation;
@@ -3271,11 +3280,10 @@ UDFCloseFile__(
     // we needn't flushing FE & Allocs untill all links are closed...
     if (!FileInfo->Dloc->LinkRefCount) {
 
-        // flush FE and pre-allocation charge for directories
+        // flush pre-allocation charge for directories
         if (FileInfo->Dloc &&
            FileInfo->Dloc->DirIndex) {
 
-            UDFFlushFESpace(Vcb, FileInfo->Dloc);
             if (FileInfo->Dloc->DataLoc.Flags & EXTENT_FLAG_PREALLOCATED) {
                 FileInfo->Dloc->DataLoc.Flags |= EXTENT_FLAG_CUT_PREALLOCATED;
                 status = UDFResizeExtent(IrpContext, Vcb, PartNum, UDFGetFileSize(FileInfo), FALSE, &(FileInfo->Dloc->DataLoc));
@@ -3403,35 +3411,60 @@ RenameRetry:
             if ((*Replace) && !Recovery) {
                 Recovery = TRUE;
                 status = UDFOpenFile__(IrpContext, Vcb, IgnoreCase, TRUE, fn, DirInfo2, &FileInfo2, NULL);
-                if (NT_SUCCESS(status)) {
-                    status = UDFDoesOSAllowFileToBeTargetForRename__(FileInfo2);
-                    if (!NT_SUCCESS(status)) {
-                        UDFCloseFile__(IrpContext, Vcb, FileInfo2);
-                        goto cleanup_and_abort_rename;
-                    }
-                    status = UDFUnlinkFile__(IrpContext, Vcb, FileInfo2, TRUE);
-//                    UDFPretendFileDeleted__(Vcb, FileInfo2);
-                    UDFCloseFile__(IrpContext, Vcb, FileInfo2);
-                    if (UDFCleanUpFile__(Vcb, FileInfo2)) {
-                        MyFreePool__(FileInfo2);
-                        FileInfo2 = NULL;
-                        if (SameFE)
-                            return status;
-                    } else {
-                        // we get here if the FileInfo has associated
-                        // system-specific Fcb
-                        // Such fact means that not all system references
-                        // has already gone (except Linked file case)
-/*                        if (SameFE)
-                            return status;*/
-//                        UDFRemoveOSReferences__(FileInfo2);
-                        if (!NT_SUCCESS(status) ||
-                           (UDFGetFileLinkCount(FileInfo2) < 1))
-                            status = STATUS_ACCESS_DENIED;
-                    }
-                    if (NT_SUCCESS(status)) goto RenameRetry;
+                if (!NT_SUCCESS(status)) {
+
+                    goto cleanup_and_abort_rename;
                 }
+                // file opened successfully
+;
+                status = UDFDoesOSAllowFileToBeTargetForRename__(FileInfo2);
+
+                if (!NT_SUCCESS(status)) {
+
+                    UDFCloseFile__(IrpContext, Vcb, FileInfo2);
+                    goto cleanup_and_abort_rename;
+                }
+
+                // TODO: Refactor — don't use UDFCreateFile__ in rename path.
+                // Use direct FID unlink + create link instead.
+                // Quick fix: if target's Dloc == source's Dloc, the internal open got the
+                // wrong file (shared Dloc bug). Unlink would destroy the source data.
+                if (FileInfo2->Dloc == FileInfo->Dloc) {
+
+                    UDFCloseFile__(IrpContext, Vcb, FileInfo2);
+                    status = STATUS_ACCESS_DENIED;
+                    goto cleanup_and_abort_rename;
+                }
+                status = UDFUnlinkFile__(IrpContext, Vcb, FileInfo2, TRUE);
+
+                // Mark FCB as deleted to prevent it from going into delayed close queue
+                if (FileInfo2->Fcb) {
+ 
+                    FileInfo2->Fcb->FcbState |= UDF_FCB_DELETED;
+                }
+                UDFCloseFile__(IrpContext, Vcb, FileInfo2);
+
+                if (UDFCleanUpFile__(Vcb, FileInfo2)) {
+
+                    MyFreePool__(FileInfo2);
+                    FileInfo2 = NULL;
+                    if (SameFE)
+                        return status;
+                } else {
+                    // we get here if the FileInfo has associated
+                    // system-specific Fcb
+                    // Such fact means that not all system references
+                    // has already gone (except Linked file case)
+
+                    // Note: After UDFUnlinkFile__ link count is 0, which is expected
+                    // Only return ACCESS_DENIED if unlink itself failed
+                    if (!NT_SUCCESS(status))
+                        status = STATUS_ACCESS_DENIED;
+                }
+
+                if (NT_SUCCESS(status)) goto RenameRetry;
 cleanup_and_abort_rename:
+
                 if (FileInfo2 && UDFCleanUpFile__(Vcb, FileInfo2)) {
                     MyFreePool__(FileInfo2);
                     FileInfo2 = NULL;
@@ -3598,14 +3631,7 @@ UDFRecordDirectory__(
     status = UDFWriteFile__(IrpContext, Vcb, DirInfo, 0, FileInfo.FileIdentLen, FALSE, (int8*)(FileInfo.FileIdent), &WrittenBytes);
 //    status = UDFFlushFI(Vcb, &FileInfo, PartNum);
 
-#ifdef UDF_DBG
-    if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
-        ASSERT(UDFGetFileSize(DirInfo) <= UDFGetExtentLength(DirInfo->Dloc->DataLoc.Mapping));
-    } else {
-        ASSERT(((UDFGetFileSize(DirInfo)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)) ==
-               ((UDFGetExtentLength(DirInfo->Dloc->DataLoc.Mapping)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)));
-    }
-#endif // UDF_DBG
+    ASSERT(UDFGetFileSize(DirInfo) <= UDFGetExtentLength(DirInfo->Dloc->DataLoc.Mapping));
 
     MyFreePool__(FileInfo.FileIdent);
     if (!NT_SUCCESS(status)) return status;
@@ -3707,8 +3733,10 @@ mark_data_map_0:
             ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags &= ~ICB_FLAG_ALLOC_MASK;
             ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags |= ICB_FLAG_AD_IN_ICB;
             // Set embedded data flag since file is now in ICB mode
-            ASSERT(FileInfo->Fcb);
-            FileInfo->Fcb->FcbState |= UDF_FCB_EMBEDDED_DATA;
+            // Fcb may be NULL during directory operations (FCB not yet created)
+            if (FileInfo->Fcb) {
+                FileInfo->Fcb->FcbState |= UDF_FCB_EMBEDDED_DATA;
+            }
             // init new data location descriptors
             FileInfo->Dloc->DataLoc.Mapping = NewMap;
             RtlZeroMemory((int8*)(FileInfo->Dloc->DataLoc.Mapping), 2*sizeof(EXTENT_MAP));
@@ -3740,14 +3768,7 @@ mark_data_map_0:
         UDFSetFileSize(FileInfo, NewLength);
     }
 
-#ifdef UDF_DBG
-    if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
-        ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
-    } else {
-        ASSERT(((UDFGetFileSize(FileInfo)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)) ==
-               ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)));
-    }
-#endif // UDF_DBG
+    ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
 
     return status;
 } // end UDFResizeFile__()
@@ -4069,12 +4090,7 @@ retry_flush_FE:
             return status;
         }
 #ifdef UDF_DBG
-        if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
-            ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
-        } else {
-            ASSERT(((UDFGetFileSize(FileInfo)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)) ==
-                   ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)));
-        }
+        ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
         AllocMode = ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK;
 #endif // UDF_DBG
         // initiate update of lengthAllocDescs
@@ -4104,12 +4120,7 @@ retry_flush_FE:
                 ASSERT(UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping) == 0);
         }
         else {
-            if (Vcb->CompatFlags & UDF_VCB_IC_W2K_COMPAT_ALLOC_DESCS) {
-                ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
-            } else {
-                ASSERT(((UDFGetFileSize(FileInfo)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)) ==
-                   ((UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping)+Vcb->SectorSize-1) & (Vcb->SectorSize-1)));
-            }
+            ASSERT(UDFGetFileSize(FileInfo) <= UDFGetExtentLength(FileInfo->Dloc->DataLoc.Mapping));
         }
 #endif // UDF_DBG
     }
@@ -4155,6 +4166,20 @@ retry_flush_FE:
         // FileInfo->Dloc->FELoc.Length += UDFGetFileSize(FileInfo);
         // FileInfo->Dloc->FELoc.Length = FileInfo->Dloc->FileEntry->descCRCLength + sizeof(tag);
         UDFPrint(("descCRCLength %x\n", FileInfo->Dloc->FileEntry->descCRCLength));
+        {
+            int64 _infoLen = (FileInfo->Dloc->FileEntry->tagIdent == TID_FILE_ENTRY) ?
+                ((PFILE_ENTRY)(FileInfo->Dloc->FileEntry))->informationLength :
+                ((PEXTENDED_FILE_ENTRY)(FileInfo->Dloc->FileEntry))->informationLength;
+            if (_infoLen != FileInfo->Dloc->DataLoc.Length) {
+
+                // Safety-net: correct informationLength from DataLoc.Length
+                UDFSetFileSize(FileInfo, FileInfo->Dloc->DataLoc.Length);
+                // Re-compute CRC after changing FE content
+                UDFSetUpTag(
+                    Vcb, FileInfo->Dloc->FileEntry, (uint16)(FileInfo->Dloc->FileEntryLen),
+                    UDFPhysLbaToPart(Vcb, PartNum, lba), 0);
+            }
+        }
         status = UDFWriteExtent(
             IrpContext,
             Vcb, &FileInfo->Dloc->FELoc, 0, (uint32)(FileInfo->Dloc->FELoc.Length), FALSE,
@@ -4352,7 +4377,6 @@ UDFFlushFile__(
         // if Lite Flush is used, keep preallocations
         if (!(FlushFlags & UDF_FLUSH_FLAGS_LITE)) {
 full_flush:
-            UDFFlushFESpace(Vcb, FileInfo->Dloc);
             if (FileInfo->Dloc->DataLoc.Flags & EXTENT_FLAG_PREALLOCATED) {
                 FileInfo->Dloc->DataLoc.Flags |= EXTENT_FLAG_CUT_PREALLOCATED;
                 status = UDFResizeExtent(IrpContext, Vcb, PartNum, UDFGetFileSize(FileInfo), FALSE, &(FileInfo->Dloc->DataLoc));

@@ -20,14 +20,17 @@
 // define the file specific bug-check id
 #define         UDF_BUG_CHECK_ID                UDF_FILE_PNP
 
-
+_Requires_lock_held_(_Global_critical_region_)
+_Releases_nonreentrant_lock_(UdfData.GlobalDataResource)
 NTSTATUS
 UDFPnpQueryRemove (
-    PIRP_CONTEXT IrpContext,
-    PIRP Irp,
-    PVCB Vcb
+    _Inout_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp,
+    _Inout_ PVCB Vcb
     );
 
+_Requires_lock_held_(_Global_critical_region_)
+_Releases_nonreentrant_lock_(UdfData.GlobalDataResource)
 NTSTATUS
 UDFPnpRemove (
     PIRP_CONTEXT IrpContext,
@@ -35,6 +38,8 @@ UDFPnpRemove (
     PVCB Vcb
     );
 
+_Requires_lock_held_(_Global_critical_region_)
+_Releases_nonreentrant_lock_(UdfData.GlobalDataResource)
 NTSTATUS
 UDFPnpSurpriseRemove (
     PIRP_CONTEXT IrpContext,
@@ -42,6 +47,8 @@ UDFPnpSurpriseRemove (
     PVCB Vcb
     );
 
+_Requires_lock_held_(_Global_critical_region_)
+_Releases_nonreentrant_lock_(UdfData.GlobalDataResource)
 NTSTATUS
 UDFPnpCancelRemove (
     PIRP_CONTEXT IrpContext,
@@ -236,26 +243,24 @@ Return Value:
     // Acquire the global resource so that we can try to vaporize the volume, 
     // and the vcb resource itself.
 
-    BOOLEAN CanWait = FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
-
-    UDFAcquireResourceExclusive(&Vcb->VcbResource, CanWait);
+    UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
     // Drop a reference on the Vcb to keep it around after we drop the locks.
-    
+
     UDFLockVcb(IrpContext, Vcb);
     Vcb->VcbReference += 1;
     UDFUnlockVcb(IrpContext, Vcb);
-    
+
     UDFReleaseUdfData(IrpContext);
 
     Status = UDFLockVolumeInternal(IrpContext, Vcb, NULL);
 
     // Reacquire the global lock,  which means dropping the Vcb resource.
-    
-    UDFReleaseResource(&Vcb->VcbResource);
-    
+
+    UDFReleaseVcb(IrpContext, Vcb);
+
     UDFAcquireUdfData(IrpContext);
-    UDFAcquireResourceExclusive(&Vcb->VcbResource, CanWait);
+    UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
     //  Remove our extra reference.
     
@@ -347,7 +352,7 @@ Return Value:
     
     if (VcbPresent) {
 
-        UDFReleaseResource(&Vcb->VcbResource);
+        UDFReleaseVcb(IrpContext, Vcb);
     }
     else {
         _Analysis_assume_lock_not_held_(Vcb->VcbResource);
@@ -415,9 +420,7 @@ Return Value:
     //  Acquire the global resource so that we can try to vaporize
     //  the volume, and the vcb resource itself.
 
-    BOOLEAN CanWait = FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
-
-    UDFAcquireResourceExclusive(&Vcb->VcbResource, CanWait);
+    UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
     //  The device will be going away.  Remove our lock and find
     //  out if we ever had one in the first place.
@@ -487,7 +490,7 @@ Return Value:
     
     if (VcbPresent) {
 
-        UDFReleaseResource(&Vcb->VcbResource);
+        UDFReleaseVcb(IrpContext, Vcb);
     }
     else {
         _Analysis_assume_lock_not_held_(Vcb->VcbResource);
@@ -503,7 +506,7 @@ Return Value:
 }
 
 _Requires_lock_held_(_Global_critical_region_)
-_Releases_nonreentrant_lock_(CdData.DataResource)
+_Releases_nonreentrant_lock_(UdfData.DataResource)
 NTSTATUS
 UDFPnpSurpriseRemove (
     _Inout_ PIRP_CONTEXT IrpContext,
@@ -550,10 +553,8 @@ Return Value:
     //  SURPRISE - a device was physically yanked away without
     //  any warning.  This means external forces.
     
-    BOOLEAN CanWait = FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
+    UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
-    UDFAcquireResourceExclusive(&Vcb->VcbResource, CanWait);
-        
     //  Invalidate the volume right now.
 
     //  The intent here is to make every subsequent operation
@@ -613,7 +614,7 @@ Return Value:
     
     if (VcbPresent) {
 
-        UDFReleaseResource(&Vcb->VcbResource);
+        UDFReleaseVcb(IrpContext, Vcb);
     }
     else {
         _Analysis_assume_lock_not_held_(Vcb->VcbResource);
@@ -679,9 +680,7 @@ Return Value:
     // with respect to the Vcb getting torn apart - merely referencing
     // the volume device object is insufficient to keep us intact.
 
-    BOOLEAN CanWait = FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
-
-    UDFAcquireResourceExclusive(&Vcb->VcbResource, CanWait);
+    UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
     UDFReleaseUdfData(IrpContext);
 
     // Unlock the volume.  This is benign if we never had seen
@@ -689,7 +688,7 @@ Return Value:
 
     (VOID) UDFUnlockVolumeInternal(Vcb, NULL);
 
-    UDFReleaseResource(&Vcb->VcbResource);
+    UDFReleaseVcb(IrpContext, Vcb);
 
     //  Send the request.  The underlying driver will complete the
     //  IRP.  Since we don't need to be in the way, simply ellide

@@ -106,8 +106,6 @@ DriverEntry(
             RtlInitUnicodeString(&UdfData.UnicodeStrSDir, L":");
             RtlInitUnicodeString(&UdfData.AclName, UDF_SN_NT_ACL);
 
-            UDFPrint(("UDF: Init delayed close queues\n"));
-#ifdef UDF_DELAYED_CLOSE
             ExInitializeFastMutex(&UdfData.UdfDataMutex);
             InitializeListHead(&UdfData.DelayedCloseQueue);
             InitializeListHead(&UdfData.AsyncCloseQueue);
@@ -117,18 +115,89 @@ DriverEntry(
                                  NULL);
 
             UdfData.DelayedCloseCount = 0;
-#endif //UDF_DELAYED_CLOSE
 
-            // we should have the registry data (if any), allocate zone memory ...
-            //  This is an example of when FSD implementations __try to pre-allocate
-            //  some fixed amount of memory to avoid internal fragmentation and/or waiting
-            //  later during run-time ...
+            // determine memory requirements
 
-            UDFPrint(("UDF: Init zones\n"));
-            if (!NT_SUCCESS(RC = UDFInitializeZones()))
-                try_return(RC);
+            switch (MmQuerySystemSize()) {
+            case MmMediumSystem:
+                UdfData.MaxDelayedCloseCount = 32;
+                UdfData.MinDelayedCloseCount = 8;
+                break;
+            case MmLargeSystem:
+                UdfData.MaxDelayedCloseCount = 72;
+                UdfData.MinDelayedCloseCount = 18;
+                break;
+            case MmSmallSystem:
+            default:
+                UdfData.MaxDelayedCloseCount = 10;
+                UdfData.MinDelayedCloseCount = 2;
+            }
 
-            UDFPrint(("UDF: Init pointers\n"));
+            ExInitializeNPagedLookasideList(&UdfData.IrpContextLookasideList,
+                                            NULL,
+                                            NULL,
+                                            POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                            sizeof(IRP_CONTEXT),
+                                            TAG_IRP_CONTEXT,
+                                            0);
+
+            // TODO: move to Paged?
+            ExInitializeNPagedLookasideList(&UdfData.ObjectNameLookasideList,
+                                            NULL,
+                                            NULL,
+                                            POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                            sizeof(UDFObjectName),
+                                            TAG_OBJECT_NAME,
+                                            0);
+
+            ExInitializeNPagedLookasideList(&UdfData.NonPagedFcbLookasideList,
+                                            NULL,
+                                            NULL,
+                                            POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                            sizeof(FCB),
+                                            TAG_FCB_NONPAGED,
+                                            0);
+
+            ExInitializeNPagedLookasideList(&UdfData.UDFNonPagedFcbLookasideList,
+                                            NULL,
+                                            NULL,
+                                            POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                            sizeof(FCB_NONPAGED),
+                                            TAG_FCB_NONPAGED,
+                                            0);
+
+            ExInitializePagedLookasideList(&UdfData.UDFFcbIndexLookasideList,
+                                           NULL,
+                                           NULL,
+                                           POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                           sizeof(FCB), //TODO:
+                                           TAG_FCB_NONPAGED,
+                                           0);
+
+            ExInitializePagedLookasideList(&UdfData.UDFFcbDataLookasideList,
+                                           NULL,
+                                           NULL,
+                                           POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                           sizeof(FCB), //TODO:
+                                           TAG_FCB_NONPAGED,
+                                           0);
+
+            ExInitializePagedLookasideList(&UdfData.CcbLookasideList,
+                                            NULL,
+                                            NULL,
+                                            POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                            sizeof(CCB),
+                                            TAG_CCB,
+                                            0);
+
+            ExInitializePagedLookasideList(&UdfData.LcbLookasideList,
+                                            NULL,
+                                            NULL,
+                                            POOL_NX_ALLOCATION | POOL_RAISE_IF_ALLOCATION_FAILURE,
+                                            SIZEOF_LOOKASIDE_LCB,
+                                            TAG_LCB,
+                                            0);
+
             // initialize the IRP major function table, and the fast I/O table
             UDFInitializeFunctionPointers(DriverObject);
 
@@ -200,12 +269,6 @@ DriverEntry(
             if (UdfData.UDFDeviceObject_HDD) {
                 IoDeleteDevice(UdfData.UDFDeviceObject_HDD);
                 UdfData.UDFDeviceObject_HDD = NULL;
-            }
-
-            // free up any memory we might have reserved for zones/lookaside
-            //  lists
-            if (UdfData.Flags & UDF_DATA_FLAGS_ZONES_INITIALIZED) {
-                UDFDestroyZones();
             }
         }
     } _SEH2_END;

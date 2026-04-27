@@ -120,9 +120,6 @@ UDFCommonClose(
     if (Irp) {
 
         UserReference = 1;
-        // TreeLength no longer used - LCB model handles parent tracking
-        // remember the number of incomplete Close requests
-        InterlockedIncrement((PLONG)&(Fcb->CcbCount));
         // we can release CCB in any case
         UDFDeleteCcb(Ccb);
         FileObject->FsContext2 = NULL;
@@ -135,7 +132,6 @@ UDFCommonClose(
         if ((Fcb->FcbState & UDF_FCB_DELAY_CLOSE) &&
             (Vcb->VcbCondition == VcbMounted) &&
             (Fcb->FcbState & UDF_FCB_DELETED) == 0 &&
-            (Fcb->FcbState & UDF_FCB_POSTED_RENAME) == 0 &&
             //(Fcb->FcbCondition == FcbGood) &&
             (Fcb->FcbReference == 1) &&
             ((TypeOfOpen == UserFileOpen) ||
@@ -150,36 +146,34 @@ UDFCommonClose(
 
         } else {
 
-            // Close request is near completion, Vcb is acquired.
-            // Now we can safely decrease CcbCount, because no Rename
-            // operation can run until Vcb release.
-            InterlockedDecrement((PLONG)&Fcb->CcbCount);
+            // Decrement reference counts
+            // These were incremented in UDFCompleteFcbOpen.
 
-            InterlockedDecrement((PLONG)&Vcb->VcbReference);
+            UDFLockVcb(IrpContext, Vcb);
+
+            Fcb->FcbReference--;
+            Fcb->FcbUserReference--;
+            Vcb->VcbReference--;
+            Vcb->VcbUserReference--;
 
             if (Fcb == Vcb->VolumeDasdFcb) {
 
                 AdPrint(("UDF: Closing volume\n"));
                 AdPrint(("UDF: ReferenceCount:  %x\n",Fcb->FcbReference));
 
-                if (Vcb->VcbCleanup > 0) {
-                    ASSERT(Fcb == Fcb->Vcb->VolumeDasdFcb);
-                    InterlockedDecrement((PLONG)&Fcb->FcbReference);
-                    ASSERT(Fcb);
+                ASSERT(Fcb == Fcb->Vcb->VolumeDasdFcb);
+                UDFUnlockVcb(IrpContext, Vcb);
 
+                if (Vcb->VcbCleanup > 0) {
                     try_return(RC = STATUS_SUCCESS);
                 }
-
-                ASSERT(Fcb == Fcb->Vcb->VolumeDasdFcb);
-                InterlockedDecrement((PLONG)&Fcb->FcbReference);
-                ASSERT(Fcb);
 
                 if ((Vcb->VcbCleanup == 0) &&
                     (Vcb->VcbCondition != VcbMounted))  {
 
                     // Possible dismount.  Acquire CdData to synchronise with the remount path
                     // before looking at the vcb condition again.
- 
+
                     UDFAcquireUdfData(IrpContext);
 
                     if ((Vcb->VcbCleanup == 0) &&
@@ -205,6 +199,9 @@ UDFCommonClose(
 
                 try_return(RC = STATUS_SUCCESS);
             }
+
+            // Release VcbMutex BEFORE TeardownStructures
+            UDFUnlockVcb(IrpContext, Vcb);
 
             // try to clean up as long chain as it is possible
             // TODO: refactor to use UDFCommonClosePrivate

@@ -464,38 +464,97 @@ try_exit: NOTHING;
 } // end UDFPhSendIOCTL()
 
 VOID
-UDFNotifyFullReportChange(
+UDFNotifyReportChange(
+    PIRP_CONTEXT IrpContext,
     PVCB Vcb,
     PFCB Fcb,
     ULONG Filter,
-    ULONG Action
+    ULONG Action,
+    PLCB Lcb,
+    PFILE_OBJECT FileObject
     )
 {
     USHORT TargetNameOffset = 0;
+    UNICODE_STRING FullPath;
+    BOOLEAN PathAllocated = FALSE;
+    WCHAR RootChar;
 
-    // Skip parent name length and leading backslash from the beginning of object name
+    FullPath.Buffer = NULL;
+    FullPath.Length = 0;
+    FullPath.MaximumLength = 0;
 
-    if (Fcb->ParentFcb) {
+    //
+    // Acquire FcbResource shared for the duration of the notify.
+    // Protects LCB chain and name buffers from concurrent teardown.
+    //
+    UDFAcquireFcbShared(IrpContext, Fcb, FALSE);
 
-        if (Fcb->ParentFcb->FCBName->ObjectName.Length == 2) {
+    _SEH2_TRY {
 
-            ASSERT(Fcb->ParentFcb->FCBName->ObjectName.Buffer[0] == L'\\');
-            TargetNameOffset = Fcb->ParentFcb->FCBName->ObjectName.Length;
+        // If no LCB provided, find first valid (non-deleted) one
+        if (!Lcb) {
+            if (!IsListEmpty(&Fcb->ParentLcbQueue)) {
+                PLIST_ENTRY ListEntry = Fcb->ParentLcbQueue.Flink;
+                while (ListEntry != &Fcb->ParentLcbQueue) {
+                    PLCB CandidateLcb = CONTAINING_RECORD(ListEntry, LCB, ChildFcbLinks);
+                    if (!(CandidateLcb->Flags & UDF_LCB_FLAG_LINK_DELETED)) {
+                        Lcb = CandidateLcb;
+                        break;
+                    }
+                    ListEntry = ListEntry->Flink;
+                }
+            }
         }
-        else {
 
-            TargetNameOffset = Fcb->ParentFcb->FCBName->ObjectName.Length + sizeof(WCHAR);
+        //
+        // Build the full target name. Prefer FileObject->FileName (stable
+        // pointer, does not depend on LCB chain state). Fall back to
+        // building from LCB chain.
+        //
+        if (FileObject && FileObject->FileName.Buffer &&
+            FileObject->FileName.Length > 0) {
+            FullPath = FileObject->FileName;
+        } else if (Lcb) {
+            NTSTATUS Status = UDFBuildFullPathFromLcb(NULL, Lcb, &FullPath, FALSE);
+            if (NT_SUCCESS(Status)) {
+                PathAllocated = TRUE;
+            }
         }
+
+        // Fallback to root
+        if (!FullPath.Buffer || FullPath.Length == 0) {
+            RootChar = L'\\';
+            FullPath.Buffer = &RootChar;
+            FullPath.Length = sizeof(WCHAR);
+            FullPath.MaximumLength = sizeof(WCHAR);
+            PathAllocated = FALSE;
+            Lcb = NULL;
+        }
+
+        // TargetNameOffset: byte offset within FullPath to the final name component
+        if (Lcb && Lcb->ExactCaseLinkName.Length > 0 &&
+            FullPath.Length > Lcb->ExactCaseLinkName.Length) {
+            TargetNameOffset = FullPath.Length - Lcb->ExactCaseLinkName.Length;
+        }
+
+        FsRtlNotifyFullReportChange(Vcb->NotifySync,
+                                    &Vcb->NextNotifyIRP,
+                                    (PSTRING)&FullPath,
+                                    TargetNameOffset,
+                                    NULL,
+                                    NULL,
+                                    Filter,
+                                    Action,
+                                    NULL);
+
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        NOTHING;
+    } _SEH2_END;
+
+    UDFReleaseFcb(IrpContext, Fcb);
+
+    if (PathAllocated && FullPath.Buffer) {
+        ExFreePool(FullPath.Buffer);
     }
-
-    FsRtlNotifyFullReportChange(Vcb->NotifySync,
-                                &Vcb->NextNotifyIRP,
-                                (PSTRING)&Fcb->FCBName->ObjectName,
-                                TargetNameOffset,
-                                NULL,
-                                NULL,
-                                Filter,
-                                Action,
-                                NULL);
 }
 

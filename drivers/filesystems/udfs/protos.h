@@ -66,12 +66,6 @@ UDFFastDecodeFileObject (
     _Out_ PFCB *Fcb
     );
 
-PCCB
-UDFDecodeFileObjectCcb(
-    _In_ PFILE_OBJECT FileObject
-    );
-
-
 /*************************************************************************
 * Prototypes for the file create.cpp
 *************************************************************************/
@@ -86,48 +80,27 @@ UDFCommonCreate(
     );
 
 NTSTATUS
+UDFOpenObjectByFileId(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PIO_STACK_LOCATION IrpSp,
+    _In_ PVCB Vcb,
+    _Inout_ PFCB *CurrentFcb
+    );
+
+NTSTATUS
 UDFFirstOpenFile(
     IN PIRP_CONTEXT IrpContext,
-    IN PIO_STACK_LOCATION IrpSp,
     IN PVCB Vcb,
-    IN PFILE_OBJECT PtrNewFileObject,
    OUT PFCB* PtrNewFcb,
     IN PUDF_FILE_INFO RelatedFileInfo,
-    IN PUDF_FILE_INFO NewFileInfo,
-    IN PUNICODE_STRING LocalPath,
-    IN PUNICODE_STRING CurName,
-    IN ULONG CreateDisposition
-    );
-
-NTSTATUS
-UDFCompleteFcbOpen(
-    _In_ PIRP_CONTEXT IrpContext,
-    _In_ PIO_STACK_LOCATION IrpSp,
-    _In_ PVCB Vcb,
-    _Inout_ PFCB *CurrentFcb,
-    _In_ TYPE_OF_OPEN TypeOfOpen,
-    _In_ ULONG UserCcbFlags,
-    _In_ ULONG CreateDisposition
-    );
-
-NTSTATUS
-UDFOpenExistingFcb(
-    _In_ PIRP_CONTEXT IrpContext,
-    _In_ PIO_STACK_LOCATION IrpSp,
-    _In_ PVCB Vcb,
-    _Inout_ PFCB *CurrentFcb,
-    _In_ BOOLEAN IgnoreCase,
-    _In_ BOOLEAN OpenByFileId,
-    _In_ ULONG CreateDisposition
+    IN PUDF_FILE_INFO NewFileInfo
     );
 
 NTSTATUS
 UDFInitializeFCB(
     IN PFCB                    PtrNewFcb,          // FCB structure to be initialized
     IN PVCB                    Vcb,                // logical volume (VCB) pointer
-    IN PtrUDFObjectName        PtrObjectName,      // name of the object
-    IN ULONG                   Flags,              // is this a file/directory, etc.
-    IN PFILE_OBJECT            FileObject          // optional file object to be initialized
+    IN ULONG                   Flags               // is this a file/directory, etc.
     );
 
 /*************************************************************************
@@ -427,7 +400,8 @@ UDFGetFileStreamInformation(
     );
 
 extern NTSTATUS UDFSetBasicInformation(
-    IN PFCB                   Fcb,
+    IN PIRP_CONTEXT                IrpContext,
+    IN PFCB                        Fcb,
     IN PCCB                        Ccb,
     IN PFILE_OBJECT                FileObject,
     IN PFILE_BASIC_INFORMATION     PtrBuffer);
@@ -469,6 +443,11 @@ UDFSetEndOfFileInfo(
     IN PFILE_OBJECT FileObject,
     IN PIRP Irp,
     IN PFILE_END_OF_FILE_INFORMATION PtrBuffer
+    );
+
+BOOLEAN
+UDFCheckDirOpenHandles(
+    IN PFCB DirectoryFcb
     );
 
 NTSTATUS
@@ -713,11 +692,6 @@ UDFFastUnlockAllByKey(
 /*************************************************************************
 * Prototypes for the file misc.cpp
 *************************************************************************/
-extern NTSTATUS UDFInitializeZones(
-VOID);
-
-extern VOID UDFDestroyZones(
-VOID);
 
 _IRQL_requires_max_(APC_LEVEL)
 __drv_dispatchType(DRIVER_DISPATCH)
@@ -766,7 +740,10 @@ PCCB
 UDFCreateCcb(
     );
 
-extern VOID UDFReleaseCCB(PCCB Ccb);
+VOID 
+UDFDeallocateCcb(
+    PCCB Ccb
+    );
 
 VOID
 UDFDeleteCcb(
@@ -779,12 +756,31 @@ UDFInsertPrefix(
     IN PIRP_CONTEXT IrpContext,
     IN PFCB ParentFcb,
     IN PFCB ChildFcb,
-    IN ULONG Index
+    IN PUNICODE_STRING FileName OPTIONAL,
+    IN PUNICODE_STRING CaseFileName OPTIONAL,
+    IN PUNICODE_STRING ShortName OPTIONAL,
+    IN ULONGLONG InitialOffset
     );
 
 VOID
 UDFRemovePrefix(
     IN PIRP_CONTEXT IrpContext,
+    IN PLCB Lcb
+    );
+
+// Insert LCB into parent FCB's splay trees (ExactCase, IgnoreCase, ShortName).
+// Caller must hold ParentFcb exclusive.
+VOID
+UdfInsertNameLinks(
+    IN PFCB ParentFcb,
+    IN PLCB Lcb
+    );
+
+// Remove LCB from parent FCB's splay trees only (not from linked lists).
+// Caller must hold ParentFcb exclusive.
+VOID
+UdfRemoveNameLinks(
+    IN PFCB ParentFcb,
     IN PLCB Lcb
     );
 
@@ -800,7 +796,10 @@ UDFAcquirePrefix(
     IN PIRP_CONTEXT IrpContext,
     IN PFCB ParentFcb,
     IN PFCB ChildFcb,
-    IN ULONG Index
+    IN PUNICODE_STRING FileName OPTIONAL,
+    IN PUNICODE_STRING CaseFileName OPTIONAL,
+    IN PUNICODE_STRING ShortName OPTIONAL,
+    IN ULONGLONG InitialOffset
     );
 
 VOID
@@ -809,11 +808,44 @@ UDFReleasePrefix(
     IN PLCB Lcb
     );
 
+NTSTATUS
+UDFBuildFullPathFromLcb(
+    IN PIRP_CONTEXT IrpContext,
+    IN PLCB Lcb,
+    OUT PUNICODE_STRING FullPath,
+    IN BOOLEAN CachePath
+    );
+
 BOOLEAN
 UDFReleasePrefixImmediate(
     IN PIRP_CONTEXT IrpContext,
     IN PLCB Lcb,
     IN BOOLEAN CloseParentFileInfo
+    );
+
+NTSTATUS
+UDFRenameMovePrefix(
+    IN PIRP_CONTEXT IrpContext,
+    IN PLCB Lcb,
+    IN PUNICODE_STRING NewName,
+    IN PFCB NewParentFcb OPTIONAL
+    );
+
+PLCB
+UDFFindPathPrefix(
+    IN PIRP_CONTEXT IrpContext,
+    IN PFCB StartFcb,
+    IN BOOLEAN IgnoreCase,
+    IN OUT PFCB *CurrentFcb,
+    IN OUT PUNICODE_STRING RemainingName,
+    OUT PBOOLEAN ShortNameMatch
+    );
+
+PFCB
+UDFLookupFcbTable (
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PVCB Vcb,
+    _In_ FILE_ID FileId
     );
 
 PFCB
@@ -1230,6 +1262,35 @@ UDFMarkDevForVerifyIfVcbMounted(
 #define UDFUnlockVcb(IC,V)                                                              \
     (V)->VcbLockThread = NULL;                                                          \
     ExReleaseFastMutexUnsafe( &(V)->VcbMutex )
+
+#define UDFLockFcbTable(IC,V)                                                           \
+    ASSERT(KeAreApcsDisabled());                                                        \
+    ExAcquireFastMutexUnsafe( &(V)->FcbTableMutex );                                    \
+    (V)->FcbTableLockThread = PsGetCurrentThread()
+
+#define UDFUnlockFcbTable(IC,V)                                                         \
+    (V)->FcbTableLockThread = NULL;                                                     \
+    ExReleaseFastMutexUnsafe( &(V)->FcbTableMutex )
+
+#define UDFLockFcb(IC,F) {                                                              \
+    PVOID _CurrentThread = PsGetCurrentThread();                                        \
+    if (_CurrentThread != (F)->FcbLockThread) {                                         \
+        ASSERT(KeAreApcsDisabled());                                                    \
+        ExAcquireFastMutexUnsafe( &(F)->FcbNonpaged->FcbFastMutex );                   \
+        ASSERT( (F)->FcbLockCount == 0 );                                               \
+        (F)->FcbLockThread = _CurrentThread;                                            \
+    }                                                                                   \
+    (F)->FcbLockCount += 1;                                                             \
+}
+
+#define UDFUnlockFcb(IC,F) {                                                            \
+    ASSERT( PsGetCurrentThread() == (F)->FcbLockThread);                                \
+    (F)->FcbLockCount -= 1;                                                             \
+    if ((F)->FcbLockCount == 0) {                                                       \
+        (F)->FcbLockThread = NULL;                                                      \
+        ExReleaseFastMutexUnsafe( &(F)->FcbNonpaged->FcbFastMutex );                   \
+    }                                                                                   \
+}
 
 #define UDFIncrementCleanupCounts(IC,F) {        \
     ASSERT_LOCKED_VCB( (F)->Vcb );              \
