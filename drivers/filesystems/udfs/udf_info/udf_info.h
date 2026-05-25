@@ -270,12 +270,14 @@ PEXTENT_MAP
 __fastcall UDFRelocateSectors(IN PVCB Vcb,
                                IN uint32 Lba,
                                IN uint32 BlockCount);
-// check for presence of given char among specified ones
-BOOLEAN  UDFUnicodeInString(IN uint8* string,
-                            IN WCHAR ch);     // Unicode char to search for.
+
 // validate char
 BOOLEAN
-__fastcall UDFIsIllegalChar(IN WCHAR ch);
+UDFIsIllegalChar(
+    IN WCHAR Char,
+    IN BOOLEAN IsStream
+    );
+
 // translate udfName to dosName using OSTA compliant.
 #define  UDFDOSName__(Vcb, DosName, UdfName, FileInfo) \
     UDFDOSName(Vcb, DosName, UdfName, (FileInfo) && ((FileInfo)->Index < 2));

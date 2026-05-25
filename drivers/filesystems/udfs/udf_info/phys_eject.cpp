@@ -53,7 +53,7 @@ UDFDoDismountSequence(
         if (Eject &&
            (Vcb->VcbState & VCB_STATE_REMOVABLE_MEDIA)) {
 
-            UDFPhSendIOCTL(IOCTL_STORAGE_EJECT_MEDIA,
+            UDFPerformDevIoCtrl(IOCTL_STORAGE_EJECT_MEDIA,
                            Vcb->TargetDeviceObject,
                            NULL,0,
                            NULL,0,

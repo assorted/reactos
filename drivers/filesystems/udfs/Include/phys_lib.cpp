@@ -435,7 +435,6 @@ UDFPrepareForWriteOperation(
     IN uint32 BCount
     )
 {
-#ifdef _UDF_STRUCTURES_H_
     if (Vcb->BSBM_Bitmap) {
         ULONG i;
         for(i=0; i<BCount; i++) {
@@ -447,7 +446,6 @@ UDFPrepareForWriteOperation(
             }
         }
     }
-#endif //_UDF_STRUCTURES_H_
 
     Vcb->VcbState |= UDF_VCB_LAST_WRITE;
 
@@ -521,7 +519,7 @@ UDFDetermineVolumeLayout(
 
         RtlZeroMemory(&Command, sizeof(Command));
 
-        Status = UDFPhSendIOCTL(IOCTL_CDROM_READ_TOC_EX,
+        Status = UDFPerformDevIoCtrl(IOCTL_CDROM_READ_TOC_EX,
                                 DeviceObject,
                                 &Command,
                                 sizeof(Command),
@@ -536,7 +534,7 @@ UDFDetermineVolumeLayout(
             // try using the MSF mode
             Command.Msf = 1;
 
-            Status = UDFPhSendIOCTL(IOCTL_CDROM_READ_TOC_EX,
+            Status = UDFPerformDevIoCtrl(IOCTL_CDROM_READ_TOC_EX,
                                     DeviceObject,
                                     &Command,
                                     sizeof(Command),
@@ -600,7 +598,7 @@ UDFDetermineVolumeLayout(
             try_return(Status);
         }
         // find 1st and last session
-        Status = UDFPhSendIOCTL(IOCTL_CDROM_GET_LAST_SESSION,
+        Status = UDFPerformDevIoCtrl(IOCTL_CDROM_GET_LAST_SESSION,
             DeviceObject,
             NULL,
             0,
@@ -791,33 +789,18 @@ UDFGetBlockSize(
 {
     NTSTATUS        RC = STATUS_SUCCESS;
     DISK_GEOMETRY_EX DiskGeometryEx;
-    PARTITION_INFORMATION  PartitionInfo;
 
     if (UDFGetDevType(DeviceObject) == FILE_DEVICE_DISK) {
         UDFPrint(("UDFGetBlockSize: HDD\n"));
-        RC = UDFPhSendIOCTL(IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,DeviceObject,
+        RC = UDFPerformDevIoCtrl(IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,DeviceObject,
             0,NULL,
             &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
             TRUE,NULL );
 
         if (!NT_SUCCESS(RC))
             try_return(RC);
-        RC = UDFPhSendIOCTL(IOCTL_DISK_GET_PARTITION_INFO,DeviceObject,
-            0,NULL,
-            &PartitionInfo,sizeof(PARTITION_INFORMATION),
-            TRUE,NULL );
-        if (!NT_SUCCESS(RC)) {
-            UDFPrint(("UDFGetBlockSize: IOCTL_DISK_GET_PARTITION_INFO failed\n"));
-            if (RC == STATUS_INVALID_DEVICE_REQUEST) /* ReactOS Code Change (was =) */
-                RC = STATUS_UNRECOGNIZED_VOLUME;
-            try_return(RC);
-        }
-        if (PartitionInfo.PartitionType != PARTITION_IFS && PartitionInfo.PartitionType != PARTITION_HUGE) {
-            UDFPrint(("UDFGetBlockSize: PartitionInfo.PartitionType != PARTITION_IFS\n"));
-            try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
-        }
     } else {
-        RC = UDFPhSendIOCTL(IOCTL_CDROM_GET_DRIVE_GEOMETRY_EX,DeviceObject,
+        RC = UDFPerformDevIoCtrl(IOCTL_CDROM_GET_DRIVE_GEOMETRY_EX,DeviceObject,
             &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
             &DiskGeometryEx,sizeof(DISK_GEOMETRY_EX),
             TRUE,NULL );
@@ -976,7 +959,6 @@ try_exit:   NOTHING;
         UDFPrint(("UDF: Last LBA in last session: %x\n",Vcb->LastLBA));
         UDFPrint(("UDF: First writable LBA (NWA) in last session: %x\n",Vcb->NWA));
         UDFPrint(("UDF: Last available LBA beyond end of last session: %x\n",Vcb->LastPossibleLBA));
-        UDFPrint(("UDF: blocks per frame: %x\n",1 << Vcb->WCacheBlocksPerFrameSh));
         UDFPrint(("UDF: Flags: %s%s\n",
                  Vcb->VcbState & UDF_VCB_FLAGS_RAW_DISK ? "RAW " : "",
                  Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY ? "R/O " : "WR "
@@ -1004,7 +986,6 @@ UDFPrepareForReadOperation(
     }
     uint32 i = Vcb->LastReadTrack;
 
-#ifdef _UDF_STRUCTURES_H_
     if (Vcb->BSBM_Bitmap) {
         ULONG i;
         for(i=0; i<BCount; i++) {
@@ -1016,7 +997,6 @@ UDFPrepareForReadOperation(
             }
         }
     }
-#endif //_UDF_STRUCTURES_H_
 
     return STATUS_SUCCESS;
 } // end UDFPrepareForReadOperation()

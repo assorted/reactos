@@ -125,38 +125,4 @@ not_bug:
     ExFreePool(addr);
 }
 
-NTSTATUS
-DbgWaitForSingleObject_(
-    IN PVOID Object,
-    IN PLARGE_INTEGER Timeout OPTIONAL
-    )
-{
-    PLARGE_INTEGER to;
-    LARGE_INTEGER dto;
-//    LARGE_INTEGER cto;
-    NTSTATUS RC;
-    ULONG c = 20;
-
-    dto.QuadPart = -5LL*1000000LL*10LL; // 5 sec
-//    cto.QuadPart = Timeout->QuadPart;
-    if (Timeout) {
-        if (dto.QuadPart > Timeout->QuadPart) {
-            to = Timeout;
-        } else {
-            to = &dto;
-        }
-    } else {
-        to = &dto;
-    }
-
-    for(; c--; c) {
-        RC = KeWaitForSingleObject(Object, Executive, KernelMode, FALSE, to);
-        if (RC == STATUS_SUCCESS)
-            break;
-        UDFPrint(("No response ?\n"));
-        if (c<2)
-            BrutePoint();
-    }
-    return RC;
-}
 #endif // UDF_DBG
