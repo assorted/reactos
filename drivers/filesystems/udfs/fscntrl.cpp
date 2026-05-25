@@ -30,6 +30,12 @@ UDFAllowExtendedDasdIo(
     _In_ PIRP Irp
     );
 
+NTSTATUS
+UDFInvalidateVolumes(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PIRP Irp
+    );
+
 /*
  Function: UDFCommonFsControl()
 
@@ -1659,8 +1665,8 @@ UDFAllowExtendedDasdIo(
 
 NTSTATUS
 UDFInvalidateVolumes(
-    IN PIRP_CONTEXT IrpContext,
-    IN PIRP Irp
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PIRP Irp
     )
 {
     NTSTATUS Status;
@@ -1809,7 +1815,7 @@ UDFInvalidateVolumes(
 
             UDFFlushVolume(IrpContext, Vcb);
 
-            UDFDoDismountSequence(Vcb, FALSE);
+            UDFToggleMediaEjectDisable(Vcb, FALSE);
 
             UDFReleaseVcb( IrpContext, Vcb);
 

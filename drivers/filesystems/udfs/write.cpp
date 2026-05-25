@@ -72,6 +72,7 @@ UDFCommonWrite(
     BOOLEAN                 RecursiveWriteThrough = FALSE;
     BOOLEAN                 ZeroBlock = FALSE;
     BOOLEAN                 ZeroBlockDone = FALSE;
+    UDF_IO_CONTEXT          LocalIoContext;
 
     // Examine our input parameters to determine if this is noncached and/or
     // a paging io operation.
@@ -241,9 +242,10 @@ UDFCommonWrite(
             // It is very important for ChkUdf utility.
             Vcb->SerialNumber--;
             // Perform actual Write
-            Status = UDFTWrite(IrpContext, Vcb, SystemBuffer, ByteCount,
-                           (ULONG)(StartingOffset >> Vcb->SectorShift),
-                           &NumberBytesWritten);
+            Status = UDFReadWriteSectors(IrpContext, Vcb,
+                           StartingOffset, ByteCount,
+                           TRUE, SystemBuffer, TRUE);
+            NumberBytesWritten = NT_SUCCESS(Status) ? ByteCount : 0;
             UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
             try_return(Status);
         }
@@ -587,8 +589,32 @@ UDFCommonWrite(
                 PagingIoResourceAcquired = TRUE;
             }
 
-            Status = UDFWriteFile__(IrpContext, Vcb, Fcb->FileInfo, StartingOffset, TruncatedLength,
-                           FALSE, (PCHAR)SystemBuffer, &NumberBytesWritten);
+            if (Fcb->FcbState & UDF_FCB_EMBEDDED_DATA) {
+
+                //  In-ICB (embedded) data — write via extent walker
+                //  (data lives inside the ICB sector, no disk extent to dispatch).
+
+                Status = UDFWriteFile__(IrpContext, Vcb, Fcb->FileInfo, StartingOffset, TruncatedLength,
+                               FALSE, (PCHAR)SystemBuffer, &NumberBytesWritten);
+            } else {
+
+                //
+                //  Initialize the IoContext for the write (always synchronous).
+                //
+
+                IrpContext->IoContext = &LocalIoContext;
+                ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
+
+                RtlZeroMemory(&LocalIoContext, sizeof(UDF_IO_CONTEXT));
+
+                KeInitializeEvent(&LocalIoContext.SyncEvent,
+                                  NotificationEvent,
+                                  FALSE);
+
+                Status = UDFNonCachedIo(IrpContext, Fcb, StartingOffset, TruncatedLength);
+                IrpContext->IoContext = NULL;
+                NumberBytesWritten = (ULONG)Irp->IoStatus.Information;
+            }
 
             UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
 

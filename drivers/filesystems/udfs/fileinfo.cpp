@@ -816,6 +816,10 @@ UDFGetFileStreamInformation(
 
     uint_di         i;
     ULONG CurrentSize;
+    ULONG AlignedSize;
+    ULONG BufferLength;
+    ULONG TotalBytesWritten = 0;
+    ULONG PreviousOffset = 0;   // padding of the previous entry (aligned - real)
     PDIR_INDEX_HDR  hSDirIndex;
     PDIR_INDEX_ITEM SDirIndex;
     PDIR_INDEX_ITEM DirNdx;
@@ -851,13 +855,17 @@ UDFGetFileStreamInformation(
             try_return(RC);
         }
 
+        // Clear output buffer so alignment padding between entries and the final
+        // NextEntryOffset are guaranteed zero.
+        BufferLength = *PtrReturnedLength;
+        RtlZeroMemory(PtrBuffer, BufferLength);
+
         CurrentSize = FIELD_OFFSET(FILE_STREAM_INFORMATION, StreamName) + StreamPrefix.Length + StreamSuffix.Length;
 
-        if (CurrentSize > *PtrReturnedLength) {
+        if (CurrentSize > BufferLength) {
             try_return(RC = STATUS_BUFFER_OVERFLOW);
         }
 
-        CurrentInfo->NextEntryOffset = 0;
         CurrentInfo->StreamNameLength = StreamPrefix.Length + StreamSuffix.Length;
         CurrentInfo->StreamSize = NTFileInfo->EndOfFile;
         CurrentInfo->StreamAllocationSize = NTFileInfo->AllocationSize;
@@ -865,14 +873,19 @@ UDFGetFileStreamInformation(
         RtlCopyMemory(&CurrentInfo->StreamName[0], StreamPrefix.Buffer, StreamPrefix.Length);
         RtlCopyMemory(&CurrentInfo->StreamName[1], StreamSuffix.Buffer, StreamSuffix.Length);
 
-        Previous = CurrentInfo;
-        CurrentInfo = (PFILE_STREAM_INFORMATION)((ULONG_PTR)CurrentInfo + CurrentSize);
+        // Each entry must start on an 8-byte boundary: advance by the aligned
+        // size, but count only the real size as written.
+        TotalBytesWritten = CurrentSize;
+        AlignedSize = UDFQuadAlign(CurrentSize);
+        PreviousOffset = AlignedSize - CurrentSize;
 
-        (*PtrReturnedLength) -= CurrentSize;
+        Previous = CurrentInfo;
+        CurrentInfo = (PFILE_STREAM_INFORMATION)((ULONG_PTR)CurrentInfo + AlignedSize);
 
         if (!(SDirInfo = FileInfo->Dloc->SDirInfo) ||
              UDFIsSDirDeleted(SDirInfo) ) {
 
+            *PtrReturnedLength = BufferLength - TotalBytesWritten;
             try_return(RC = STATUS_SUCCESS);
         }
 
@@ -887,7 +900,8 @@ UDFGetFileStreamInformation(
             CurrentSize = FIELD_OFFSET(FILE_STREAM_INFORMATION, StreamName) +
                             StreamPrefix.Length + SDirIndex->FName.Length + StreamSuffix.Length;
 
-            if (CurrentSize > *PtrReturnedLength) {
+            // Need room for the previous entry's alignment padding plus this entry.
+            if (PreviousOffset + CurrentSize > BufferLength - TotalBytesWritten) {
                 RC = STATUS_BUFFER_OVERFLOW;
                 break;
             }
@@ -898,7 +912,6 @@ UDFGetFileStreamInformation(
                 try_return(RC);
             }
 
-            CurrentInfo->NextEntryOffset = 0;
             CurrentInfo->StreamNameLength = StreamPrefix.Length + SDirIndex->FName.Length + StreamSuffix.Length;
             CurrentInfo->StreamSize = NTFileInfo->EndOfFile;
             CurrentInfo->StreamAllocationSize = NTFileInfo->AllocationSize;
@@ -907,14 +920,19 @@ UDFGetFileStreamInformation(
             RtlCopyMemory(&CurrentInfo->StreamName[1], SDirIndex->FName.Buffer, SDirIndex->FName.Length);
             RtlCopyMemory(&CurrentInfo->StreamName[1 + SDirIndex->FName.Length / sizeof(WCHAR)], StreamSuffix.Buffer, StreamSuffix.Length);
 
-            if (Previous != NULL) {
-                Previous->NextEntryOffset = (ULONG)((ULONG_PTR)CurrentInfo - (ULONG_PTR)Previous);
-            }
+            // Link the previous entry to this one using the aligned distance.
+            Previous->NextEntryOffset = (ULONG)((ULONG_PTR)CurrentInfo - (ULONG_PTR)Previous);
+
+            TotalBytesWritten = (ULONG)((ULONG_PTR)CurrentInfo - (ULONG_PTR)PtrBuffer) + CurrentSize;
+            AlignedSize = UDFQuadAlign(CurrentSize);
+            PreviousOffset = AlignedSize - CurrentSize;
 
             Previous = CurrentInfo;
-            CurrentInfo = (PFILE_STREAM_INFORMATION)((ULONG_PTR)CurrentInfo + CurrentSize);
-            *PtrReturnedLength -= CurrentSize;
+            CurrentInfo = (PFILE_STREAM_INFORMATION)((ULONG_PTR)CurrentInfo + AlignedSize);
         }
+
+        // Returned length is the real bytes used (no trailing padding).
+        *PtrReturnedLength = BufferLength - TotalBytesWritten;
 
 try_exit: NOTHING;
 

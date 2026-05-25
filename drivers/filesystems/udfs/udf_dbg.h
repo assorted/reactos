@@ -22,16 +22,10 @@
 
 #ifdef UDF_DBG
 
-//#define CHECK_ALLOC_FRAMES
-
 //#define TRACK_SYS_ALLOCS
 //#define TRACK_SYS_ALLOC_CALLERS
 
 #endif //UDF_DBG
-
-#define PROTECTED_MEM_RTL
-
-//#define UDF_SIMULATE_WRITES
 
 //#define USE_KD_PRINT
 //#define USE_MM_PRINT
@@ -175,26 +169,6 @@ VOID DebugFreePool(PVOID addr);
 #define ValidateFileInfo(fi)  {}
 #endif
 
-#if defined (_X86_) && defined (_MSC_VER)
-
-__inline VOID UDFTouch(IN PVOID addr)
-{
-    __asm {
-        mov  eax,addr
-        mov  al,[byte ptr eax]
-    }
-}
-
-#else   // NO X86 optimization , use generic C/C++
-
-__inline VOID UDFTouch(IN PVOID addr)
-{
-    UCHAR a = ((PUCHAR)addr)[0];
-    a = a;
-}
-
-#endif // _X86_
-
 #else // UDF_DBG
 
 #define DbgAllocatePool(x,y) ExAllocatePoolWithTag(x,y,'Fnwd')
@@ -210,8 +184,6 @@ __inline VOID UDFTouch(IN PVOID addr)
 #define UDFBreakPoint() {}
 #define BrutePoint() {}
 #define ValidateFileInfo(fi)  {}
-
-#define UDFTouch(addr) {}
 
 #endif // UDF_DBG
 

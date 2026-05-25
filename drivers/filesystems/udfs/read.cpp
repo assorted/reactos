@@ -16,8 +16,9 @@
 
 #include            "udffs.h"
 
-// define the file specific bug-check id
-#define         UDF_BUG_CHECK_ID                UDF_FILE_READ
+// The Bug check file id for this module
+
+#define BugCheckFileId                   (UDFS_BUG_CHECK_READ)
 
 //  This macro just puts a nice little try-except around RtlZeroMemory
 
@@ -58,6 +59,7 @@ UDFCommonRead(
     LONGLONG ByteRange;
     ULONG ReadLength;
     ULONG ByteCount;
+    ULONG ReadByteCount;
     ULONG NumberBytesRead = 0;
     LONGLONG FileSize;
     TYPE_OF_OPEN TypeOfOpen;
@@ -67,6 +69,7 @@ UDFCommonRead(
     BOOLEAN                 VcbAcquired = FALSE;
     BOOLEAN                 FcbAcquired = FALSE;
     PVOID                   SystemBuffer = NULL;
+    UDF_IO_CONTEXT          LocalIoContext;
 
     BOOLEAN Wait;
     BOOLEAN PagingIo;
@@ -259,13 +262,53 @@ UDFCommonRead(
 
         if (NonCachedIo) {
 
-            // Send the request to lower level drivers
+            if (Fcb->FcbState & UDF_FCB_EMBEDDED_DATA) {
 
-            if (!Wait) {
-                try_return(Status = STATUS_CANT_WAIT);
+                //  In-ICB (embedded) data — read via extent walker
+                //  (data lives inside the ICB sector, no disk extent to dispatch).
+
+                if (!Wait) {
+                    try_return(Status = STATUS_CANT_WAIT);
+                }
+
+                Status = UDFLockUserBuffer(IrpContext, ByteCount, IoWriteAccess);
+                if (!NT_SUCCESS(Status)) {
+                    try_return(Status);
+                }
+
+                SystemBuffer = UDFMapUserBuffer(Irp);
+                if (!SystemBuffer) {
+                    try_return(Status = STATUS_INVALID_USER_BUFFER);
+                }
+
+                Status = UDFReadFile__(IrpContext, Vcb, Fcb->FileInfo, StartingOffset, ByteCount,
+                               FALSE, (PCHAR)SystemBuffer);
+                if (NT_SUCCESS(Status)) {
+                    NumberBytesRead = ByteCount;
+                }
+
+                UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
+                try_return(Status);
             }
 
-            Status = UDFLockUserBuffer(IrpContext, ByteCount, IoWriteAccess);
+            //  Sector-align the transfer length.  If the read is unaligned
+            //  (offset not on sector boundary or length not sector-multiple),
+            //  we must be able to wait, and cap to the original byte count
+            //  so we don't overwrite past the caller's buffer.
+
+            ReadByteCount = (ByteCount + (Vcb->SectorSize - 1)) & ~(Vcb->SectorSize - 1);
+
+            if ((StartingOffset & (Vcb->SectorSize - 1)) ||
+                (ReadByteCount > ReadLength)) {
+
+                if (!Wait) {
+                    try_return(Status = STATUS_CANT_WAIT);
+                }
+
+                ReadByteCount = ByteCount;
+            }
+
+            Status = UDFLockUserBuffer(IrpContext, ReadByteCount, IoWriteAccess);
             if (!NT_SUCCESS(Status)) {
                 try_return(Status);
             }
@@ -286,10 +329,6 @@ UDFCommonRead(
                     ULONG LBS = Vcb->SectorSize;
                     ULONG ZeroingOffset = (ULONG)(((ValidDataLength.QuadPart - StartingOffset) + (LBS - 1)) & ~((ULONGLONG)LBS - 1));
 
-                    // If the offset is at or above the byte count, no harm: just means
-                    // that the read ends in the last sector and the zeroing will be
-                    // done at completion.
-
                     if (ByteCount > ZeroingOffset) {
 
                         SafeZeroMemory((PUCHAR)SystemBuffer + ZeroingOffset, ByteCount - ZeroingOffset);
@@ -306,13 +345,99 @@ UDFCommonRead(
                 }
             }
 
-            Status = UDFReadFile__(IrpContext, Vcb, Fcb->FileInfo, StartingOffset, ByteCount,
-                           FALSE, (PCHAR)SystemBuffer, &NumberBytesRead);
+            Irp->IoStatus.Information = ReadByteCount;
 
-/*                // AFAIU, CacheManager wants this:
-            if (!NT_SUCCESS(RC)) {
+            //
+            //  Initialize the IoContext for the read.
+            //  If there is a context pointer, we need to make sure it was
+            //  allocated and not a stale stack pointer.
+            //
+
+            if (IrpContext->IoContext == NULL ||
+                !FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO)) {
+
+                if (Wait) {
+
+                    IrpContext->IoContext = &LocalIoContext;
+                    ClearFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
+
+                } else {
+
+                    IrpContext->IoContext = (PUDF_IO_CONTEXT)
+                        FsRtlAllocatePoolWithTag(NonPagedPool,
+                                                 sizeof(UDF_IO_CONTEXT),
+                                                 TAG_IO_CONTEXT);
+                    SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
+                }
+            }
+
+            RtlZeroMemory(IrpContext->IoContext, sizeof(UDF_IO_CONTEXT));
+
+            IrpContext->IoContext->AllocatedContext =
+                BooleanFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO);
+
+            if (Wait) {
+
+                KeInitializeEvent(&IrpContext->IoContext->SyncEvent,
+                                  NotificationEvent,
+                                  FALSE);
+            } else {
+
+                IrpContext->IoContext->ResourceThreadId = ExGetCurrentResourceThread();
+                IrpContext->IoContext->Resource = &Fcb->FcbNonpaged->FcbResource;
+                IrpContext->IoContext->RequestedByteCount = ByteCount;
+            }
+
+            Status = UDFNonCachedIo(IrpContext, Fcb, StartingOffset, ReadByteCount);
+
+            //
+            //  If the request went async, the completion routine will
+            //  finish everything — don't touch the IRP or release the FCB.
+            //
+
+            if (Status == STATUS_PENDING) {
+
+                Irp = NULL;
+                FcbAcquired = FALSE;
+                try_return(Status);
+            }
+
+            //
+            //  Sync or error — clear the stack IoContext pointer so it
+            //  doesn't dangle.  Pool-allocated contexts are freed by
+            //  UDFCleanupIrpContext via ALLOC_IO flag.
+            //
+
+            if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO)) {
+
+                IrpContext->IoContext = NULL;
+            }
+
+            if (!NT_SUCCESS(Status)) {
+
                 NumberBytesRead = 0;
-            }*/
+
+                //  Surface user-induced errors (e.g. media removed)
+                //  so the I/O manager can pop the right dialog.
+
+                if (IoIsErrorUserInduced(Status)) {
+                    IoSetHardErrorOrVerifyDevice(Irp, Vcb->Vpb->RealDevice);
+                }
+
+                Status = FsRtlNormalizeNtstatus(Status, STATUS_UNEXPECTED_IO_ERROR);
+
+            } else {
+
+                //  Zero the tail of the buffer if the sector-aligned read
+                //  was larger than the actual byte count requested.
+
+                if (ReadByteCount != ByteCount) {
+
+                    SafeZeroMemory((PUCHAR)SystemBuffer + ByteCount, ReadByteCount - ByteCount);
+                }
+
+                NumberBytesRead = ByteCount;
+            }
 
             UDFUnlockCallersBuffer(IrpContext, Irp, SystemBuffer);
 
@@ -422,6 +547,14 @@ try_exit:   NOTHING;
     if (Status == STATUS_CANT_WAIT) {
 
         Status = UDFFsdPostRequest(IrpContext, Irp);
+
+    } else if (Status == STATUS_PENDING) {
+
+        //  The async completion routine will finish the IRP.
+        //  Clean up the IrpContext (restore thread context etc.)
+        //  but don't touch the IRP — it belongs to the completion routine.
+
+        UDFCompleteRequest(IrpContext, NULL, STATUS_PENDING);
 
     } else {
 

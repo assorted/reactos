@@ -30,13 +30,12 @@ UDFCheckArea(
 {
     uint8* buff;
     NTSTATUS RC;
-    ULONG ReadBytes;
     uint32 i, d;
     BOOLEAN ext_ok = TRUE;
     EXTENT_MAP Map[2];
-    uint32 PS = Vcb->WriteBlockSize >> Vcb->SectorShift;
+    uint32 PS = Vcb->SparingBlockSize ? Vcb->SparingBlockSize : 1;
 
-    buff = (uint8*)DbgAllocatePoolWithTag(NonPagedPool, Vcb->WriteBlockSize, 'bNWD' );
+    buff = (uint8*)DbgAllocatePoolWithTag(NonPagedPool, PS << Vcb->SectorShift, 'bNWD' );
     if (buff) {
         for(i=0; i<BCount; i+=d) {
             if (!((LBA+i) & (PS-1)) &&
@@ -45,13 +44,11 @@ UDFCheckArea(
             } else {
                 d = 1;
             }
-            RC = UDFTRead(IrpContext,
+            RC = UDFReadWriteSectors(IrpContext,
                            Vcb,
-                           buff,
+                           ((LONGLONG)(LBA + i)) << Vcb->SectorShift,
                            d << Vcb->SectorShift,
-                           LBA+i,
-                           &ReadBytes,
-                           PH_TMP_BUFFER);
+                           TRUE, buff, FALSE);
 
             if (RC != STATUS_SUCCESS) {
                 Map[0].extLocation = LBA+i;
@@ -276,7 +273,7 @@ UDFAreSectorsRelocated(
         for(i=0; i<BlockCount; i++, Map++) {
             if ((j = (*Map)) &&
                (j != Lba-root+i) &&
-               ((j != UDF_VAT_FREE_ENTRY) || ((Lba+i) < Vcb->LastLBA)))
+               ((j != UDF_VAT_FREE_ENTRY) || ((Lba+i) < Vcb->SessionEndLba)))
                 return TRUE;
         }
     }

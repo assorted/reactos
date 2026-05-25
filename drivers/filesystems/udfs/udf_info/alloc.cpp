@@ -99,24 +99,25 @@ UDFPartLbaToPhys(
     // to physical
     for(i=Addr->partitionReferenceNum; i<Vcb->PartitionMaps; i++) {
         if (Vcb->Partitions[i].PartitionNum == Addr->partitionReferenceNum) {
-            a = Vcb->Partitions[i].PartitionRoot + Addr->logicalBlockNum;
-            if (a > Vcb->LastPossibleLBA) {
-                AdPrint(("UDFPartLbaToPhys: root %x, lbn %x, lba %x (err1)\n",
-                    Vcb->Partitions[i].PartitionRoot, Addr->logicalBlockNum, a));
+            if (Addr->logicalBlockNum >= Vcb->Partitions[i].PartitionLen) {
+                AdPrint(("UDFPartLbaToPhys: root %x, lbn %x, plen %x (err1)\n",
+                    Vcb->Partitions[i].PartitionRoot, Addr->logicalBlockNum,
+                    Vcb->Partitions[i].PartitionLen));
                 BrutePoint();
                 return LBA_OUT_OF_EXTENT;
             }
+            a = Vcb->Partitions[i].PartitionRoot + Addr->logicalBlockNum;
             return a;
         }
     }
-    a = Vcb->Partitions[i-1].PartitionRoot + Addr->logicalBlockNum;
-
-    if (a > Vcb->LastPossibleLBA) {
-        AdPrint(("UDFPartLbaToPhys: i %x, root %x, lbn %x, lba %x (err2)\n",
-            i, Vcb->Partitions[i-1].PartitionRoot, Addr->logicalBlockNum, a));
+    if (Addr->logicalBlockNum >= Vcb->Partitions[i-1].PartitionLen) {
+        AdPrint(("UDFPartLbaToPhys: i %x, root %x, lbn %x, plen %x (err2)\n",
+            i, Vcb->Partitions[i-1].PartitionRoot, Addr->logicalBlockNum,
+            Vcb->Partitions[i-1].PartitionLen));
         BrutePoint();
         return LBA_OUT_OF_EXTENT;
     }
+    a = Vcb->Partitions[i-1].PartitionRoot + Addr->logicalBlockNum;
     return a;
 } // end UDFPartLbaToPhys()
 
@@ -211,7 +212,7 @@ UDFPartEnd(
     )
 {
     uint32 i;
-    if (RefPartNum == (uint32)-1) return Vcb->LastLBA;
+    if (RefPartNum == (uint32)-1) return Vcb->SessionEndLba;
     if (RefPartNum == (uint32)-2) RefPartNum = Vcb->PartitionMaps-1;
     for(i=RefPartNum; i<Vcb->PartitionMaps; i++) {
         if (Vcb->Partitions[i].PartitionNum == UDFGetPartNumByPartRef(Vcb, RefPartNum))
@@ -236,7 +237,7 @@ UDFPartLen(
     if (RefPartNum == (uint32)-2) return UDFPartEnd(Vcb, -2) - UDFPartStart(Vcb, -2);
 
     uint32 i;
-    if (RefPartNum == (uint32)-1) return Vcb->LastLBA;
+    if (RefPartNum == (uint32)-1) return Vcb->SessionEndLba;
     for (i = RefPartNum; i < Vcb->PartitionMaps; i++) {
         if (Vcb->Partitions[i].PartitionNum == UDFGetPartNumByPartRef(Vcb, RefPartNum))
             return Vcb->Partitions[i].PartitionLen;
@@ -320,35 +321,18 @@ UDFFindMinSuitableExtent(
     SIZE_T best_len=0;
     SIZE_T max_lba=0;
     SIZE_T max_len=0;
-    BOOLEAN align = FALSE;
-    SIZE_T PS = Vcb->WriteBlockSize >> Vcb->SectorShift;
 
     UDF_CHECK_BITMAP_RESOURCE(Vcb);
 
-    // we'll try to allocate packet-aligned block at first
-    if (!(Length & (PS-1)) && !Vcb->CDR_Mode && (Length >= PS*2))
-        align = TRUE;
-    if (AllocFlags & EXTENT_FLAG_ALLOC_SEQUENTIAL)
-        align = TRUE;
     if (Length > (uint32)(UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift))
         Length = (UDF_EXTENT_LENGTH_MASK >> Vcb->SectorShift);
 
     cur = (uint32*)(Vcb->FSBM_Bitmap);
 
-retry_no_align:
-
     i=SearchStart;
     // scan Bitmap
     while(i<SearchLim) {
         ASSERT(i <= SearchLim);
-        if (align) {
-            i = (i+PS-1) & ~(PS-1);
-            // we can't find suitable Packet-size aligned block
-            // the block will be found without any alignment at the next iteration
-            // ASSERT(i <= SearchLim);
-            if (i >= SearchLim)
-                break;
-        }
         len = UDFGetBitmapLen(cur, i, SearchLim);
         if (UDFGetFreeBit(cur, i)) { // is the extent found free or used ?
             // wow! it is free!
@@ -372,12 +356,6 @@ retry_no_align:
             if (Vcb->CDR_Mode) break;
         }
         i += len;
-    }
-    // if we can't find suitable Packet-size aligned block,
-    // retry without any alignment requirements
-    if (!best_len && align) {
-        align = FALSE;
-        goto retry_no_align;
     }
     if (best_len) {
         // minimal suitable block
@@ -458,14 +436,14 @@ UDFCheckSpaceAllocation_(
 #endif //UDF_CHECK_EXTENT_SIZE_ALIGNMENT
         len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK)+BS-1) >> BSh;
         lba = Map[i].extLocation;
-        if ((lba+len) > Vcb->LastPossibleLBA) {
-            // skip blocks beyond media boundary
-            if (lba > Vcb->LastPossibleLBA) {
+        if ((lba+len) > Vcb->FSBM_BitCount) {
+            // skip blocks beyond bitmap boundary
+            if (lba >= Vcb->FSBM_BitCount) {
                 ASSERT(FALSE);
                 i++;
                 continue;
             }
-            len = Vcb->LastPossibleLBA - lba;
+            len = Vcb->FSBM_BitCount - lba;
         }
 
         // mark frag as XXX (see asUsed parameter)
@@ -473,9 +451,9 @@ UDFCheckSpaceAllocation_(
 
             ASSERT(len);
             for(j=0;j<len;j++) {
-                if (lba+j > Vcb->LastPossibleLBA) {
+                if (lba+j >= Vcb->FSBM_BitCount) {
                     BrutePoint();
-                    AdPrint(("USED Mapping covers block(s) beyond media @%x\n",lba+j));
+                    AdPrint(("USED Mapping covers block(s) beyond bitmap @%x\n",lba+j));
                     break;
                 }
                 if (!UDFGetUsedBit(Vcb->FSBM_Bitmap, lba+j)) {
@@ -489,9 +467,9 @@ UDFCheckSpaceAllocation_(
 
             ASSERT(len);
             for(j=0;j<len;j++) {
-                if (lba+j > Vcb->LastPossibleLBA) {
+                if (lba+j >= Vcb->FSBM_BitCount) {
                     BrutePoint();
-                    AdPrint(("USED Mapping covers block(s) beyond media @%x\n",lba+j));
+                    AdPrint(("USED Mapping covers block(s) beyond bitmap @%x\n",lba+j));
                     break;
                 }
                 if (!UDFGetFreeBit(Vcb->FSBM_Bitmap, lba+j)) {
@@ -587,14 +565,14 @@ UDFMarkSpaceAsXXXNoProtect_(
 #endif // UDF_DBG
         len = ((Map[i].extLength & UDF_EXTENT_LENGTH_MASK)+BS-1) >> BSh;
         lba = Map[i].extLocation;
-        if ((lba+len) > Vcb->LastPossibleLBA) {
-            // skip blocks beyond media boundary
-            if (lba > Vcb->LastPossibleLBA) {
+        if ((lba+len) > Vcb->FSBM_BitCount) {
+            // skip blocks beyond bitmap boundary
+            if (lba >= Vcb->FSBM_BitCount) {
                 ASSERT(FALSE);
                 i++;
                 continue;
             }
-            len = Vcb->LastPossibleLBA - lba;
+            len = Vcb->FSBM_BitCount - lba;
         }
 
 #ifdef UDF_TRACK_ONDISK_ALLOCATION
@@ -621,7 +599,7 @@ UDFMarkSpaceAsXXXNoProtect_(
                 for(j=0;j<len;j++) {
                     root = UDFPartStart(Vcb, UDFGetRefPartNumByPhysLba(Vcb, lba));
                     if ((Vcb->Vat[lba-root+j] == UDF_VAT_FREE_ENTRY) &&
-                       (lba > Vcb->LastLBA)) {
+                       (lba > Vcb->SessionEndLba)) {
                          Vcb->Vat[lba-root+j] = 0x7fffffff;
                     }
                 }
@@ -867,8 +845,8 @@ UDFGetFreeSpace(
             s += UDFGetPartFreeSpace(Vcb, i);
         }
     } else {
-        ASSERT(Vcb->LastPossibleLBA >= max(Vcb->NWA, Vcb->LastLBA));
-        s = Vcb->LastPossibleLBA - max(Vcb->NWA, Vcb->LastLBA);
+        ASSERT(Vcb->FSBM_BitCount >= max(Vcb->NWA, Vcb->SessionEndLba));
+        s = Vcb->FSBM_BitCount - max(Vcb->NWA, Vcb->SessionEndLba);
         //if (s & ((int64)1 << 64)) s=0;
     }
     return s;
@@ -890,8 +868,7 @@ UDFGetTotalSpace(
             s+=Vcb->Partitions[i].PartitionLen;
         }
     } else {
-        if (s & ((int64)1 << 63)) s=0;  /* FIXME ReactOS this shift value was 64, which is undefiened behavior. */
-        s= Vcb->LastPossibleLBA - Vcb->Partitions[0].PartitionRoot;
+        s = Vcb->Partitions[0].PartitionLen;
     }
     return s;
 } // end UDFGetTotalSpace()

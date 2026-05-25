@@ -23,11 +23,7 @@
 #include "Include/platform.h"
 #include "ecma_167.h"
 
-#ifdef UDF_LIMIT_DIR_SIZE
-typedef uint8 uint_di;
-#else //UDF_LIMIT_DIR_SIZE
 typedef uint32 uint_di;
-#endif //UDF_LIMIT_DIR_SIZE
 
 typedef struct _UDFTrackMap {
     uint32 FirstLba;
@@ -325,6 +321,8 @@ typedef struct _UDF_DATALOC_INFO {
 #define UDF_FE_FLAG_IS_DEL_SDIR  (0x20)
 /// Dloc is being initialized, don't touch it now
 #define UDF_FE_FLAG_UNDER_INIT   (0x40)
+// Block freeing deferred to teardown (cleanup removed FID but kept blocks allocated)
+#define UDF_FE_FLAG_FREE_DEFERRED (0x80)
 
 
 #define UDF_FILE_INFO_MT PagedPool
@@ -460,44 +458,7 @@ typedef struct _UDF_ALLOCATION_CACHE_ITEM {
     EXTENT_INFO Ext;
 } UDF_ALLOCATION_CACHE_ITEM, *PUDF_ALLOCATION_CACHE_ITEM;
 
-/*
-#define MEM_DIR_HDR_TAG     (ULONG)"DirHdr"
-#define MEM_DIR_NDX_TAG     (ULONG)"DirNdx"
-#define MEM_DLOC_NDX_TAG    (ULONG)"DlocNdx"
-#define MEM_DLOC_INF_TAG    (ULONG)"DlocInf"
-#define MEM_FNAME_TAG       (ULONG)"FName"
-#define MEM_FNAME16_TAG     (ULONG)"FName16"
-#define MEM_FNAMECPY_TAG    (ULONG)"FNameC"
-#define MEM_FE_TAG          (ULONG)"FE"
-#define MEM_XFE_TAG         (ULONG)"xFE"
-#define MEM_FID_TAG         (ULONG)"FID"
-#define MEM_FINF_TAG        (ULONG)"FInf"
-#define MEM_VATFINF_TAG     (ULONG)"FInfVat"
-#define MEM_SDFINF_TAG      (ULONG)"SDirFInf"
-#define MEM_EXTMAP_TAG      (ULONG)"ExtMap"
-#define MEM_ALLOCDESC_TAG   (ULONG)"AllocDesc"
-#define MEM_SHAD_TAG        (ULONG)"SHAD"
-#define MEM_LNGAD_TAG       (ULONG)"LNGAD"
-*/
-
-#define MEM_DIR_HDR_TAG     'DirH'
-#define MEM_DIR_NDX_TAG     'DirN'
-#define MEM_DLOC_NDX_TAG    'Dloc'
-#define MEM_DLOC_INF_TAG    'Dloc'
-#define MEM_FNAME_TAG       'FNam'
-#define MEM_FNAME16_TAG     'FNam'
-#define MEM_FNAMECPY_TAG    'FNam'
-#define MEM_FE_TAG          'FE'
-#define MEM_XFE_TAG         'xFE"'
-#define MEM_FID_TAG         'FID'
-#define MEM_FINF_TAG        'FInf'
-#define MEM_VATFINF_TAG     'FInf'
-#define MEM_SDFINF_TAG      'SDir'
-#define MEM_EXTMAP_TAG      'ExtM'
-#define MEM_ALLOCDESC_TAG   'Allo'
-#define MEM_SHAD_TAG        'SHAD'
-#define MEM_LNGAD_TAG       'LNGA'
-#define MEM_ALLOC_CACHE_TAG 'hcCA'
+// Pool tags are defined in nodetype.h
 
 #define UDF_DEFAULT_LAST_LBA_CD     276159
 #define UDF_DEFAULT_LAST_LBA_DVD    0x23053f

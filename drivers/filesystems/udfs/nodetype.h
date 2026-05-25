@@ -81,6 +81,32 @@ typedef CSHORT NODE_BYTE_SIZE;
 #define UDFS_BUG_CHECK_SHUTDOWN          (0x001e0000)
 
 
-#define CdBugCheck(A,B,C) { KeBugCheckEx(CDFS_FILE_SYSTEM, BugCheckFileId | __LINE__, A, B, C ); }
+#define UDFBugCheck(A,B,C) { KeBugCheckEx(UDFS_FILE_SYSTEM, BugCheckFileId | __LINE__, A, B, C ); }
+
+// Here are the different pool tags.
+
+#define TAG_IO_BUFFER           'bfdU'
+#define TAG_IO_CONTEXT          'IfdU'
+#define MEM_DIR_HDR_TAG         'DirH'
+#define MEM_DIR_NDX_TAG         'DirN'
+#define MEM_DLOC_NDX_TAG        'Dloc'
+#define MEM_DLOC_INF_TAG        'Dloc'
+#define MEM_FNAME_TAG           'FNam'
+#define MEM_FNAME16_TAG         'FNam'
+#define MEM_FNAMECPY_TAG        'FNam'
+#define MEM_FE_TAG              'FE'
+#define MEM_XFE_TAG             'xFE"'
+#define MEM_FID_TAG             'FID'
+#define MEM_FINF_TAG            'FInf'
+#define MEM_VATFINF_TAG         'FInf'
+#define MEM_SDFINF_TAG          'SDir'
+#define MEM_EXTMAP_TAG          'ExtM'
+#define MEM_ALLOCDESC_TAG       'Allo'
+#define MEM_SHAD_TAG            'SHAD'
+#define MEM_LNGAD_TAG           'LNGA'
+#define MEM_ALLOC_CACHE_TAG     'hcCA'
+#define TAG_FILE_SET_DESC       'tfdU'
+#define TAG_SEARCH_EXPR         'sfdU'
+#define TAG_FSBM_BITMAP         'bfdU'
 
 #endif // _NODETYPE_

@@ -1,8 +1,8 @@
 #include "udffs.h"
 
-//  The Bug check file id for this module
+// The Bug check file id for this module
 
-#define UDF_BUG_CHECK_ID                   (UDFS_BUG_CHECK_STRUCSUP)
+#define BugCheckFileId                   (UDFS_BUG_CHECK_STRUCSUP)
 
 typedef struct _FCB_TABLE_ELEMENT {
 
@@ -471,7 +471,19 @@ UDFTeardownStructures(
             }
 
             //
-            // Now that we have removed all of the prefixes of this Fcb we can make the final check.
+            // Flush metadata to disk while FCB is still in FcbTable.
+            // Concurrent create during flush finds FCB via table lookup.
+            // After flush + table removal, on-disk FE is up-to-date for any
+            // subsequent disk read by a create that misses the table.
+            //
+            if (!Delete &&
+                CurrentFcb->FileInfo &&
+                !(CurrentFcb->FcbState & UDF_FCB_DELETED)) {
+                UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
+            }
+
+            //
+            // Now make the final check.
             // Lock ordering: FcbTableMutex (outer) before VcbMutex (inner).
             //
             UDFLockFcbTable(IrpContext, Vcb);
@@ -492,15 +504,14 @@ UDFTeardownStructures(
 
             //
             // This Fcb is toast.  Remove it from the Fcb Table as appropriate and delete.
+            // Must happen under the same lock hold where FcbReference==0 was verified,
+            // because create.cpp can increment FcbReference under VcbMutex without FCB exclusive.
             //
             if (FlagOn(CurrentFcb->FcbState, FCB_STATE_IN_FCB_TABLE)) {
                 UDFDeleteFcbTable(IrpContext, CurrentFcb);
                 ClearFlag(CurrentFcb->FcbState, FCB_STATE_IN_FCB_TABLE);
             }
 
-            //
-            // Check FcbCleanup while still holding VcbMutex
-            //
             BOOLEAN ShouldDelete = !CurrentFcb->FcbCleanup;
             UDFUnlockVcb(IrpContext, Vcb);
             UDFUnlockFcbTable(IrpContext, Vcb);
@@ -516,10 +527,7 @@ UDFTeardownStructures(
                     CurrentFcb->FcbState |= UDF_FCB_DELETED;
                     Delete = FALSE;
                 }
-                else if (!(CurrentFcb->FcbState & UDF_FCB_DELETED)) {
-                    UDFFlushFile__(IrpContext, Vcb, CurrentFcb->FileInfo);
-                }
-                else {
+                else if (CurrentFcb->FcbState & UDF_FCB_DELETED) {
                     // File is already deleted - clear Modified flags without flushing to disk.
                     // The deletion was already written in cleanup.cpp via UDFUnlinkFile__.
                     // Any pending modifications are irrelevant for deleted files.
@@ -1080,8 +1088,6 @@ UDFInitializeVCB(
         ExInitializeResourceLite(&Vcb->DlocResource2);
         ExInitializeResourceLite(&Vcb->FlushResource);
         ExInitializeResourceLite(&Vcb->PreallocResource);
-        ExInitializeResourceLite(&Vcb->IoResource);
-
         ExInitializeFastMutex(&Vcb->VcbMutex);
         ExInitializeFastMutex(&Vcb->FcbTableMutex);
 
@@ -1519,16 +1525,9 @@ UDFDeleteCcb(
     PCCB Ccb
 )
 {
-    if (Ccb->DirectorySearchPattern) {
+    if (Ccb->SearchExpression.Buffer != NULL) {
 
-        if (Ccb->DirectorySearchPattern->Buffer) {
-
-            MyFreePool__(Ccb->DirectorySearchPattern->Buffer);
-            Ccb->DirectorySearchPattern->Buffer = NULL;
-        }
-
-        MyFreePool__(Ccb->DirectorySearchPattern);
-        Ccb->DirectorySearchPattern = NULL;
+        UDFFreePool((PVOID*)&Ccb->SearchExpression.Buffer);
     }
 
     UDFDeallocateCcb(Ccb);

@@ -19,11 +19,6 @@
 #ifndef _UDF_SYS_SPEC_LIB__H_
 #define _UDF_SYS_SPEC_LIB__H_
 
-typedef struct _UDF_PH_CALL_CONTEXT {
-    KEVENT          event;
-    IO_STATUS_BLOCK IosbToUse;
-} UDF_PH_CALL_CONTEXT, *PUDF_PH_CALL_CONTEXT;
-
 // convert UDF timestamp to NT time
 LONGLONG UDFTimeToNT(IN PUDF_TIME_STAMP UdfTime);
 // translate UDF file attributes to NT ones

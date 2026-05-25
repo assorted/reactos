@@ -34,8 +34,92 @@
 #include "udf_info/udf_rel.h"
 
 struct IRP_CONTEXT_LITE;
-struct IO_CONTEXT;
 struct IRP_CONTEXT;
+
+/**************************************************************************
+    An array of these structures is used to describe a set of disk runs
+    for non-cached I/O.  Each entry maps a contiguous range of bytes
+    on disk to a transfer buffer (which may be the user buffer itself
+    or a temporary scratch buffer for unaligned transfers).
+**************************************************************************/
+
+#define UDF_MAX_PARALLEL_IOS    5
+
+struct UDF_IO_RUN {
+
+    //  Disk byte offset and transfer size (both sector-aligned).
+
+    LONGLONG DiskOffset;
+    ULONG DiskByteCount;
+
+    //  Final destination in the user buffer for this portion of the transfer.
+
+    PVOID UserBuffer;
+
+    //  Buffer where data is actually read into.  May point to UserBuffer
+    //  (aligned case), an earlier scratch area in the user buffer, or
+    //  a separately allocated NonPagedPool buffer.
+    //
+    //  TransferByteCount != 0 means post-I/O copy is required.
+    //  TransferBufferOffset is the byte offset within TransferBuffer
+    //  where the useful data starts.
+
+    PVOID TransferBuffer;
+    ULONG TransferByteCount;
+    ULONG TransferBufferOffset;
+
+    //  MDL for the transfer.  Points to Irp->MdlAddress for aligned
+    //  transfers or to a separately allocated MDL for scratch buffers.
+
+    PMDL TransferMdl;
+
+    //  Virtual address passed to IoBuildPartialMdl.  For user buffer
+    //  transfers this is Irp->UserBuffer + offset (original user VA).
+
+    PVOID TransferVirtualAddress;
+
+    //  Associated IRP created by IoMakeAssociatedIrp (multi-run case).
+
+    PIRP SavedIrp;
+};
+using PIO_RUN = UDF_IO_RUN*;
+
+/**************************************************************************
+    I/O context used to synchronize non-cached I/O completion.
+    For synchronous requests the SyncEvent member is used;
+    for asynchronous requests the Resource/ResourceThreadId members
+    allow the completion routine to release the FCB resource.
+**************************************************************************/
+
+struct UDF_IO_CONTEXT {
+
+    //  Count of outstanding IRPs (multi-run case).
+
+    volatile LONG IrpCount;
+    PIRP MasterIrp;
+    volatile NTSTATUS Status;
+    BOOLEAN AllocatedContext;
+
+    union {
+
+        //  Asynchronous non-cached I/O.
+
+        struct {
+            PERESOURCE Resource;
+            ERESOURCE_THREAD ResourceThreadId;
+            ULONG RequestedByteCount;
+        };
+
+        //  Synchronous non-cached I/O.
+
+        KEVENT SyncEvent;
+    };
+};
+using PUDF_IO_CONTEXT = UDF_IO_CONTEXT*;
+
+//  Keep the old name for IRP_CONTEXT compatibility.
+using IO_CONTEXT = UDF_IO_CONTEXT;
+
 struct LCB;
 
 /**************************************************************************
@@ -104,16 +188,20 @@ struct CCB {
     // if this CCB represents a directory object open, we may
     //  need to maintain a search pattern
 
-    PUNICODE_STRING                     DirectorySearchPattern;
+    UNICODE_STRING                      SearchExpression;
     HASH_ENTRY                          hashes;
 };
 using PCCB = CCB*;
 
 #define CCB_FLAG_IGNORE_CASE                    (0x00000004)
-// the CCB has had an IRP_MJ_CLEANUP issued on it. we must
-//  no longer allow the file object / CCB to be used in I/O requests.
+// the CCB has had an IRP_MJ_CLEANUP issued on it.
 #define UDF_CCB_CLEANED                         (0x00000008)
 #define CCB_FLAG_ALLOW_EXTENDED_DASD_IO         (0x00000010)
+// the file object was opened relative to another (RelatedFileObject was
+// supplied at create): its FileName holds only the final path component,
+// not an absolute path. Notifications must build the full path from the
+// LCB chain rather than trusting FileName.
+#define CCB_FLAG_HAS_RELATED_CCB                (0x00000020)
 // if an application process set the file date time, we must
 //  honor that request and *not* overwrite the values at cleanup
 #define UDF_CCB_ACCESS_TIME_SET                 (0x00000040)
@@ -124,6 +212,8 @@ using PCCB = CCB*;
 #define UDF_CCB_MATCH_ALL                       (0x00002000)
 #define UDF_CCB_WILDCARD_PRESENT                (0x00004000)
 #define UDF_CCB_CAN_BE_8_DOT_3                  (0x00008000)
+#define UDF_CCB_ENUM_RETURN_NEXT                (0x00010000)
+#define UDF_CCB_ENUM_INITIALIZED                (0x00100000)
 #define UDF_CCB_ATTRIBUTES_SET                  (0x00020000)
 #define CCB_FLAG_DISMOUNT_ON_CLOSE              (0x00040000)
 #define CCB_FLAG_OPEN_BY_ID                     (0x01000000)
@@ -538,8 +628,6 @@ struct VCB {
     // File Id cache
     struct _UDFFileIDCacheItem* FileIdCache;
     ULONG           FileIdCount;
-    //
-    ULONG           MediaLockCount;
 
     // FS size cache
     LONGLONG        TotalAllocUnits;
@@ -553,7 +641,6 @@ struct VCB {
     ERESOURCE                           DlocResource;
     ERESOURCE                           DlocResource2;
     ERESOURCE                           PreallocResource;
-    ERESOURCE                           IoResource;
 
     // Vcb fast mutex.  This is used to synchronize the fields in the Vcb
     // when modified when the Vcb is not held exclusively.  Included here
@@ -577,7 +664,6 @@ struct VCB {
 
     ULONG           SectorSize;
     ULONG           SectorShift;
-    ULONG           WriteBlockSize;
 
     ULONG SessionStartLba;
     ULONG SessionEndLba;
@@ -587,12 +673,6 @@ struct VCB {
     ULONG           FirstTrackNum;
     ULONG           FirstTrackNumLastSes;
     ULONG           LastTrackNum;
-    // First & Last LBA of the last session
-    ULONG           FirstLBA;
-    ULONG           FirstLBALastSes;
-    ULONG           LastLBA;
-    // Last writable LBA
-    ULONG           LastPossibleLBA;
     // First writable LBA
     ULONG           NWA;
     // sector type map
@@ -716,8 +796,6 @@ struct VCB {
     ULONG           DefaultAttr;      // Default file attributes (NT-style)
 
     BOOLEAN         NoFreeRelocationSpaceVolumeAction;
-    BOOLEAN         ForgetVolume;
-    UCHAR           Reserved5[3];
 
     //
     ULONG           SparseThreshold;  // in blocks
@@ -871,7 +949,6 @@ using PIRP_CONTEXT = IRP_CONTEXT*;
 #define IRP_CONTEXT_FLAG_FULL_NAME              (0x00040000)
 #define IRP_CONTEXT_FLAG_TRAIL_BACKSLASH        (0x00080000)
 #define UDF_IRP_CONTEXT_NOT_TOP_LEVEL           (0x10000000)
-#define UDF_IRP_CONTEXT_FLUSH_REQUIRED          (0x20000000)
 #define IRP_CONTEXT_FLAG_ALLOW_MEDIA_EJECT      (0x80000000)
 
 //  The following flags need to be cleared when a request is posted.
@@ -1065,8 +1142,6 @@ typedef struct _UDFFileIDCacheItem {
 #define DIRTY_PAGE_LIMIT   32
 
 #define UDFS_FILE_SYSTEM                 ((ULONG)0x0000009BL)
-
-#define UDFBugCheck(A,B,C) { KeBugCheckEx(UDFS_FILE_SYSTEM, UDF_BUG_CHECK_ID | __LINE__, A, B, C ); }
 
 #define MAXIMUM_NUMBER_TRACKS_LARGE 0xAA
 

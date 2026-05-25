@@ -6,7 +6,6 @@ list(APPEND SOURCE
     udf_info/dirtree.cpp
     udf_info/extent.cpp
     udf_info/mount.cpp
-    udf_info/phys_eject.cpp
     udf_info/physical.cpp
     udf_info/remap.cpp
     udf_info/udf_info.cpp
@@ -14,14 +13,13 @@ list(APPEND SOURCE
     close.cpp
     create.cpp
     devcntrl.cpp
+    deviosup.cpp
     dircntrl.cpp
-    env_spec.cpp
     fastio.cpp
     fileinfo.cpp
     flush.cpp
     fscntrl.cpp
     lockctrl.cpp
-    mem.cpp
     misc.cpp
     namesup.cpp
     prefxsup.cpp

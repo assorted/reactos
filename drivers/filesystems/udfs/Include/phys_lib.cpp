@@ -55,15 +55,6 @@
 #define MediaType_UnknownSize_CDRW 0x20
 // Local functions:
 
-NTSTATUS
-UDFRecoverFromError(
-    IN PVCB Vcb,
-    IN BOOLEAN WriteOp,
-    IN NTSTATUS status,
-    IN uint32 Lba,
-    IN uint32 BCount,
- IN OUT uint32* retry);
-
 uint32
 UDFFixFPAddress(
     IN PVCB           Vcb,               // Volume control block from this DevObj
@@ -90,331 +81,239 @@ UDFReallocTrackMap(
     return STATUS_SUCCESS;
 } // end UDFReallocTrackMap()
 
-/*
-    This routine performs low-level write
+/*************************************************************************
+*
+*  Function: UDFSendSectorIo()
+*
+*  Description:
+*    Build and send a single read/write IRP to the target device.
+*    Waits for completion synchronously.  Handles MDL and IRP cleanup.
+*
+*************************************************************************/
 
-    ATTENTION! When we are in Variable-Packet mode (CDR_Mode = TRUE)
-    LBA is ignored and assumed to be equal to NWA by CD-R(W) driver
- */
+static
 NTSTATUS
-UDFTWrite(
+UDFSendSectorIo(
     IN PIRP_CONTEXT IrpContext,
-    IN void* _Vcb,
-    IN void* Buffer,     // Target buffer
-    IN SIZE_T Length,
-    IN uint32 LBA,
-    OUT PSIZE_T WrittenBytes,
-    IN uint32 Flags
+    IN PDEVICE_OBJECT TargetDeviceObject,
+    IN PVOID Buffer,
+    IN ULONG ByteCount,
+    IN LONGLONG Offset,
+    IN BOOLEAN IsWrite
     )
 {
-#define Vcb ((PVCB)_Vcb)
+    KEVENT Event;
+    LARGE_INTEGER ROffset;
+    PIRP Irp;
+    PIO_STACK_LOCATION IrpSp;
+    NTSTATUS Status;
 
+    PAGED_CODE();
+
+    ROffset.QuadPart = Offset;
+
+    KeInitializeEvent(&Event, NotificationEvent, FALSE);
+
+    Irp = IoBuildAsynchronousFsdRequest(
+        IsWrite ? IRP_MJ_WRITE : IRP_MJ_READ,
+        TargetDeviceObject,
+        Buffer,
+        ByteCount,
+        &ROffset,
+        NULL);
+
+    if (!Irp) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    IoSetCompletionRoutine(Irp,
+                           &UDFHijackCompletionRoutine,
+                           &Event,
+                           TRUE,
+                           TRUE,
+                           TRUE);
+
+    IrpSp = IoGetNextIrpStackLocation(Irp);
+
+    SetFlag(IrpSp->Flags, SL_OVERRIDE_VERIFY_VOLUME);
+
+    if (!IsWrite && FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WRITE_THROUGH)) {
+        SetFlag(IrpSp->Flags, SL_WRITE_THROUGH);
+    }
+
+    Status = IoCallDriver(TargetDeviceObject, Irp);
+
+    if (Status == STATUS_PENDING) {
+        KeWaitForSingleObject(&Event, Executive, KernelMode, FALSE, NULL);
+        Status = Irp->IoStatus.Status;
+    }
+
+    //  Free MDL chain.
+
+    while (Irp->MdlAddress != NULL) {
+        PMDL NextMdl = Irp->MdlAddress->Next;
+        MmUnlockPages(Irp->MdlAddress);
+        IoFreeMdl(Irp->MdlAddress);
+        Irp->MdlAddress = NextMdl;
+    }
+
+    IoFreeIrp(Irp);
+
+    return Status;
+} // end UDFSendSectorIo()
+
+
+/*************************************************************************
+*
+*  Function: UDFReadWriteSectors()
+*
+*  Description:
+*    Single entry point for all metadata sector I/O (read and write).
+*    Handles sparing table relocation, fixed-packet address translation,
+*    bad sector bitmap checks, and CDR_Mode NWA tracking.
+*
+*    For file data I/O, use UDFNonCachedIo() in deviosup.cpp instead.
+*
+*************************************************************************/
+
+NTSTATUS
+UDFReadWriteSectors(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN LONGLONG StartingOffset,
+    IN ULONG ByteCount,
+    IN BOOLEAN ReturnError,
+    IN PVOID Buffer,
+    IN BOOLEAN IsWrite
+    )
+{
+    NTSTATUS RC = STATUS_SUCCESS;
     PEXTENT_MAP RelocExtent;
     PEXTENT_MAP RelocExtent_saved = NULL;
-    uint32 retry;
-    BOOLEAN res_acq = FALSE;
 
-    NTSTATUS RC = STATUS_SUCCESS;
+    uint32 Lba = (uint32)(StartingOffset >> Vcb->SectorShift);
+    uint32 BCount = ByteCount >> Vcb->SectorShift;
     uint32 rLba;
-    uint32 BCount;
-    uint32 i;
 
-#ifdef DBG
-    //ASSERT(!(LBA & (32-1)));
-#endif //DBG
-
-    (*WrittenBytes) = 0;
-    BCount = Length>>Vcb->SectorShift;
-
-    UDFPrint(("TWrite %x (%x)\n", LBA, BCount));
+    ASSERT(Buffer);
 
     if (Vcb->VcbState & UDF_VCB_FLAGS_DEAD) {
-        UDFPrint(("DEAD\n"));
         return STATUS_NO_SUCH_DEVICE;
     }
 
-    Vcb->VcbState |= UDF_VCB_LAST_WRITE;
-    if (!Vcb->CDR_Mode) {
-        RelocExtent = UDFRelocateSectors(Vcb, LBA, BCount);
-        if (!RelocExtent) {
-            UDFPrint(("can't relocate\n"));
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-        rLba = LBA;
-    } else {
+    //
+    //  For writes in CDR_Mode, use NWA instead of the given LBA.
+    //  For all other cases, apply sparing relocation.
+    //
+
+    if (IsWrite && Vcb->CDR_Mode) {
         RelocExtent = UDF_NO_EXTENT_MAP;
         rLba = Vcb->NWA;
+    } else {
+        RelocExtent = UDFRelocateSectors(Vcb, Lba, BCount);
+        if (!RelocExtent) return STATUS_INSUFFICIENT_RESOURCES;
+        rLba = Lba;
     }
 
-#ifdef DBG
-    //ASSERT(!(rLba & (32-1)));
-#endif //DBG
-
     _SEH2_TRY {
-
-        if (!(Flags & PH_IO_LOCKED)) {
-            UDFAcquireResourceExclusive(&(Vcb->IoResource), TRUE);
-            res_acq = TRUE;
-        }
 
         if (RelocExtent == UDF_NO_EXTENT_MAP) {
 
-            retry = UDF_WRITE_MAX_RETRY;
-retry_1:
-            RC = UDFPrepareForWriteOperation(Vcb, rLba, BCount);
-            if (!NT_SUCCESS(RC)) {
-                UDFPrint(("prepare failed\n"));
-                try_return(RC);
-            }
+            //
+            //  No relocation — single contiguous I/O.
+            //
 
-            RC = UDFPhWriteSynchronous(Vcb->TargetDeviceObject, Buffer, Length,
-                       ((uint64)rLba) << Vcb->SectorShift, WrittenBytes, Flags);
+            if (!IsWrite) {
 
-            if (!NT_SUCCESS(RC) &&
-                NT_SUCCESS(RC = UDFRecoverFromError(Vcb, TRUE, RC, rLba, BCount, &retry)) )
-                goto retry_1;
-            try_return(RC);
-        }
-        // write according to relocation table
-        RelocExtent_saved = RelocExtent;
-        for(i=0; RelocExtent->extLength; i++, RelocExtent++) {
-            SIZE_T _WrittenBytes;
-            rLba = RelocExtent->extLocation;
-            BCount = RelocExtent->extLength>>Vcb->SectorShift;
-            retry = UDF_WRITE_MAX_RETRY;
-retry_2:
-            RC = UDFPrepareForWriteOperation(Vcb, rLba, BCount);
-            if (!NT_SUCCESS(RC)) {
-                UDFPrint(("prepare failed (2)\n"));
-                break;
-            }
+                //  Read beyond end of recorded area returns zeros.
 
-            RC = UDFPhWriteSynchronous(Vcb->TargetDeviceObject, Buffer, RelocExtent->extLength,
-                       ((uint64)rLba) << Vcb->SectorShift, &_WrittenBytes, Flags);
-
-            if (!NT_SUCCESS(RC) &&
-                NT_SUCCESS(RC = UDFRecoverFromError(Vcb, TRUE, RC, rLba, BCount, &retry)) )
-                goto retry_2;
-            LBA += BCount;
-            (*WrittenBytes) += _WrittenBytes;
-            if (!NT_SUCCESS(RC)) break;
-            *((uint32*)&Buffer) += RelocExtent->extLength;
-        }
-try_exit: NOTHING;
-    } _SEH2_FINALLY {
-        if (res_acq) {
-            UDFReleaseResource(&(Vcb->IoResource));
-        }
-        if (RelocExtent_saved) {
-            MyFreePool__(RelocExtent_saved);
-        }
-    } _SEH2_END;
-    UDFPrint(("TWrite: %x\n", RC));
-    return RC;
-
-#undef Vcb
-} // end UDFTWrite()
-
-/*
-    This routine performs low-level read
- */
-NTSTATUS
-UDFTRead(
-    PIRP_CONTEXT IrpContext,
-    IN void* _Vcb,
-    IN void* Buffer,     // Target buffer
-    IN SIZE_T Length,
-    IN uint32 LBA,
-    OUT PULONG ReadBytes,
-    IN uint32 Flags
-    )
-{
-    uint32 rLba;
-    NTSTATUS RC = STATUS_SUCCESS;
-    uint32 retry;
-    PVCB Vcb = (PVCB)_Vcb;
-    uint32 BCount = Length >> Vcb->SectorShift;
-    uint32 i;
-    PEXTENT_MAP RelocExtent;
-    PEXTENT_MAP RelocExtent_saved = NULL;
-    BOOLEAN res_acq = FALSE;
-//    LARGE_INTEGER delay;
-
-    ASSERT(Buffer);
-
-    (*ReadBytes) = 0;
-
-    if (Vcb->VcbState & UDF_VCB_FLAGS_DEAD)
-        return STATUS_NO_SUCH_DEVICE;
-
-    RelocExtent = UDFRelocateSectors(Vcb, LBA, BCount);
-    if (!RelocExtent) return STATUS_INSUFFICIENT_RESOURCES;
-
-    _SEH2_TRY {
-
-        if (!(Flags & PH_IO_LOCKED)) {
-            UDFAcquireResourceExclusive(&(Vcb->IoResource), TRUE);
-            res_acq = TRUE;
-        }
-
-        if (RelocExtent == UDF_NO_EXTENT_MAP) {
-            rLba = LBA;
-            if (rLba >= (Vcb->CDR_Mode ? Vcb->NWA : Vcb->LastLBA + 1)) {
-                RtlZeroMemory(Buffer, Length);
-                try_return(RC = STATUS_SUCCESS);
-            }
-            retry = UDF_WRITE_MAX_RETRY;
-retry_1:
-            RC = UDFPrepareForReadOperation(IrpContext, Vcb, rLba, Length >> Vcb->SectorShift);
-            if (!NT_SUCCESS(RC)) try_return(RC);
-            rLba = UDFFixFPAddress(Vcb, rLba);
-
-            RC = UDFPhReadSynchronous(IrpContext, Vcb->TargetDeviceObject, Buffer, Length,
-                       ((uint64)rLba) << Vcb->SectorShift, ReadBytes, Flags);
-            Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
-
-            if (!NT_SUCCESS(RC) &&
-                NT_SUCCESS(RC = UDFRecoverFromError(Vcb, FALSE, RC, rLba, BCount, &retry)) ) {
-                if (RC != STATUS_BUFFER_ALL_ZEROS) {
-                    goto retry_1;
+                if (rLba >= (Vcb->CDR_Mode ? Vcb->NWA : Vcb->SessionEndLba + 1)) {
+                    RtlZeroMemory(Buffer, ByteCount);
+                    try_return(RC = STATUS_SUCCESS);
                 }
-                RtlZeroMemory(Buffer, Length);
-                (*ReadBytes) = Length;
-                RC = STATUS_SUCCESS;
+
+                RC = UDFPrepareForReadOperation(IrpContext, Vcb, rLba, BCount);
+                if (!NT_SUCCESS(RC)) try_return(RC);
+
+                rLba = UDFFixFPAddress(Vcb, rLba);
+
+                RC = UDFSendSectorIo(IrpContext,
+                         Vcb->TargetDeviceObject, Buffer, ByteCount,
+                         ((uint64)rLba) << Vcb->SectorShift, FALSE);
+
+                Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
+
+            } else {
+
+                RC = UDFPrepareForWriteOperation(Vcb, rLba, BCount);
+                if (!NT_SUCCESS(RC)) try_return(RC);
+
+                RC = UDFSendSectorIo(IrpContext,
+                         Vcb->TargetDeviceObject, Buffer, ByteCount,
+                         ((uint64)rLba) << Vcb->SectorShift, TRUE);
             }
 
             try_return(RC);
         }
-        // read according to relocation table
+
+        //
+        //  Sectors were relocated — walk the relocation map.
+        //
+
         RelocExtent_saved = RelocExtent;
-        for(i=0; RelocExtent->extLength; i++, RelocExtent++) {
-            ULONG _ReadBytes;
+
+        for (; RelocExtent->extLength; RelocExtent++) {
+
             rLba = RelocExtent->extLocation;
-            if (rLba >= (Vcb->CDR_Mode ? Vcb->NWA : Vcb->LastLBA + 1)) {
-                RtlZeroMemory(Buffer, _ReadBytes = RelocExtent->extLength);
-                RC = STATUS_SUCCESS;
-                goto TR_continue;
-            }
-            BCount = RelocExtent->extLength>>Vcb->SectorShift;
-            retry = UDF_WRITE_MAX_RETRY;
-retry_2:
-            RC = UDFPrepareForReadOperation(IrpContext, Vcb, rLba, RelocExtent->extLength >> Vcb->SectorShift);
-            if (!NT_SUCCESS(RC)) break;
-            rLba = UDFFixFPAddress(Vcb, rLba);
+            uint32 FragLength = RelocExtent->extLength;
+            uint32 FragBCount = FragLength >> Vcb->SectorShift;
 
-            RC = UDFPhReadSynchronous(IrpContext, Vcb->TargetDeviceObject, Buffer, RelocExtent->extLength,
-                       ((uint64)rLba) << Vcb->SectorShift, &_ReadBytes, Flags);
-            Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
+            if (!IsWrite) {
 
-            if (!NT_SUCCESS(RC) &&
-                NT_SUCCESS(RC = UDFRecoverFromError(Vcb, FALSE, RC, rLba, BCount, &retry)) ) {
-                if (RC != STATUS_BUFFER_ALL_ZEROS) {
-                    goto retry_2;
+                if (rLba >= (Vcb->CDR_Mode ? Vcb->NWA : Vcb->SessionEndLba + 1)) {
+                    RtlZeroMemory(Buffer, FragLength);
+                    *((uint32*)&Buffer) += FragLength;
+                    continue;
                 }
-                RtlZeroMemory(Buffer, RelocExtent->extLength);
-                _ReadBytes = RelocExtent->extLength;
-                RC = STATUS_SUCCESS;
+
+                RC = UDFPrepareForReadOperation(IrpContext, Vcb, rLba, FragBCount);
+                if (!NT_SUCCESS(RC)) break;
+
+                rLba = UDFFixFPAddress(Vcb, rLba);
+
+                RC = UDFSendSectorIo(IrpContext,
+                         Vcb->TargetDeviceObject, Buffer, FragLength,
+                         ((uint64)rLba) << Vcb->SectorShift, FALSE);
+
+                Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
+
+            } else {
+
+                RC = UDFPrepareForWriteOperation(Vcb, rLba, FragBCount);
+                if (!NT_SUCCESS(RC)) break;
+
+                RC = UDFSendSectorIo(IrpContext,
+                         Vcb->TargetDeviceObject, Buffer, FragLength,
+                         ((uint64)rLba) << Vcb->SectorShift, TRUE);
             }
-TR_continue:
-            (*ReadBytes) += _ReadBytes;
+
             if (!NT_SUCCESS(RC)) break;
-            *((uint32*)&Buffer) += RelocExtent->extLength;
+            *((uint32*)&Buffer) += FragLength;
         }
+
 try_exit: NOTHING;
     } _SEH2_FINALLY {
-        if (res_acq) {
-            UDFReleaseResource(&(Vcb->IoResource));
-        }
         if (RelocExtent_saved) {
             MyFreePool__(RelocExtent_saved);
         }
     } _SEH2_END;
 
-    return RC;
-} // end UDFTRead()
-
-#ifdef UDF_ASYNC_IO
-/*
-    This routine performs asynchronous low-level read
-    Is not used now.
- */
-NTSTATUS
-UDFTReadAsync(
-    IN void* _Vcb,
-    IN void* _WContext,
-    IN void* Buffer,     // Target buffer
-    IN SIZE_T Length,
-    IN uint32 LBA,
-    OUT PSIZE_T ReadBytes
-    )
-{
-    PEXTENT_MAP RelocExtent;
-    PEXTENT_MAP RelocExtent_saved;
-    NTSTATUS RC = STATUS_SUCCESS;
-//    LARGE_INTEGER delay;
-    uint32 retry = UDF_READ_MAX_RETRY;
-    PVCB Vcb = (PVCB)_Vcb;
-    Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
-    uint32 rLba;
-    uint32 BCount;
-
-    ASSERT(Buffer);
-
-    (*ReadBytes) = 0;
-
-    RelocExtent = UDFRelocateSectors(Vcb, LBA, BCount = Length >> Vcb->BlockSizeBits);
-    if (!RelocExtent) return STATUS_INSUFFICIENT_RESOURCES;
-    if (RelocExtent == UDF_NO_EXTENT_MAP) {
-        rLba = LBA;
-        if (rLba >= (Vcb->CDR_Mode ? Vcb->NWA : Vcb->LastLBA + 1)) {
-            RtlZeroMemory(Buffer, Length);
-            return STATUS_SUCCESS;
-        }
-retry_1:
-        RC = UDFPrepareForReadOperation(Vcb, rLba, BCount);
-        if (!NT_SUCCESS(RC)) return RC;
-        rLba = UDFFixFPAddress(Vcb, rLba);
-        RC = UDFPhReadSynchronous(Vcb->TargetDeviceObject, Buffer, Length,
-                   ((uint64)rLba) << Vcb->BlockSizeBits, ReadBytes, 0);
-        Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
-        Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
-        if (!NT_SUCCESS(RC) &&
-            NT_SUCCESS(RC = UDFRecoverFromError(Vcb, FALSE, RC, rLba, BCount, &retry)) )
-            goto retry_1;
-        return RC;
+    if (!NT_SUCCESS(RC) && !ReturnError) {
+        ExRaiseStatus(RC);
     }
-    // read according to relocation table
-    RelocExtent_saved = RelocExtent;
-    for(uint32 i=0; RelocExtent->extLength; i++, RelocExtent++) {
-        SIZE_T _ReadBytes;
-        rLba = RelocExtent->extLocation;
-        if (rLba >= (Vcb->CDR_Mode ? Vcb->NWA : Vcb->LastLBA + 1)) {
-            RtlZeroMemory(Buffer, _ReadBytes = RelocExtent->extLength);
-            RC = STATUS_SUCCESS;
-            goto TR_continue;
-        }
-        BCount = RelocExtent->extLength>>Vcb->BlockSizeBits;
-retry_2:
-        RC = UDFPrepareForReadOperation(Vcb, rLba, RelocExtent->extLength >> Vcb->BlockSizeBits);
-        if (!NT_SUCCESS(RC)) break;
-        rLba = UDFFixFPAddress(Vcb, rLba);
-        RC = UDFPhReadSynchronous(Vcb->TargetDeviceObject, Buffer, RelocExtent->extLength,
-                   ((uint64)rLba) << Vcb->BlockSizeBits, &_ReadBytes, 0);
-        Vcb->VcbState &= ~UDF_VCB_LAST_WRITE;
-        Vcb->VcbState |= UDF_VCB_SKIP_EJECT_CHECK;
-        if (!NT_SUCCESS(RC) &&
-            NT_SUCCESS(RC = UDFRecoverFromError(Vcb, FALSE, RC, rLba, BCount, &retry)) )
-            goto retry_2;
-TR_continue:
-        (*ReadBytes) += _ReadBytes;
-        if (!NT_SUCCESS(RC)) break;
-        *((uint32*)&Buffer) += RelocExtent->extLength;
-    }
-    MyFreePool__(RelocExtent_saved);
-    return RC;
-} // end UDFTReadAsync()
 
-#endif //UDF_ASYNC_IO
+    return RC;
+} // end UDFReadWriteSectors()
 
 /*
     This routine performs media-type dependent preparations
@@ -453,25 +352,6 @@ UDFPrepareForWriteOperation(
 } // end UDFPrepareForWriteOperation()
 
 /*
-    This routine tries to recover from hardware error
-    Return: STATUS_SUCCESS - retry requst
-            STATUS_XXX - unrecoverable error
- */
-NTSTATUS
-UDFRecoverFromError(
-    IN PVCB Vcb,
-    IN BOOLEAN WriteOp,
-    IN NTSTATUS status,
-    IN uint32 Lba,
-    IN uint32 BCount,
- IN OUT uint32* retry
-    )
-{
-    return status;
-
-} // end UDFRecoverFromError()
-
-/*
     use standard way to determine disk layout (ReadTOC cmd)
  */
 NTSTATUS
@@ -491,7 +371,6 @@ UDFDetermineVolumeLayout(
     void* TempBuffer = NULL;
     ULONG OldTrkNum;
     ULONG TrkNum;
-    ULONG ReadBytes;
     SIZE_T i, len;
 
     *SessionStartLba = 0;
@@ -559,18 +438,16 @@ UDFDetermineVolumeLayout(
 
             Vcb->LastSession=1;
             Vcb->FirstTrackNum=1;
-//            Vcb->FirstLBA=0;
             Vcb->LastTrackNum=1;
-            Vcb->TrackMap[1].FirstLba = Vcb->FirstLBA;
-            Vcb->TrackMap[1].LastLba = Vcb->LastLBA;
+            Vcb->TrackMap[1].FirstLba = Vcb->SessionStartLba;
+            Vcb->TrackMap[1].LastLba = Vcb->SessionEndLba;
             Vcb->TrackMap[1].PacketSize = PACKETSIZE_UDF;
 
+            if (DeviceObject->DeviceType == FILE_DEVICE_DISK) {
 
-            if (UDFGetDevType(DeviceObject) == FILE_DEVICE_DISK) {
                 try_return(Status = STATUS_SUCCESS);
             }
 
-            Vcb->LastPossibleLBA = max(Vcb->LastLBA, DEFAULT_LAST_LBA_FP_CD);
             Vcb->TrackMap[1].DataParam = TrkInfo_Dat_XA | TrkInfo_FP | TrkInfo_Packet;
             Vcb->TrackMap[1].TrackParam = TrkInfo_Trk_XA;
             Vcb->TrackMap[1].NWA = 0xffffffff;
@@ -622,8 +499,8 @@ UDFDetermineVolumeLayout(
 
             TrkNum = LastSes->TrackData[0].TrackNumber;
 
-            Vcb->FirstLBA = 0;
-            SwapCopyUchar4(&Vcb->FirstLBA, &LastSes->TrackData[0].Address);
+            *SessionStartLba = 0;
+            SwapCopyUchar4(SessionStartLba, &LastSes->TrackData[0].Address);
 
             Vcb->LastSession = LastSes->FirstCompleteSession;
             for(TocEntry=0;TocEntry<LocalTrackCount + 1;TocEntry++) {
@@ -652,18 +529,18 @@ UDFDetermineVolumeLayout(
             if (TOC_LastTrack_ID == TrkNum) {
 
                 if (Command.Msf) {
-                    Vcb->LastLBA = MSF_TO_LBA(TempMSF[1],TempMSF[2],TempMSF[3]) - 1;
+                    *SessionEndLba = MSF_TO_LBA(TempMSF[1],TempMSF[2],TempMSF[3]) - 1;
                 }
                 else {
                     // The non-MSF (LBA) mode
-                    Vcb->LastLBA = 0;
-                    SwapCopyUchar4(&Vcb->LastLBA, &toc->TrackData[TocEntry].Address);
-                    if (Vcb->LastLBA) {
-                        Vcb->LastLBA -= 1;
+                    *SessionEndLba = 0;
+                    SwapCopyUchar4(SessionEndLba, &toc->TrackData[TocEntry].Address);
+                    if (*SessionEndLba) {
+                        *SessionEndLba -= 1;
                     }
                 }
 
-                Vcb->TrackMap[OldTrkNum].LastLba = Vcb->LastLBA;
+                Vcb->TrackMap[OldTrkNum].LastLba = *SessionEndLba;
                 UDFPrint(("UDFUseStandard: Last track entry, break TOC scan\n"));
                 break;
             } else {
@@ -723,12 +600,13 @@ UDFDetermineVolumeLayout(
         }
 
         while(!NT_SUCCESS(Status) && (i<8)) {
-            Status = UDFPhReadSynchronous(IrpContext, Vcb->TargetDeviceObject, TempBuffer, Vcb->SectorSize,
-                       ((uint64)(Vcb->TrackMap[TrkNum].LastLba-i)) << Vcb->SectorShift, &ReadBytes, PH_TMP_BUFFER);
+            Status = UDFReadWriteSectors(IrpContext, Vcb,
+                       ((LONGLONG)(Vcb->TrackMap[TrkNum].LastLba-i)) << Vcb->SectorShift,
+                       Vcb->SectorSize, TRUE, TempBuffer, FALSE);
             i++;
         }
         if (NT_SUCCESS(Status)) {
-            Vcb->LastLBA = Vcb->TrackMap[TrkNum].LastLba-i+1;
+            *SessionEndLba = Vcb->TrackMap[TrkNum].LastLba-i+1;
 /*            if (i) {
                 Vcb->TrackMap[TrkNum].PacketSize = PACKETSIZE_UDF;
                 Vcb->TrackMap[TrkNum].;
@@ -744,12 +622,13 @@ UDFDetermineVolumeLayout(
             len = (uint32)(((int64)len*PACKETSIZE_UDF) / (PACKETSIZE_UDF+7));
 
             while(!NT_SUCCESS(Status) && (i<9)) {
-                Status = UDFPhReadSynchronous(IrpContext, Vcb->TargetDeviceObject, TempBuffer, Vcb->SectorSize,
-                           ((uint64)(Vcb->TrackMap[TrkNum].FirstLba-i+len)) << Vcb->SectorShift, &ReadBytes, PH_TMP_BUFFER);
+                Status = UDFReadWriteSectors(IrpContext, Vcb,
+                           ((LONGLONG)(Vcb->TrackMap[TrkNum].FirstLba-i+len)) << Vcb->SectorShift,
+                           Vcb->SectorSize, TRUE, TempBuffer, FALSE);
                 i++;
             }
             if (NT_SUCCESS(Status)) {
-                Vcb->LastLBA =
+                *SessionEndLba =
                 Vcb->TrackMap[TrkNum].LastLba = Vcb->TrackMap[TrkNum].FirstLba-i+len+1;
                 Vcb->TrackMap[TrkNum].PacketSize = PACKETSIZE_UDF;
 //                Vcb->TrackMap[TrkNum].;
@@ -761,11 +640,9 @@ UDFDetermineVolumeLayout(
         }
 
 #ifdef UDF_CDRW_EMULATION_ON_ROM
-        Vcb->LastPossibleLBA = Vcb->LastLBA+7+1+1024;
-        Vcb->NWA = Vcb->LastLBA+7+1;
+        Vcb->NWA = *SessionEndLba+7+1;
 #else
-        Vcb->LastPossibleLBA =
-        Vcb->NWA = Vcb->LastLBA+7+1;
+        Vcb->NWA = *SessionEndLba+7+1;
 #endif //UDF_CDRW_EMULATION_ON_ROM
 
 try_exit: NOTHING;
@@ -781,6 +658,7 @@ try_exit: NOTHING;
 /*
     Get block size (for read operation)
  */
+static
 NTSTATUS
 UDFGetBlockSize(
     IN PDEVICE_OBJECT DeviceObject,      // the target device object
@@ -790,7 +668,8 @@ UDFGetBlockSize(
     NTSTATUS        RC = STATUS_SUCCESS;
     DISK_GEOMETRY_EX DiskGeometryEx;
 
-    if (UDFGetDevType(DeviceObject) == FILE_DEVICE_DISK) {
+    if (DeviceObject->DeviceType == FILE_DEVICE_DISK) {
+
         UDFPrint(("UDFGetBlockSize: HDD\n"));
         RC = UDFPerformDevIoCtrl(IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,DeviceObject,
             0,NULL,
@@ -812,40 +691,29 @@ UDFGetBlockSize(
         }
     }
 
-    if (
-        UDFGetDevType(DeviceObject) == FILE_DEVICE_DISK ||
+    if (DeviceObject->DeviceType == FILE_DEVICE_DISK ||
         FALSE) {
-        Vcb->FirstLBA=0;//(ULONG)(PartitionInfo->StartingOffset.QuadPart >> Vcb->BlockSizeBits);
-        Vcb->LastPossibleLBA =
-        Vcb->LastLBA = (uint32)(DiskGeometryEx.DiskSize.QuadPart >> Vcb->SectorShift)/* + Vcb->FirstLBA*/ - 1;
+        Vcb->SessionEndLba = (uint32)(DiskGeometryEx.DiskSize.QuadPart >> Vcb->SectorShift) - 1;
     } else {
-        Vcb->FirstLBA=0;
         if (NT_SUCCESS(RC)) {
-            Vcb->LastLBA = (uint32)(DiskGeometryEx.Geometry.Cylinders.QuadPart *
+            Vcb->SessionEndLba = (uint32)(DiskGeometryEx.Geometry.Cylinders.QuadPart *
                                     DiskGeometryEx.Geometry.TracksPerCylinder *
                                     DiskGeometryEx.Geometry.SectorsPerTrack - 1);
-            if (Vcb->LastLBA == 0x7fffffff) {
+            if (Vcb->SessionEndLba == 0x7fffffff) {
                 ASSERT(FALSE);
             }
         } else {
 
             try_return(RC = STATUS_UNRECOGNIZED_VOLUME);
         }
-        Vcb->LastPossibleLBA = Vcb->LastLBA;
     }
-
-//    if (UDFGetDevType(DeviceObject) == FILE_DEVICE_DISK) {
-        Vcb->WriteBlockSize = PACKETSIZE_UDF*Vcb->SectorSize;
-//    } else {
-//        Vcb->WriteBlockSize = PACKETSIZE_UDF*Vcb->BlockSize;
-//    }
 
     RC = STATUS_SUCCESS;
 
 try_exit:   NOTHING;
 
-    UDFPrint(("UDFGetBlockSize:\nBlock size is %x, Block size bits %x, Last LBA is %x\n",
-              Vcb->SectorSize, Vcb->SectorShift, Vcb->LastLBA));
+    UDFPrint(("UDFGetBlockSize:\nBlock size is %x, Block size bits %x, SessionEndLba is %x\n",
+              Vcb->SectorSize, Vcb->SectorShift, Vcb->SessionEndLba));
 
     return RC;
 
@@ -883,7 +751,6 @@ UDFGetDiskInfo(
     )
 {
     NTSTATUS        RC = STATUS_UNRECOGNIZED_VOLUME;
-    uint32 i;
 
     UDFPrint(("UDFGetDiskInfo\n"));
 
@@ -904,39 +771,29 @@ UDFGetDiskInfo(
         }
 
         Vcb->SessionStartLba = SessionStart;
-        Vcb->SessionEndLba = SessionEnd;
+        if (SessionEnd) {
+            Vcb->SessionEndLba = SessionEnd;
+        }
 
 try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
-        if ((Vcb->LastPossibleLBA & 0x80000000) || (Vcb->LastPossibleLBA < Vcb->LastLBA)) {
-            UDFPrint(("UDF: bad LastPossibleLBA %x -> %x\n", Vcb->LastPossibleLBA, Vcb->LastLBA));
-            Vcb->LastPossibleLBA = Vcb->LastLBA;
-        }
-        if (!Vcb->WriteBlockSize)
-            Vcb->WriteBlockSize = PACKETSIZE_UDF*Vcb->SectorSize;
-
         if (Vcb->TrackMap) {
             if (Vcb->TrackMap[Vcb->LastTrackNum].LastLba > Vcb->NWA) {
                 if (Vcb->NWA) {
                     if (Vcb->TrackMap[Vcb->LastTrackNum].DataParam & TrkInfo_FP) {
-                        Vcb->LastLBA = Vcb->NWA-1;
+                        Vcb->SessionEndLba = Vcb->NWA-1;
                     } else {
-                        Vcb->LastLBA = Vcb->NWA-7-1;
+                        Vcb->SessionEndLba = Vcb->NWA-7-1;
                     }
                 }
             } else {
                 if ((Vcb->LastTrackNum > 1) &&
                    (Vcb->TrackMap[Vcb->LastTrackNum-1].FirstLba >= Vcb->TrackMap[Vcb->LastTrackNum-1].LastLba)) {
-                    Vcb->LastLBA = Vcb->TrackMap[Vcb->LastTrackNum-1].LastLba;
+                    Vcb->SessionEndLba = Vcb->TrackMap[Vcb->LastTrackNum-1].LastLba;
                 }
             }
-        }
-
-        for(i=0; i<32; i++) {
-            if (!(Vcb->LastPossibleLBA >> i))
-                break;
         }
 
         if (Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY) {
@@ -951,14 +808,10 @@ try_exit:   NOTHING;
         UDFPrint(("UDF: ------------------------------------------\n"));
         UDFPrint(("UDF: Media characteristics\n"));
         UDFPrint(("UDF: Last session: %d\n",Vcb->LastSession));
-        UDFPrint(("UDF: First track in first session: %d\n",Vcb->FirstTrackNum));
-        UDFPrint(("UDF: First track in last session: %d\n",Vcb->FirstTrackNumLastSes));
-        UDFPrint(("UDF: Last track in last session: %d\n",Vcb->LastTrackNum));
-        UDFPrint(("UDF: First LBA in first session: %x\n",Vcb->FirstLBA));
-        UDFPrint(("UDF: First LBA in last session: %x\n",Vcb->FirstLBALastSes));
-        UDFPrint(("UDF: Last LBA in last session: %x\n",Vcb->LastLBA));
-        UDFPrint(("UDF: First writable LBA (NWA) in last session: %x\n",Vcb->NWA));
-        UDFPrint(("UDF: Last available LBA beyond end of last session: %x\n",Vcb->LastPossibleLBA));
+        UDFPrint(("UDF: First track: %d, Last track: %d\n",Vcb->FirstTrackNum, Vcb->LastTrackNum));
+        UDFPrint(("UDF: Session start LBA: %x\n",Vcb->SessionStartLba));
+        UDFPrint(("UDF: Session end LBA: %x\n",Vcb->SessionEndLba));
+        UDFPrint(("UDF: NWA: %x\n",Vcb->NWA));
         UDFPrint(("UDF: Flags: %s%s\n",
                  Vcb->VcbState & UDF_VCB_FLAGS_RAW_DISK ? "RAW " : "",
                  Vcb->VcbState & VCB_STATE_VOLUME_READ_ONLY ? "R/O " : "WR "
@@ -1002,133 +855,121 @@ UDFPrepareForReadOperation(
 } // end UDFPrepareForReadOperation()
 
 /*
-    This routine reads physical sectors
+    This routine reads physical sectors.
  */
 NTSTATUS
 UDFReadSectors(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN BOOLEAN Translate,       // Translate Logical to Physical
+    IN BOOLEAN Translate,
     IN uint32 Lba,
     IN uint32 BCount,
     IN BOOLEAN Direct,
-    OUT int8* Buffer,
-    OUT PULONG ReadBytes
+    OUT int8* Buffer
     )
 {
-    return UDFTRead(IrpContext, Vcb, Buffer, BCount*Vcb->SectorSize, Lba, ReadBytes);
+    return UDFReadWriteSectors(IrpContext, Vcb,
+               ((LONGLONG)Lba) << Vcb->SectorShift,
+               BCount * Vcb->SectorSize,
+               TRUE, Buffer, FALSE);
 } // end UDFReadSectors()
 
 /*
-    This routine reads physical sectors
+    This routine reads data inside a single physical sector (sub-sector read).
  */
+static
 NTSTATUS
 UDFReadInSector(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN BOOLEAN Translate,       // Translate Logical to Physical
     IN uint32 Lba,
-    IN uint32 i,                 // offset in sector
-    IN uint32 l,                 // transfer length
-    IN BOOLEAN Direct,          // Disable access to non-cached data
-    OUT int8* Buffer,
-    OUT PULONG ReadBytes
+    IN uint32 Offset,
+    IN uint32 Length,
+    OUT int8* Buffer
     )
 {
     int8* tmp_buff;
     NTSTATUS status;
-    ULONG _ReadBytes;
-
-    (*ReadBytes) = 0;
-
-    if (Direct) {
-
-        return STATUS_INVALID_PARAMETER;
-    }
 
     tmp_buff = (int8*)MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
     if (!tmp_buff) return STATUS_INSUFFICIENT_RESOURCES;
-    status = UDFReadSectors(IrpContext, Vcb, Translate, Lba, 1, FALSE, tmp_buff, &_ReadBytes);
-    if (NT_SUCCESS(status)) {
-        (*ReadBytes) += l;
-        RtlCopyMemory(Buffer, tmp_buff+i, l);
-    }
-    MyFreePool__(tmp_buff);
 
+    status = UDFReadWriteSectors(IrpContext, Vcb,
+                 ((LONGLONG)Lba) << Vcb->SectorShift,
+                 Vcb->SectorSize,
+                 TRUE, tmp_buff, FALSE);
+    if (NT_SUCCESS(status)) {
+        RtlCopyMemory(Buffer, tmp_buff + Offset, Length);
+    }
+
+    MyFreePool__(tmp_buff);
     return status;
 } // end UDFReadInSector()
 
 /*
-    This routine reads data of unaligned offset & length
+    This routine reads data at unaligned offset & length.
  */
 NTSTATUS
 UDFReadData(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN BOOLEAN Translate,       // Translate Logical to Physical
+    IN BOOLEAN Translate,
     IN int64 Offset,
     IN uint32 Length,
-    IN BOOLEAN Direct,          // Disable access to non-cached data
-    OUT int8* Buffer,
-    OUT PULONG ReadBytes
+    IN BOOLEAN Direct,
+    OUT int8* Buffer
     )
 {
-    uint32 i, l, Lba, BS=Vcb->SectorSize;
-    uint32 BSh=Vcb->SectorShift;
+    uint32 i, l, Lba, BS = Vcb->SectorSize;
+    uint32 BSh = Vcb->SectorShift;
     NTSTATUS status;
-    ULONG _ReadBytes = 0;
-    uint32 to_read;
 
-    (*ReadBytes) = 0;
     if (!Length) return STATUS_SUCCESS;
     if (Vcb->VcbState & UDF_VCB_FLAGS_DEAD)
         return STATUS_NO_SUCH_DEVICE;
-    // read tail of the 1st sector if Offset is not sector_size-aligned
+
+    // Read tail of the 1st sector if Offset is not sector-aligned.
     Lba = (uint32)(Offset >> BSh);
-    if ((i = (uint32)(Offset & (BS-1)))) {
-        l = (BS - i) < Length ?
-            (BS - i) : Length;
-        // here we use 'ReadBytes' 'cause now it's set to zero
-        status = UDFReadInSector(IrpContext, Vcb, Translate, Lba, i, l, Direct, Buffer, ReadBytes);
+    if ((i = (uint32)(Offset & (BS - 1)))) {
+        l = min(BS - i, Length);
+        status = UDFReadInSector(IrpContext, Vcb, Lba, i, l, Buffer);
         if (!NT_SUCCESS(status)) return status;
-        if (!(Length = Length - l)) return STATUS_SUCCESS;
-        Lba ++;
+        Length -= l;
+        if (!Length) return STATUS_SUCCESS;
+        Lba++;
         Buffer += l;
     }
-    // read sector_size-aligned part
-    i = Length >> BSh;
-    while(i) {
-        to_read = min(i, 64);
-        status = UDFReadSectors(IrpContext, Vcb, Translate, Lba, to_read, Direct, Buffer, &_ReadBytes);
-        (*ReadBytes) += _ReadBytes;
-        if (!NT_SUCCESS(status)) {
-            return status;
-        }
-        Buffer += to_read<<BSh;
-        Length -= to_read<<BSh;
-        Lba += to_read;
-        i -= to_read;
-    }
-    // read head of the last sector
-    if (!Length) return STATUS_SUCCESS;
-    status = UDFReadInSector(IrpContext, Vcb, Translate, Lba, 0, Length, Direct, Buffer, &_ReadBytes);
-    (*ReadBytes) += _ReadBytes;
 
-    return status;
+    // Read sector-aligned middle part.
+    if (Length >= BS) {
+        uint32 AlignedBytes = (Length >> BSh) << BSh;
+        status = UDFReadWriteSectors(IrpContext, Vcb,
+                     ((LONGLONG)Lba) << BSh,
+                     AlignedBytes,
+                     TRUE, Buffer, FALSE);
+        if (!NT_SUCCESS(status)) return status;
+        Buffer += AlignedBytes;
+        Lba += AlignedBytes >> BSh;
+        Length -= AlignedBytes;
+    }
+
+    // Read head of the last sector.
+    if (!Length) return STATUS_SUCCESS;
+    return UDFReadInSector(IrpContext, Vcb, Lba, 0, Length, Buffer);
 } // end UDFReadData()
 
 /*
-    This routine writes physical sectors. This routine supposes Lba & Length
-    alignment on WriteBlock (packet) size.
+    This routine writes physical sectors.
+    Marks volume as modified and updates LVID if needed.
  */
 NTSTATUS
 UDFWriteSectors(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN BOOLEAN Translate,       // Translate Logical to Physical
+    IN BOOLEAN Translate,
     IN uint32 Lba,
     IN uint32 BCount,
-    IN BOOLEAN Direct,          // Disable access to non-cached data
+    IN BOOLEAN Direct,
     IN int8* Buffer,
     OUT PSIZE_T WrittenBytes
     )
@@ -1138,38 +979,44 @@ UDFWriteSectors(
     if (!Vcb->Modified || (Vcb->IntegrityType == INTEGRITY_TYPE_CLOSE)) {
         UDFSetModified(Vcb);
         if (Vcb->LVid && !Direct) {
-            status = UDFUpdateLogicalVolInt(IrpContext, Vcb,FALSE);
+            status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
         }
     }
 
     if (Vcb->CDR_Mode) {
-        if (Vcb->LastLBA < Lba+BCount-1)
-            Vcb->LastLBA = Lba+BCount-1;
+        if (Vcb->SessionEndLba < Lba + BCount - 1)
+            Vcb->SessionEndLba = Lba + BCount - 1;
     }
 
-    status = UDFTWrite(IrpContext, Vcb, Buffer, BCount<<Vcb->SectorShift, Lba, WrittenBytes);
-    ASSERT(NT_SUCCESS(status));
+    ULONG ByteCount = BCount << Vcb->SectorShift;
+    status = UDFReadWriteSectors(IrpContext, Vcb,
+                 ((LONGLONG)Lba) << Vcb->SectorShift,
+                 ByteCount,
+                 TRUE, Buffer, TRUE);
 
+    *WrittenBytes = NT_SUCCESS(status) ? ByteCount : 0;
+
+    ASSERT(NT_SUCCESS(status));
     return status;
 } // end UDFWriteSectors()
 
+/*
+    This routine writes data inside a single physical sector (read-modify-write).
+ */
+static
 NTSTATUS
 UDFWriteInSector(
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN BOOLEAN Translate,       // Translate Logical to Physical
     IN uint32 Lba,
-    IN uint32 i,                 // offset in sector
-    IN uint32 l,                 // transfer length
-    IN BOOLEAN Direct,          // Disable access to non-cached data
-    OUT int8* Buffer,
+    IN uint32 Offset,
+    IN uint32 Length,
+    IN int8* Buffer,
     OUT PSIZE_T WrittenBytes
     )
 {
     int8* tmp_buff;
     NTSTATUS status;
-    SIZE_T _WrittenBytes;
-    ULONG ReadBytes;
 
     if (!Vcb->Modified) {
         UDFSetModified(Vcb);
@@ -1178,32 +1025,35 @@ UDFWriteInSector(
     }
 
     if (Vcb->CDR_Mode) {
-        if (Vcb->LastLBA < Lba)
-            Vcb->LastLBA = Lba;
+        if (Vcb->SessionEndLba < Lba)
+            Vcb->SessionEndLba = Lba;
     }
 
-    (*WrittenBytes) = 0;
+    *WrittenBytes = 0;
 
-    // If Direct = TRUE we should never get here, but...
-    if (Direct) {
-        BrutePoint();
-        return STATUS_INVALID_PARAMETER;
-    }
     tmp_buff = (int8*)MyAllocatePool__(NonPagedPool, Vcb->SectorSize);
     if (!tmp_buff) {
         BrutePoint();
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    // read packet
-    status = UDFReadSectors(IrpContext, Vcb, Translate, Lba, 1, FALSE, tmp_buff, &ReadBytes);
-    if (!NT_SUCCESS(status)) goto EO_WrSctD;
-    // modify packet
-    RtlCopyMemory(tmp_buff+i, Buffer, l);
-    // write modified packet
-    status = UDFWriteSectors(IrpContext, Vcb, Translate, Lba, 1, FALSE, tmp_buff, &_WrittenBytes);
+
+    // Read-modify-write cycle.
+    status = UDFReadWriteSectors(IrpContext, Vcb,
+                 ((LONGLONG)Lba) << Vcb->SectorShift,
+                 Vcb->SectorSize,
+                 TRUE, tmp_buff, FALSE);
+    if (!NT_SUCCESS(status)) goto done;
+
+    RtlCopyMemory(tmp_buff + Offset, Buffer, Length);
+
+    status = UDFReadWriteSectors(IrpContext, Vcb,
+                 ((LONGLONG)Lba) << Vcb->SectorShift,
+                 Vcb->SectorSize,
+                 TRUE, tmp_buff, TRUE);
     if (NT_SUCCESS(status))
-        (*WrittenBytes) += l;
-EO_WrSctD:
+        *WrittenBytes = Length;
+
+done:
     MyFreePool__(tmp_buff);
 
     ASSERT(NT_SUCCESS(status));
@@ -1215,55 +1065,77 @@ EO_WrSctD:
 } // end UDFWriteInSector()
 
 /*
-    This routine writes data at unaligned offset & length
+    This routine writes data at unaligned offset & length.
  */
 NTSTATUS
 UDFWriteData(
     PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN BOOLEAN Translate,      // Translate Logical to Physical
+    IN BOOLEAN Translate,
     IN int64 Offset,
     IN SIZE_T Length,
-    IN BOOLEAN Direct,         // setting this flag delays flushing of given
-                               // data to indefinite term
+    IN BOOLEAN Direct,
     IN int8* Buffer,
     OUT PSIZE_T WrittenBytes
     )
 {
-    uint32 i, l, Lba, BS=Vcb->SectorSize;
-    uint32 BSh=Vcb->SectorShift;
+    uint32 i, l, Lba, BS = Vcb->SectorSize;
+    uint32 BSh = Vcb->SectorShift;
     NTSTATUS status;
     SIZE_T _WrittenBytes;
 
-    (*WrittenBytes) = 0;
+    *WrittenBytes = 0;
     if (!Length) return STATUS_SUCCESS;
     if (Vcb->VcbState & UDF_VCB_FLAGS_DEAD)
         return STATUS_NO_SUCH_DEVICE;
-    // write tail of the 1st sector if Offset is not sector_size-aligned
-    Lba = (uint32)(Offset >> BSh);
-    if ((i = ((uint32)Offset & (BS-1)))) {
-        l = (BS - i) < Length ?
-            (BS - i) : Length;
-        status = UDFWriteInSector(IrpContext, Vcb, Translate, Lba, i, l, Direct, Buffer, WrittenBytes);
-        if (!NT_SUCCESS(status)) return status;
-        if (!(Length = Length - l)) return STATUS_SUCCESS;
-        Lba ++;
-        Buffer += l;
-    }
-    // write sector_size-aligned part
-    i = Length >> BSh;
-    if (i) {
-        status = UDFWriteSectors(IrpContext, Vcb, Translate, Lba, i, Direct, Buffer, &_WrittenBytes);
-        (*WrittenBytes) += _WrittenBytes;
-        if (!NT_SUCCESS(status)) return status;
-        l = i<<BSh;
 
-        if (!(Length = Length - l)) return STATUS_SUCCESS;
-        Lba += i;
+    if (!Vcb->Modified || (Vcb->IntegrityType == INTEGRITY_TYPE_CLOSE)) {
+        UDFSetModified(Vcb);
+        if (Vcb->LVid && !Direct) {
+            status = UDFUpdateLogicalVolInt(IrpContext, Vcb, FALSE);
+        }
+    }
+
+    if (Vcb->CDR_Mode) {
+        Lba = (uint32)(Offset >> BSh);
+        uint32 EndLba = (uint32)((Offset + Length - 1) >> BSh);
+        if (Vcb->SessionEndLba < EndLba)
+            Vcb->SessionEndLba = EndLba;
+    }
+
+    // Write tail of the 1st sector if Offset is not sector-aligned.
+    Lba = (uint32)(Offset >> BSh);
+    if ((i = ((uint32)Offset & (BS - 1)))) {
+        l = min(BS - i, (uint32)Length);
+        status = UDFWriteInSector(IrpContext, Vcb, Lba, i, l, Buffer, WrittenBytes);
+        if (!NT_SUCCESS(status)) return status;
+        Length -= l;
+        if (!Length) return STATUS_SUCCESS;
+        Lba++;
         Buffer += l;
     }
-    status = UDFWriteInSector(IrpContext, Vcb, Translate, Lba, 0, Length, Direct, Buffer, &_WrittenBytes);
-    (*WrittenBytes) += _WrittenBytes;
+
+    // Write sector-aligned middle part.
+    if (Length >= BS) {
+        uint32 AlignedBytes = ((uint32)(Length >> BSh)) << BSh;
+        status = UDFReadWriteSectors(IrpContext, Vcb,
+                     ((LONGLONG)Lba) << BSh,
+                     AlignedBytes,
+                     TRUE, Buffer, TRUE);
+
+        _WrittenBytes = NT_SUCCESS(status) ? AlignedBytes : 0;
+        *WrittenBytes += _WrittenBytes;
+        if (!NT_SUCCESS(status)) return status;
+
+        Lba += AlignedBytes >> BSh;
+        Buffer += AlignedBytes;
+        Length -= AlignedBytes;
+    }
+
+    if (!Length) return STATUS_SUCCESS;
+
+    status = UDFWriteInSector(IrpContext, Vcb, Lba, 0, (uint32)Length, Buffer, &_WrittenBytes);
+    *WrittenBytes += _WrittenBytes;
 
     return status;
 } // end UDFWriteData()
