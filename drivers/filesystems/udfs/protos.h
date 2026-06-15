@@ -731,6 +731,50 @@ UDFDeleteCcb(
     PCCB Ccb
     );
 
+// Bitmap cache stream
+NTSTATUS
+UDFCreateBitmapStream(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN ULONG BitmapPsn,
+    IN ULONG BitmapLength
+    );
+
+VOID
+UDFDeleteBitmapStream(
+    IN PVCB Vcb
+    );
+
+// Per-page bitmap cache access (alloc.cpp)
+VOID
+UDFPinBitmapPage(
+    IN PVCB Vcb,
+    IN ULONG Lbn
+    );
+
+VOID
+UDFUnpinBitmapPage(
+    IN PVCB Vcb
+    );
+
+VOID
+UDFDirtyBitmapPage(
+    IN PVCB Vcb
+    );
+
+BOOLEAN
+UDFIsBitmapBitFree(
+    IN PVCB Vcb,
+    IN ULONG Lbn
+    );
+
+SIZE_T
+UDFGetCachedBitmapLen(
+    IN PVCB Vcb,
+    IN ULONG Start,
+    IN ULONG Limit
+    );
+
 // prefxsup.cpp - LCB functions
 PLCB
 UDFInsertPrefix(

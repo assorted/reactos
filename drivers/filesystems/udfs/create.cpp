@@ -2037,7 +2037,8 @@ UDFCommonCreate(
                                              UdfIsExtendedFESupported(Vcb),
                                              (CreateDisposition == FILE_CREATE), OldRelatedFileInfo, &NewFileInfo);
                         if (!NT_SUCCESS(Status)) {
-                            AdPrint(("    Creation error\n"));
+                            UDFPrint(("UDF BM: UDFCreateFile__ FAILED Status=%x Dir=%d Name=%wZ\n",
+                                Status, DirectoryFile, &FinalName));
                             try_return(Status);
                         }
                         // Update parent object

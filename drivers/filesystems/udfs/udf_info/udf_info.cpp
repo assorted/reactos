@@ -3100,7 +3100,7 @@ CrF__2:
 
 #ifdef UDF_CHECK_DISK_ALLOCATION
         if (  /*FileInfo->Fcb &&*/
-             UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+             (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot))) {
 
             if (!FileInfo->FileIdent ||
                !(FileInfo->FileIdent->fileCharacteristics & FILE_DELETED)) {
@@ -3313,7 +3313,7 @@ UDFCloseFile__(
     }
 #ifdef UDF_CHECK_DISK_ALLOCATION
     if (  FileInfo->Fcb &&
-         UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+         (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot))) {
 
         //ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
         if (UDFIsAStreamDir(FileInfo)) {
@@ -3340,7 +3340,7 @@ UDFCloseFile__(
         }
     } else {
         if (!FileInfo->Dloc->FELoc.Mapping[0].extLocation ||
-            UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+            (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot))) {
             UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->DataLoc.Mapping, AS_FREE); // check if free
         } else {
             UDFCheckSpaceAllocation(Vcb, 0, FileInfo->Dloc->DataLoc.Mapping, AS_USED); // check if used
@@ -3406,7 +3406,7 @@ UDFCloseFile__(
 //    ASSERT(FileInfo->Dloc->FELoc.Mapping[0].extLocation);
     if ((FileInfo->Dloc->FileEntry->descVersion != 2) &&
        (FileInfo->Dloc->FileEntry->descVersion != 3)) {
-        ASSERT(UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation));
+        ASSERT((Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot)));
     }
 #endif // UDF_DBG
     return STATUS_SUCCESS;
@@ -4017,27 +4017,47 @@ err_vat_15:
         Vcb->VatPartNdx = PartNdx;
         Vcb->CDR_Mode = TRUE;
         len = Vcb->VatCount;
-        RtlFillMemory(&(Vcb->Vat[Vcb->NWA-root]), (Vcb->FSBM_BitCount-Vcb->NWA)*sizeof(uint32), 0xff);
-        // sync VAT and FSBM
+        RtlFillMemory(&(Vcb->Vat[Vcb->NWA-root]), (Vcb->FSBM_BitCount-(Vcb->NWA-root))*sizeof(uint32), 0xff);
+        // sync VAT and FSBM (bitmap is LBN-indexed)
         for(i=0; i<len; i++) {
             if (Vcb->Vat[i] == UDF_VAT_FREE_ENTRY) {
-                UDFSetFreeBit(Vcb->FSBM_Bitmap, root+i);
+                if (Vcb->BitmapFcb) {
+                    UDFPinBitmapPage(Vcb, i);
+                    RtlSetBits(&Vcb->BitmapRtl, i - Vcb->BitmapPageStartLbn, 1);
+                    UDFDirtyBitmapPage(Vcb);
+                } else {
+                    UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
+                }
             }
         }
-        len = Vcb->FSBM_BitCount;
+        UDFUnpinBitmapPage(Vcb);
+        len = root + Vcb->FSBM_BitCount;  // end of partition in PSN (bitmap is LBN-indexed)
         // "pre-format" reserved area
         for(i=Vcb->NWA; i<len;) {
             for (j = 0; (j < PACKETSIZE_UDF) && (i < len); j++, i++)
             {
-                UDFPrint(("udf_info:FSBM_Bitmap Set Free: %x\n", root + i));
-                UDFSetFreeBit(Vcb->FSBM_Bitmap, i);
+                ULONG lbn_pf = i - root;
+                if (Vcb->BitmapFcb) {
+                    UDFPinBitmapPage(Vcb, lbn_pf);
+                    RtlSetBits(&Vcb->BitmapRtl, lbn_pf - Vcb->BitmapPageStartLbn, 1);
+                    UDFDirtyBitmapPage(Vcb);
+                } else {
+                    UDFSetFreeBit(Vcb->FSBM_Bitmap, lbn_pf);
+                }
             }
             for (j = 0; (j < 7) && (i < len); j++, i++)
             {
-                UDFPrint(("udf_info:FSBM_Bitmap Set Used: %x\n", root + i));
-                UDFSetUsedBit(Vcb->FSBM_Bitmap, i);
+                ULONG lbn_pf = i - root;
+                if (Vcb->BitmapFcb) {
+                    UDFPinBitmapPage(Vcb, lbn_pf);
+                    RtlClearBits(&Vcb->BitmapRtl, lbn_pf - Vcb->BitmapPageStartLbn, 1);
+                    UDFDirtyBitmapPage(Vcb);
+                } else {
+                    UDFSetUsedBit(Vcb->FSBM_Bitmap, lbn_pf);
+                }
             }
         }
+        UDFUnpinBitmapPage(Vcb);
         DbgFreePool(VatOldData);
     }
     return status;
@@ -4211,7 +4231,7 @@ retry_flush_FE:
     }
 /*    if (FileInfo->Fcb &&
        ((FileInfo->Dloc->FELoc.Mapping[0].extLocation > Vcb->SessionEndLba) ||
-        UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) ) {
+        (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot))) ) {
         BrutePoint();
     }*/
 /*    if (FileInfo->Dloc->FELoc.Mapping[0].extLocation) {
@@ -4234,7 +4254,7 @@ retry_flush_FE:
         // if FE is located in remapped block, place it to reliable space
         lba = FileInfo->Dloc->FELoc.Mapping[0].extLocation;
         if (Vcb->BSBM_Bitmap) {
-            if (UDFGetBadBit((uint32*)(Vcb->BSBM_Bitmap), lba)) {
+            if (UDFGetBadBit((uint32*)(Vcb->BSBM_Bitmap), lba - Vcb->Partitions[0].PartitionRoot)) {
                 AdPrint(("  bad block under FE @%x\n", lba));
                 goto relocate_FE;
             }
@@ -4455,7 +4475,7 @@ UDFFlushFile__(
     }
 #ifdef UDF_CHECK_DISK_ALLOCATION
     if ( FileInfo->Fcb &&
-        UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation)) {
+        (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), FileInfo->Dloc->FELoc.Mapping[0].extLocation - Vcb->Partitions[0].PartitionRoot))) {
 
         if (UDFIsAStreamDir(FileInfo)) {
             if (!UDFIsSDirDeleted(FileInfo)) {
@@ -5165,12 +5185,20 @@ UDFRecordVAT(
     // Disable VAT-based translation
     Vcb->Vat = NULL;
     // sync VAT and FSBM
-    len = min(UDFPartLen(Vcb, PartNum), Vcb->FSBM_BitCount - root);
+    // Bitmap is LBN-indexed, VAT index i is already partition-relative
+    len = min(UDFPartLen(Vcb, PartNum), Vcb->FSBM_BitCount);
     len = min(Vcb->VatCount, len);
     for(i=0; i<len; i++) {
-        if (UDFGetFreeBit(Vcb->FSBM_Bitmap, root+i))
+        BOOLEAN isFree;
+        if (Vcb->BitmapFcb) {
+            isFree = UDFIsBitmapBitFree(Vcb, i);
+        } else {
+            isFree = UDFGetFreeBit(Vcb->FSBM_Bitmap, i);
+        }
+        if (isFree)
             Vat[i] = UDF_VAT_FREE_ENTRY;
     }
+    UDFUnpinBitmapPage(Vcb);
     // Ok, now we shall construct new VAT image...
     // !!! NOTE !!!
     // Both VAT copies - in-memory & on-disc

@@ -1532,3 +1532,198 @@ UDFDeleteCcb(
 
     UDFDeallocateCcb(Ccb);
 } // end UDFDeleteCcb()
+
+/*
+  Function: UDFCreateBitmapStream()
+
+  Description:
+    Creates an internal stream FCB and FileObject for the free space bitmap.
+    This allows bitmap data to be cached via CcPinRead/CcSetDirtyPinnedData.
+    The MCB maps stream offsets to physical disk sectors where the bitmap resides.
+
+  Arguments:
+    Vcb         - Volume control block
+    BitmapPsn   - Physical sector number where bitmap starts on disk
+    BitmapLength - Total length of bitmap data on disk in bytes
+                   (including SPACE_BITMAP_DESC header)
+
+  Return Value:
+    NTSTATUS
+*/
+NTSTATUS
+UDFCreateBitmapStream(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN ULONG BitmapPsn,
+    IN ULONG BitmapLength
+    )
+{
+    NTSTATUS Status;
+    PFCB Fcb;
+    PFILE_OBJECT FileObject;
+    PFCB_NONPAGED FcbNonpaged;
+    ULONG BitmapSectors;
+    LARGE_INTEGER FileSize;
+
+    PAGED_CODE();
+    UNREFERENCED_PARAMETER(IrpContext);
+
+    UDFPrint(("UDFCreateBitmapStream: PSN=%x, Length=%x\n", BitmapPsn, BitmapLength));
+
+    // Allocate the FCB
+
+    Fcb = UDFAllocateFcb();
+    if (!Fcb) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(Fcb, sizeof(FCB));
+
+    // Initialize nonpaged data (inline in VCB to avoid extra allocation)
+
+    FcbNonpaged = &Vcb->BitmapNonpaged;
+    RtlZeroMemory(FcbNonpaged, sizeof(FCB_NONPAGED));
+
+    FcbNonpaged->NodeTypeCode = UDF_NODE_TYPE_FCB_NONPAGED;
+    FcbNonpaged->NodeByteSize = sizeof(FCB_NONPAGED);
+
+    ExInitializeResourceLite(&FcbNonpaged->FcbResource);
+    ExInitializeResourceLite(&FcbNonpaged->FcbPagingIoResource);
+    ExInitializeFastMutex(&FcbNonpaged->FcbMutex);
+    ExInitializeFastMutex(&FcbNonpaged->AdvancedFcbHeaderMutex);
+    ExInitializeFastMutex(&FcbNonpaged->FcbFastMutex);
+
+    // Initialize the FCB header
+
+    Fcb->NodeIdentifier.NodeTypeCode = UDF_NODE_TYPE_DATA;
+    Fcb->NodeIdentifier.NodeByteSize = sizeof(FCB);
+    Fcb->FcbNonpaged = FcbNonpaged;
+    Fcb->Vcb = Vcb;
+
+    Fcb->Header.Resource = &FcbNonpaged->FcbResource;
+    Fcb->Header.PagingIoResource = &FcbNonpaged->FcbPagingIoResource;
+    Fcb->Header.IsFastIoPossible = FastIoIsNotPossible;
+
+    InitializeListHead(&Fcb->EofListHead);
+    FsRtlSetupAdvancedHeader(&Fcb->Header, &FcbNonpaged->AdvancedFcbHeaderMutex);
+
+    InitializeListHead(&Fcb->ParentLcbQueue);
+    InitializeListHead(&Fcb->ChildLcbQueue);
+
+    // Set file sizes: bitmap data on disk (with header)
+
+    BitmapSectors = (BitmapLength + Vcb->SectorSize - 1) >> Vcb->SectorShift;
+    FileSize.QuadPart = (LONGLONG)BitmapSectors << Vcb->SectorShift;
+
+    Fcb->Header.AllocationSize.QuadPart = FileSize.QuadPart;
+    Fcb->Header.FileSize.QuadPart = BitmapLength;
+    Fcb->Header.ValidDataLength.QuadPart = BitmapLength;
+
+    // Initialize the MCB: maps VBN (stream sectors) -> PSN (disk sectors)
+
+    FsRtlInitializeLargeMcb(&Vcb->BitmapMcb, PagedPool);
+
+    _SEH2_TRY {
+        FsRtlAddLargeMcbEntry(&Vcb->BitmapMcb,
+                              0,                    // Vbn: offset 0 in stream
+                              (LONGLONG)BitmapPsn,  // Lbn: physical sector on disk
+                              (LONGLONG)BitmapSectors);
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        Status = _SEH2_GetExceptionCode();
+        FsRtlUninitializeLargeMcb(&Vcb->BitmapMcb);
+        ExDeleteResourceLite(&FcbNonpaged->FcbResource);
+        ExDeleteResourceLite(&FcbNonpaged->FcbPagingIoResource);
+        ExFreePoolWithTag(Fcb, TAG_FCB);
+        return Status;
+    } _SEH2_END;
+
+    // Create the internal stream FileObject
+
+    FileObject = IoCreateStreamFileObjectLite(NULL, Vcb->Vpb->RealDevice);
+    if (!FileObject) {
+        FsRtlUninitializeLargeMcb(&Vcb->BitmapMcb);
+        ExDeleteResourceLite(&FcbNonpaged->FcbResource);
+        ExDeleteResourceLite(&FcbNonpaged->FcbPagingIoResource);
+        ExFreePoolWithTag(Fcb, TAG_FCB);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    FileObject->ReadAccess = TRUE;
+    FileObject->WriteAccess = FALSE;
+    FileObject->DeleteAccess = FALSE;
+
+    FileObject->FsContext = Fcb;
+    FileObject->FsContext2 = (PVOID)(ULONG_PTR)StreamFileOpen;
+    FileObject->SectionObjectPointer = &FcbNonpaged->SegmentObject;
+    FileObject->Vpb = Vcb->Vpb;
+
+    // Initialize Cache Manager with pin access
+
+    CcInitializeCacheMap(FileObject,
+                         (PCC_FILE_SIZES)&Fcb->Header.AllocationSize,
+                         TRUE,                           // PinAccess
+                         &UdfData.CacheMgrCallBacks,
+                         Fcb);
+
+    // Store in VCB
+
+    Vcb->BitmapFcb = Fcb;
+    Vcb->BitmapStreamFileObject = FileObject;
+    Vcb->BitmapBcb = NULL;
+
+    UDFPrint(("UDFCreateBitmapStream: OK, Sectors=%x, FileSize=%I64x\n",
+        BitmapSectors, FileSize.QuadPart));
+
+    return STATUS_SUCCESS;
+} // end UDFCreateBitmapStream()
+
+/*
+  Function: UDFDeleteBitmapStream()
+
+  Description:
+    Tears down the bitmap cache stream created by UDFCreateBitmapStream.
+    Purges cache, uninitializes cache map, and releases all resources.
+
+  Arguments:
+    Vcb - Volume control block
+
+  Return Value:
+    None
+*/
+VOID
+UDFDeleteBitmapStream(
+    IN PVCB Vcb
+    )
+{
+    PAGED_CODE();
+
+    if (!Vcb->BitmapFcb) {
+        return;
+    }
+
+    UDFPrint(("UDFDeleteBitmapStream\n"));
+
+    // Purge cache and uninitialize cache map
+
+    CcPurgeCacheSection(&Vcb->BitmapNonpaged.SegmentObject, NULL, 0, FALSE);
+    CcUninitializeCacheMap(Vcb->BitmapStreamFileObject, NULL, NULL);
+
+    // Dereference the FileObject
+
+    ObDereferenceObject(Vcb->BitmapStreamFileObject);
+    Vcb->BitmapStreamFileObject = NULL;
+
+    // Cleanup MCB
+
+    FsRtlUninitializeLargeMcb(&Vcb->BitmapMcb);
+
+    // Cleanup resources (nonpaged is inline in VCB, don't free struct)
+
+    ExDeleteResourceLite(&Vcb->BitmapNonpaged.FcbResource);
+    ExDeleteResourceLite(&Vcb->BitmapNonpaged.FcbPagingIoResource);
+
+    // Free the FCB
+
+    ExFreePoolWithTag(Vcb->BitmapFcb, TAG_FCB);
+    Vcb->BitmapFcb = NULL;
+
+} // end UDFDeleteBitmapStream()

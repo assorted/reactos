@@ -336,8 +336,9 @@ UDFPrepareForWriteOperation(
 {
     if (Vcb->BSBM_Bitmap) {
         ULONG i;
+        uint32 lbn = Lba - Vcb->Partitions[0].PartitionRoot;
         for(i=0; i<BCount; i++) {
-            if (UDFGetBit((uint32*)(Vcb->BSBM_Bitmap), Lba+i)) {
+            if (UDFGetBit((uint32*)(Vcb->BSBM_Bitmap), lbn+i)) {
                 UDFPrint(("W: Known BB @ %#x\n", Lba));
                 //return STATUS_FT_WRITE_RECOVERY; // this shall not be treated as error and
                                                    // we shall get IO request to BAD block
@@ -841,8 +842,9 @@ UDFPrepareForReadOperation(
 
     if (Vcb->BSBM_Bitmap) {
         ULONG i;
+        uint32 lbn = Lba - Vcb->Partitions[0].PartitionRoot;
         for(i=0; i<BCount; i++) {
-            if (UDFGetBit((uint32*)(Vcb->BSBM_Bitmap), Lba+i)) {
+            if (UDFGetBit((uint32*)(Vcb->BSBM_Bitmap), lbn+i)) {
                 UDFPrint(("R: Known BB @ %#x\n", Lba));
                 //return STATUS_FT_WRITE_RECOVERY; // this shall not be treated as error and
                                                    // we shall get IO request to BAD block

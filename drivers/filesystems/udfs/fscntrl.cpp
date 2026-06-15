@@ -678,6 +678,9 @@ UDFCleanupVCB(
     MyFreeMemoryAndPointer(Vcb->Vat);
     MyFreeMemoryAndPointer(Vcb->SparingTable);
 
+    // Teardown bitmap cache stream (per-page mode) or free NonPagedPool buffer (legacy)
+    UDFUnpinBitmapPage(Vcb);
+    UDFDeleteBitmapStream(Vcb);
     if (Vcb->FSBM_Bitmap) {
         DbgFreePool(Vcb->FSBM_Bitmap);
         Vcb->FSBM_Bitmap = NULL;
@@ -1379,14 +1382,19 @@ UDFGetVolumeBitmap(
 
         RtlZeroMemory( &OutputBuffer->Buffer[0], BytesToCopy );
         lim = BytesToCopy * 8;
-        FSBM = (PULONG)(Vcb->FSBM_Bitmap);
-
-//        Dest = (PULONG)(&OutputBuffer->Buffer[0]);
+        FSBM = (PULONG)(&OutputBuffer->Buffer[0]);
 
         for(i=StartingCluster & ~7; i<lim; i++) {
-            if (UDFGetFreeBit(FSBM, i << Vcb->SectorShift))
+            BOOLEAN isFree;
+            if (Vcb->BitmapFcb) {
+                isFree = UDFIsBitmapBitFree(Vcb, i);
+            } else {
+                isFree = UDFGetFreeBit((PULONG)(Vcb->FSBM_Bitmap), i);
+            }
+            if (isFree)
                 UDFSetFreeBit(FSBM, i);
         }
+        UDFUnpinBitmapPage(Vcb);
 
         Irp->IoStatus.Information = FIELD_OFFSET(VOLUME_BITMAP_BUFFER, Buffer) + BytesToCopy;
 

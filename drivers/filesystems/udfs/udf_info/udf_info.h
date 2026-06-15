@@ -1417,6 +1417,9 @@ UDFDirIndex(
 
 #define UDFGetBadBit(arr,bit)       UDFGetBit(arr,bit)
 
+// Bitmap pin granularity: 8KB per page
+#define BITMAP_PIN_GRANULARITY  0x2000
+
 #define UDFGetZeroBit(arr,bit)      UDFGetBit(arr,bit)
 #define UDFSetZeroBit(arr,bit)      UDFSetBit(arr,bit)
 #define UDFClrZeroBit(arr,bit)      UDFClrBit(arr,bit)

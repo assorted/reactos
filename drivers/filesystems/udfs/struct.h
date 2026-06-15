@@ -766,6 +766,20 @@ struct VCB {
     ULONG           BitmapModified;
     PCHAR           BSBM_Bitmap;     // 0 - normal, 1 - bad-block
 
+    // Bitmap cache stream (per-page CcPinRead)
+    PFCB                BitmapFcb;              // FCB for bitmap internal stream
+    PFILE_OBJECT        BitmapStreamFileObject;  // Internal FileObject for bitmap
+    FCB_NONPAGED        BitmapNonpaged;          // Nonpaged data (inline in VCB)
+    LARGE_MCB           BitmapMcb;               // VBN -> PSN mapping for bitmap extents
+    PVOID               BitmapBcb;               // BCB of currently pinned page (NULL = none)
+    PUCHAR              BitmapPinnedData;        // Pointer to raw data of pinned region
+    ULONG               BitmapPinnedOffset;      // Stream byte offset of pinned region
+    ULONG               BitmapPinnedLength;      // Length of pinned region in bytes
+    ULONG               BitmapDataOffset;        // sizeof(SPACE_BITMAP_DESC) - bit data offset in stream
+    RTL_BITMAP          BitmapRtl;               // RTL_BITMAP for current pinned page
+    ULONG               BitmapPageStartLbn;      // First LBN covered by current RTL_BITMAP
+    ULONG               BitmapPageBitCount;      // Number of valid bits in current RTL_BITMAP
+
     // pointers to Volume Descriptor Sequences
     ULONG VDS1;
     ULONG VDS1_Len;

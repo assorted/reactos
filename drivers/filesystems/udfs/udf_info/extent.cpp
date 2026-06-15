@@ -2099,12 +2099,17 @@ UDFResizeExtent(
                     // how many sectors we should add
                     req_s = lim - s;
                     ASSERT(req_s);
-                    if ((lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, lba)) {
-                        s += UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s));
-                    }
-/*                    for(s1=lba; (s<lim) && (s1<pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, s1); s1++) {
-                        s++;
-                    }*/
+                    // Convert PSN to LBN for bitmap access
+                    {uint32 _lbn = lba - Vcb->Partitions[0].PartitionRoot;
+                    uint32 _pe_lbn = pe - Vcb->Partitions[0].PartitionRoot;
+                    BOOLEAN _free;
+                    if (Vcb->BitmapFcb) {
+                        _free = (lba < pe) && UDFIsBitmapBitFree(Vcb, _lbn);
+                        if (_free) s += UDFGetCachedBitmapLen(Vcb, _lbn, min(_pe_lbn, _lbn+req_s));
+                    } else {
+                        _free = (lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, _lbn);
+                        if (_free) s += UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), _lbn, min(_pe_lbn, _lbn+req_s));
+                    }}
                     if (s==lim) {
                         // we can just increase the last frag
                         AdPrint(("Resize grow last Not-Rec (4)\n"));
@@ -2168,12 +2173,17 @@ UDFResizeExtent(
 
                         UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
                         //ASSERT(req_s);
-                        if ((lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, lba)) {
-                            s += (d = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s)));
-                        }
-    /*                    for(s1=lba; (s<lim) && (s1<pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, s1); s1++) {
-                            s++;
-                        }*/
+                        // Convert PSN to LBN for bitmap access
+                        {uint32 _lbn = lba - Vcb->Partitions[0].PartitionRoot;
+                        uint32 _pe_lbn = pe - Vcb->Partitions[0].PartitionRoot;
+                        BOOLEAN _free;
+                        if (Vcb->BitmapFcb) {
+                            _free = (lba < pe) && UDFIsBitmapBitFree(Vcb, _lbn);
+                            if (_free) s += (d = (ULONG)UDFGetCachedBitmapLen(Vcb, _lbn, min(_pe_lbn, _lbn+req_s)));
+                        } else {
+                            _free = (lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, _lbn);
+                            if (_free) s += (d = (ULONG)UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), _lbn, min(_pe_lbn, _lbn+req_s)));
+                        }}
 
                         if (s==lim) {
                             AdPrint(("Resize grow last Rec (6)\n"));
