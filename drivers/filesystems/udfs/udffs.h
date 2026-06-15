@@ -89,6 +89,11 @@ typedef FILE_ID                     *PFILE_ID;
 #undef MdlMappingNoExecute
 #define MdlMappingNoExecute 0
 #define NonPagedPoolNx NonPagedPool
+// POOL_NX_ALLOCATION (0x200) is a Windows 8+ flag not recognized on XP-based
+// systems. Passing it to ExInitialize*LookasideList would result in an invalid
+// pool type on Windows XP / POSReady 2009.
+#undef POOL_NX_ALLOCATION
+#define POOL_NX_ALLOCATION 0
 #endif
 
 // #define NDEBUG

@@ -210,8 +210,11 @@ DriverEntry(
             FilterCallbacks.PreAcquireForSectionSynchronization = UDFFilterCallbackAcquireForCreateSection;
 
             RC = FsRtlRegisterFileSystemFilterCallbacks(DriverObject, &FilterCallbacks);
-            if (!NT_SUCCESS(RC))
-                try_return(RC);
+            if (!NT_SUCCESS(RC)) {
+                // On Windows XP, this call may fail. Treat as non-fatal.
+                UDFPrint(("UDF: FsRtlRegisterFileSystemFilterCallbacks failed with %x, continuing\n", RC));
+                RC = STATUS_SUCCESS;
+            }
 
             UDFPrint(("UDF: Create CD dev obj\n"));
             if (!NT_SUCCESS(RC = UDFCreateFsDeviceObject(UDF_FS_NAME_CD,
