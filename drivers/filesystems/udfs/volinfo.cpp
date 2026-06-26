@@ -283,7 +283,7 @@ UDFQueryFsSizeInfo(
     }
     Vcb->LowFreeSpace = (Vcb->FreeAllocUnits < 16384);
     if (!Buffer->TotalAllocationUnits.QuadPart)
-        Buffer->TotalAllocationUnits.QuadPart = max(1, Vcb->LastPossibleLBA);
+        Buffer->TotalAllocationUnits.QuadPart = max(1, Vcb->FSBM_BitCount);
     Buffer->SectorsPerAllocationUnit = Vcb->SectorSize >> Vcb->SectorShift;
     Buffer->BytesPerSector = Vcb->SectorSize;
 
@@ -332,7 +332,7 @@ UDFQueryFsFullSizeInfo(
         Buffer->ActualAvailableAllocationUnits.QuadPart = Vcb->FreeAllocUnits;
     }
     if (!Buffer->TotalAllocationUnits.QuadPart)
-        Buffer->TotalAllocationUnits.QuadPart = max(1, Vcb->LastPossibleLBA);
+        Buffer->TotalAllocationUnits.QuadPart = max(1, Vcb->FSBM_BitCount);
     Buffer->SectorsPerAllocationUnit = Vcb->SectorSize >> Vcb->SectorShift;
     Buffer->BytesPerSector = Vcb->SectorSize;
 

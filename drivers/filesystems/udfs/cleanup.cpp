@@ -277,6 +277,13 @@ UDFCommonCleanup(
                     AdPrint(("Error flushing file !!!\n"));
                 }
 
+                // Defer block freeing to teardown when this is the last link.
+                // Blocks stay allocated until FcbReference drops to 0,
+                // preventing block reuse while FCB is still in the table.
+                if (lc <= 1 && NextFileInfo->Dloc) {
+                    NextFileInfo->Dloc->FE_Flags |= UDF_FE_FLAG_FREE_DEFERRED;
+                }
+
                 // Try to unlink
                 RC = UDFUnlinkFile__(IrpContext, Vcb, NextFileInfo, TRUE);
 

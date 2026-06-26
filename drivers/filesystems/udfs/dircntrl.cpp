@@ -37,6 +37,28 @@ UDFFindNextMatch(
     IN PHASH_ENTRY     hashes,
    OUT PDIR_INDEX_ITEM* _DirNdx);
 
+NTSTATUS
+NTAPI
+UDFQueryDirectory(
+    PIRP_CONTEXT IrpContext,
+    PIRP Irp,
+    PIO_STACK_LOCATION IrpSp,
+    PFILE_OBJECT FileObject,
+    PFCB Fcb,
+    PCCB Ccb
+    );
+
+NTSTATUS
+NTAPI
+UDFNotifyChangeDirectory(
+    PIRP_CONTEXT IrpContext,
+    PIRP Irp,
+    PIO_STACK_LOCATION IrpSp,
+    PFILE_OBJECT FileObject,
+    PFCB Fcb,
+    PCCB Ccb
+    );
+
 /*************************************************************************
 *
 * Function: UDFCommonDirControl()
@@ -122,6 +144,192 @@ UDFCommonDirControl(
 
 /*************************************************************************
 *
+* Function: UDFInitializeEnumeration()
+*
+* Description:
+*   Initialize the state for a directory enumeration.  This sets up the
+*   search pattern in the CCB and determines the starting position.
+*
+* Return Value: STATUS_SUCCESS/Error
+*
+*************************************************************************/
+NTSTATUS
+UDFInitializeEnumeration(
+    IN PIRP_CONTEXT         IrpContext,
+    IN PIO_STACK_LOCATION   IrpSp,
+    IN PVCB                 Vcb,
+    IN PFCB                 Fcb,
+    IN PCCB                 Ccb,
+    OUT PUNICODE_STRING     *PtrSearchPattern,
+    OUT PHASH_ENTRY         *CurHashes,
+    OUT PLONG               NextMatch,
+    OUT PBOOLEAN            ReturnNextEntry,
+    OUT PBOOLEAN            ReturnSingleEntry,
+    OUT PBOOLEAN            InitialQuery
+    )
+{
+    PUNICODE_STRING FileName;
+    UNICODE_STRING  SearchExpression;
+    HASH_ENTRY      SearchHashes;
+    ULONG           CcbFlags;
+
+    *CurHashes = NULL;
+    *InitialQuery = FALSE;
+    *ReturnSingleEntry = BooleanFlagOn(IrpSp->Flags, SL_RETURN_SINGLE_ENTRY);
+
+    //
+    // If this is the initial query then build a search expression from the
+    // input file name.
+    //
+
+    if (!FlagOn(Ccb->Flags, UDF_CCB_ENUM_INITIALIZED)) {
+
+        FileName = (PUNICODE_STRING)(IrpSp->Parameters.QueryDirectory.FileName);
+
+        CcbFlags = 0;
+
+        // Strip trailing null from the pattern if present.
+        if (FileName && FileName->Buffer && FileName->Length >= sizeof(WCHAR) &&
+            !FileName->Buffer[FileName->Length / sizeof(WCHAR) - 1]) {
+            FileName->Length -= sizeof(WCHAR);
+        }
+
+        //
+        // If the filename is not specified or is a match-all mask then we
+        // will match all names.
+        //
+
+        if (!FileName || !FileName->Buffer || FileName->Length == 0 ||
+            UDFIsMatchAllMask(FileName, NULL)) {
+
+            SetFlag(CcbFlags, UDF_CCB_MATCH_ALL);
+
+            SearchExpression.Length =
+            SearchExpression.MaximumLength = 0;
+            SearchExpression.Buffer = NULL;
+
+        } else {
+
+            //
+            // Allocate buffer for the search expression.
+            // Upcase if this is a case-insensitive search.
+            //
+
+            SearchExpression.Buffer = (PWCHAR)FsRtlAllocatePoolWithTag(
+                PagedPool, FileName->MaximumLength, TAG_SEARCH_EXPR);
+            SearchExpression.MaximumLength = FileName->MaximumLength;
+
+            if (FlagOn(Ccb->Flags, CCB_FLAG_IGNORE_CASE)) {
+                NTSTATUS Status = RtlUpcaseUnicodeString(&SearchExpression, FileName, FALSE);
+                if (!NT_SUCCESS(Status)) {
+                    MyFreePool__(SearchExpression.Buffer);
+                    return Status;
+                }
+            } else {
+                SearchExpression.Length = FileName->Length;
+                RtlCopyMemory(SearchExpression.Buffer,
+                              FileName->Buffer, FileName->MaximumLength);
+            }
+
+            //
+            // Check for wildcards and build hash for exact-match patterns.
+            //
+
+            if (FsRtlDoesNameContainWildCards(&SearchExpression)) {
+                SetFlag(CcbFlags, UDF_CCB_WILDCARD_PRESENT);
+            } else {
+                UDFBuildHashEntry(Vcb, &SearchExpression,
+                                  &SearchHashes, HASH_POSIX | HASH_ULFN);
+            }
+
+            if (UDFCanNameBeA8dot3(&SearchExpression)) {
+                SetFlag(CcbFlags, UDF_CCB_CAN_BE_8_DOT_3);
+            }
+        }
+
+        //
+        // Now lock the Fcb in order to update the CCB with the initial
+        // enumeration values.
+        //
+
+        UDFLockFcb(IrpContext, Fcb);
+
+        //
+        // Check again that this is the initial search.
+        //
+
+        if (!FlagOn(Ccb->Flags, UDF_CCB_ENUM_INITIALIZED)) {
+
+            Ccb->CurrentIndex = 0;
+            Ccb->SearchExpression = SearchExpression;
+
+            if (!FlagOn(CcbFlags, UDF_CCB_WILDCARD_PRESENT) && SearchExpression.Buffer) {
+                Ccb->hashes = SearchHashes;
+            }
+
+            SetFlag(Ccb->Flags, CcbFlags | UDF_CCB_ENUM_INITIALIZED);
+            *InitialQuery = TRUE;
+
+        } else {
+
+            //
+            // Another thread initialized — free our local buffer.
+            //
+
+            if (SearchExpression.Buffer) {
+                MyFreePool__(SearchExpression.Buffer);
+            }
+        }
+
+    //
+    // Otherwise lock the Fcb so we can read the current enumeration values.
+    //
+
+    } else {
+
+        UDFLockFcb(IrpContext, Fcb);
+    }
+
+    //
+    // Set up the search pattern pointer for the caller.
+    //
+
+    if (FlagOn(Ccb->Flags, UDF_CCB_MATCH_ALL)) {
+        *PtrSearchPattern = NULL;
+    } else {
+        *PtrSearchPattern = &Ccb->SearchExpression;
+        if (!FlagOn(Ccb->Flags, UDF_CCB_WILDCARD_PRESENT)) {
+            *CurHashes = &Ccb->hashes;
+        }
+    }
+
+    //
+    // Determine the starting position.
+    //
+
+    if (FlagOn(IrpSp->Flags, SL_INDEX_SPECIFIED)) {
+        *NextMatch = IrpSp->Parameters.QueryDirectory.FileIndex;
+        *ReturnNextEntry = FALSE;
+    } else if (FlagOn(IrpSp->Flags, SL_RESTART_SCAN)) {
+        *NextMatch = 0;
+        *ReturnNextEntry = FALSE;
+    } else {
+        *NextMatch = Ccb->CurrentIndex;
+        *ReturnNextEntry = BooleanFlagOn(Ccb->Flags, UDF_CCB_ENUM_RETURN_NEXT);
+    }
+
+    //
+    // Unlock the Fcb.
+    //
+
+    UDFUnlockFcb(IrpContext, Fcb);
+
+    return STATUS_SUCCESS;
+} // end UDFInitializeEnumeration()
+
+
+/*************************************************************************
+*
 * Function: UDFQueryDirectory()
 *
 * Description:
@@ -145,45 +353,35 @@ UDFQueryDirectory(
     PCCB                        Ccb
     )
 {
-    NTSTATUS                    RC = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
+    ULONG Information = 0;
+
+    ULONG LastEntry = 0;
+    ULONG NextEntry = 0;
+
     PVCB Vcb = NULL;
-    unsigned long               BufferLength = 0;
-    UNICODE_STRING              SearchPattern;
     PUNICODE_STRING             PtrSearchPattern;
-    FILE_INFORMATION_CLASS      FileInformationClass;
+    FILE_INFORMATION_CLASS      FileInformationClass = IrpSp->Parameters.QueryDirectory.FileInformationClass;
     BOOLEAN                     ReturnSingleEntry = FALSE;
-    PUCHAR                      Buffer = NULL;
+    PUCHAR                      UserBuffer = NULL;
     BOOLEAN                     FirstTimeQuery = FALSE;
     LONG                        NextMatch = 0;
-    LONG                        PrevMatch = -1;
-    ULONG                       CurrentOffset;
     ULONG                       BaseLength;
     ULONG                       FileNameBytes;
-    ULONG                       Information = 0;
-    ULONG                       LastOffset = 0;
-    BOOLEAN                     AtLeastOneFound = FALSE;
+    BOOLEAN                     ReturnNextEntry = FALSE;
     PUDF_FILE_INFO              DirFileInfo = NULL;
     PDIR_INDEX_HDR              hDirIndex = NULL;
     PFILE_BOTH_DIR_INFORMATION  DirInformation = NULL;      // Returned from udf_info module
     PFILE_BOTH_DIR_INFORMATION  BothDirInformation = NULL;  // Pointer in callers buffer
     PFILE_NAMES_INFORMATION     NamesInfo;
     PFILE_ID_BOTH_DIR_INFORMATION IdBothDirInfo = NULL;
+    PFILE_ID_FULL_DIR_INFORMATION IdFullDirInfo = NULL;
     ULONG                       BytesRemainingInBuffer;
     PHASH_ENTRY                 cur_hashes = NULL;
     PDIR_INDEX_ITEM             DirNdx;
-    // do some pre-init...
-    SearchPattern.Buffer = NULL;
-
-    UDFPrint(("UDFQueryDirectory: @=%#x\n", &IrpContext));
-
-#define CanBe8dot3    (FNM_Flags & UDF_FNM_FLAG_CAN_BE_8D3)
-#define IgnoreCase    (FNM_Flags & UDF_FNM_FLAG_IGNORE_CASE)
-#define ContainsWC    (FNM_Flags & UDF_FNM_FLAG_CONTAINS_WC)
 
     Vcb = Fcb->Vcb;
     ASSERT_VCB(Vcb);
-
-    FileInformationClass = IrpSp->Parameters.QueryDirectory.FileInformationClass;
 
     // Check if we support this search mode.  Also remember the size of the base part of
     // each of these structures.
@@ -205,11 +403,18 @@ UDFQueryDirectory(
     case FileIdBothDirectoryInformation:
         BaseLength = FIELD_OFFSET(FILE_ID_BOTH_DIR_INFORMATION, FileName[0]);
         break;
+    case FileIdFullDirectoryInformation:
+        BaseLength = FIELD_OFFSET(FILE_ID_FULL_DIR_INFORMATION, FileName[0]);
+        break;
     default:
 
         UDFCompleteRequest(IrpContext, Irp, STATUS_INVALID_INFO_CLASS);
         return STATUS_INVALID_INFO_CLASS;
     }
+
+    // Get the user buffer.
+
+    UserBuffer = (PUCHAR)UDFMapUserBuffer(Irp);
 
     // Acquire the directory.
 
@@ -217,164 +422,63 @@ UDFQueryDirectory(
 
     _SEH2_TRY
     {
+        // Verify the Fcb is still good.
+
+        UDFVerifyFcbOperation(IrpContext, Fcb, Ccb);
+
         DirFileInfo = Fcb->FileInfo;
-        BufferLength = IrpSp->Parameters.QueryDirectory.Length;
 
-        // Continue obtaining the callers parameters...
-        if (FlagOn(Ccb->Flags, CCB_FLAG_IGNORE_CASE) && IrpSp->Parameters.QueryDirectory.FileName) {
-            PtrSearchPattern = &SearchPattern;
-            if (!NT_SUCCESS(RC = RtlUpcaseUnicodeString(PtrSearchPattern, (PUNICODE_STRING)(IrpSp->Parameters.QueryDirectory.FileName), TRUE)))
-                try_return(RC);
-        } else {
-            PtrSearchPattern = (PUNICODE_STRING)(IrpSp->Parameters.QueryDirectory.FileName);
-        }
+        // Start by getting the initial state for the enumeration.  This will set up the Ccb with
+        // the initial search parameters and let us know the starting offset in the directory
+        // to search.
 
-        // Some additional arguments that affect the FSD behavior
-        ReturnSingleEntry = (IrpSp->Flags & SL_RETURN_SINGLE_ENTRY) ? TRUE : FALSE;
+        Status = UDFInitializeEnumeration(IrpContext,
+                                          IrpSp,
+                                          Vcb,
+                                          Fcb,
+                                          Ccb,
+                                          &PtrSearchPattern,
+                                          &cur_hashes,
+                                          &NextMatch,
+                                          &ReturnNextEntry,
+                                          &ReturnSingleEntry,
+                                          &FirstTimeQuery);
 
-        // We must determine the buffer pointer to be used. Since this
-        // routine could either be invoked directly in the context of the
-        // calling thread, or in the context of a worker thread, here is
-        // a general way of determining what we should use.
-        if (Irp->MdlAddress) {
-            Buffer = (PUCHAR) MmGetSystemAddressForMdlSafe(Irp->MdlAddress, NormalPagePriority);
-            if (!Buffer)
-                try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-        } else {
-            Buffer = (PUCHAR) Irp->UserBuffer;
-            if (!Buffer)
-                try_return(RC = STATUS_INVALID_USER_BUFFER);
-        }
+        if (!NT_SUCCESS(Status)) {
 
-        // The method of determining where to look from and what to look for is
-        // unfortunately extremely confusing. However, here is a methodology
-        // we broadly adopt:
-        // (a) We have to maintain a search buffer per CCB structure.
-        // (b) This search buffer is initialized the very first time
-        //       a query directory operation is performed using the file object.
-        // (For the UDF FSD, the search buffer is stored in the
-        //   DirectorySearchPattern field)
-        // However, the caller still has the option of "overriding" this stored
-        // search pattern by supplying a new one in a query directory operation.
-        if (PtrSearchPattern &&
-           PtrSearchPattern->Buffer &&
-           !(PtrSearchPattern->Buffer[PtrSearchPattern->Length/sizeof(WCHAR) - 1])) {
-            PtrSearchPattern->Length -= sizeof(WCHAR);
-        }
-
-        if (IrpSp->Flags & SL_INDEX_SPECIFIED) {
-            // Good idea from M$: we should continue search from NEXT item
-            // when FileIndex specified...
-            // Strange idea from M$: we should do it with EMPTY pattern...
-            PtrSearchPattern = NULL;
-            Ccb->Flags |= UDF_CCB_MATCH_ALL;
-        } else if (PtrSearchPattern &&
-                  PtrSearchPattern->Buffer &&
-                  !UDFIsMatchAllMask(PtrSearchPattern, NULL) ) {
-
-            Ccb->Flags &= ~(UDF_CCB_MATCH_ALL |
-                               UDF_CCB_WILDCARD_PRESENT |
-                               UDF_CCB_CAN_BE_8_DOT_3);
-            // Once we have validated the search pattern, we must
-            // check whether we need to store this search pattern in
-            // the CCB.
-            if (Ccb->DirectorySearchPattern) {
-                MyFreePool__(Ccb->DirectorySearchPattern->Buffer);
-                MyFreePool__(Ccb->DirectorySearchPattern);
-                Ccb->DirectorySearchPattern = NULL;
-            }
-            // This must be the very first query request.
-            FirstTimeQuery = TRUE;
-
-            // Now, allocate enough memory to contain the caller
-            // supplied search pattern and fill in the DirectorySearchPattern
-            // field in the CCB
-            Ccb->DirectorySearchPattern = (PUNICODE_STRING)MyAllocatePool__(NonPagedPool,sizeof(UNICODE_STRING));
-            if (!(Ccb->DirectorySearchPattern)) {
-                try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-            }
-            Ccb->DirectorySearchPattern->Length = PtrSearchPattern->Length;
-            Ccb->DirectorySearchPattern->MaximumLength = PtrSearchPattern->MaximumLength;
-            Ccb->DirectorySearchPattern->Buffer = (PWCHAR)MyAllocatePool__(NonPagedPool,PtrSearchPattern->MaximumLength);
-            if (!(Ccb->DirectorySearchPattern->Buffer)) {
-                try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
-            }
-            RtlCopyMemory(Ccb->DirectorySearchPattern->Buffer,PtrSearchPattern->Buffer,
-                          PtrSearchPattern->MaximumLength);
-            if (FsRtlDoesNameContainWildCards(PtrSearchPattern)) {
-                Ccb->Flags |= UDF_CCB_WILDCARD_PRESENT;
-            } else {
-                UDFBuildHashEntry(Vcb, PtrSearchPattern, cur_hashes = &(Ccb->hashes), HASH_POSIX | HASH_ULFN);
-            }
-            if (UDFCanNameBeA8dot3(PtrSearchPattern))
-                Ccb->Flags |= UDF_CCB_CAN_BE_8_DOT_3;
-
-        } else if (!Ccb->DirectorySearchPattern &&
-                  !(Ccb->Flags & UDF_CCB_MATCH_ALL) ) {
-
-            // If the filename is not specified or is a single '*' then we will
-            // match all names.
-            FirstTimeQuery = TRUE;
-            PtrSearchPattern = NULL;
-            Ccb->Flags |= UDF_CCB_MATCH_ALL;
-
-        } else {
-            // The caller has not supplied any search pattern that we are
-            // forced to use. However, the caller had previously supplied
-            // a pattern (or we must have invented one) and we will use it.
-            // This is definitely not the first query operation on this
-            // directory using this particular file object.
-            if (Ccb->Flags & UDF_CCB_MATCH_ALL) {
-                PtrSearchPattern = NULL;
-/*                if (Ccb->CurrentIndex)
-                    Ccb->CurrentIndex++;*/
-            } else {
-                PtrSearchPattern = Ccb->DirectorySearchPattern;
-                if (!(Ccb->Flags & UDF_CCB_WILDCARD_PRESENT)) {
-                    cur_hashes = &(Ccb->hashes);
-                }
-            }
-        }
-
-        if (IrpSp->Flags & SL_INDEX_SPECIFIED) {
-            // Caller has told us wherefrom to begin.
-            // We may need to round this to an appropriate directory entry
-            // entry alignment value.
-            NextMatch = IrpSp->Parameters.QueryDirectory.FileIndex;
-        } else if (IrpSp->Flags & SL_RESTART_SCAN) {
-            NextMatch = 0;
-        } else {
-            // Get the starting offset from the CCB.
-            // Remember to update this value on our way out from this function.
-            // But, do not update the CCB CurrentByteOffset field if our reach
-            // the end of the directory (or get an error reading the directory)
-            // while performing the search.
-            NextMatch = Ccb->CurrentIndex; // Last good index
+            try_return(Status);
         }
 
         // This is an additional verifying
+
         if (!UDFIsADirectory(DirFileInfo)) {
-            try_return(RC = STATUS_INVALID_PARAMETER);
+
+            try_return(Status = STATUS_INVALID_PARAMETER);
         }
 
         hDirIndex = DirFileInfo->Dloc->DirIndex;
+
         if (!hDirIndex) {
-            try_return(RC = STATUS_INVALID_PARAMETER);
+
+            try_return(Status = STATUS_INVALID_PARAMETER);
         }
 
-        RC = STATUS_SUCCESS;
+        Status = STATUS_SUCCESS;
+
         // Allocate buffer enough to save both DirInformation and FileName
         DirInformation = (PFILE_BOTH_DIR_INFORMATION)MyAllocatePool__(NonPagedPool,
                             sizeof(FILE_BOTH_DIR_INFORMATION)+((ULONG)UDF_NAME_LEN*sizeof(WCHAR)) );
+
         if (!DirInformation) {
-            try_return(RC = STATUS_INSUFFICIENT_RESOURCES);
+            try_return(Status = STATUS_INSUFFICIENT_RESOURCES);
         }
-        CurrentOffset=0;
+
+        NextEntry = 0;
         BytesRemainingInBuffer = IrpSp->Parameters.QueryDirectory.Length;
-        RtlZeroMemory(Buffer,BytesRemainingInBuffer);
+        RtlZeroMemory(UserBuffer, BytesRemainingInBuffer);
 
         if ((!FirstTimeQuery) && !UDFDirIndex(hDirIndex, (uint_di)NextMatch) ) {
-            try_return( RC = STATUS_NO_MORE_FILES);
+            try_return( Status = STATUS_NO_MORE_FILES);
         }
 
         // One final note though:
@@ -389,29 +493,63 @@ UDFQueryDirectory(
         //       (ii) Otherwise, return STATUS_NO_MORE_FILES
 
         while(TRUE) {
+
             // If the user had requested only a single match and we have
             // returned that, then we stop at this point.
-            if (ReturnSingleEntry && AtLeastOneFound) {
-                try_return(RC);
+            if ((NextEntry != 0) && ReturnSingleEntry) {
+                try_return(Status);
             }
+
+            // Advance past the previous match if we returned it.
+
+            if (ReturnNextEntry) {
+                NextMatch++;
+            }
+
             // We call UDFFindNextMatch to look down the next matching dirent.
-            RC = UDFFindNextMatch(Vcb, hDirIndex,&NextMatch,PtrSearchPattern, Ccb->Flags, cur_hashes, &DirNdx);
+
+            Status = UDFFindNextMatch(Vcb, hDirIndex,&NextMatch,PtrSearchPattern, Ccb->Flags, cur_hashes, &DirNdx);
+
             // If we didn't receive next match, then we are at the end of the
             // directory.  If we have returned any files, we exit with
             // success, otherwise we return STATUS_NO_MORE_FILES.
-            if (!NT_SUCCESS(RC)) {
-                RC = AtLeastOneFound ? STATUS_SUCCESS :
+            if (!NT_SUCCESS(Status)) {
+                Status = (NextEntry != 0) ? STATUS_SUCCESS :
                                       (FirstTimeQuery ? STATUS_NO_SUCH_FILE : STATUS_NO_MORE_FILES);
-                try_return(RC);
+                try_return(Status);
             }
-            // We found at least one matching file entry
-            AtLeastOneFound = TRUE;
-            if (!NT_SUCCESS(RC = UDFFileDirInfoToNT(IrpContext, Vcb, DirNdx, DirInformation))) {
-                // this happends when we can't allocate tmp buffers
-                try_return(RC);
+
+            Status = UDFFileDirInfoToNT(IrpContext, Vcb, DirNdx, DirInformation);
+
+            if (!NT_SUCCESS(Status)) {
+
+                // If we already have entries in the buffer, return them and
+                // raise the error on the next call.  Otherwise propagate now.
+                if (NextEntry != 0) {
+                    ReturnNextEntry = FALSE;
+                    Status = STATUS_SUCCESS;
+                    try_return(Status);
+                }
+                try_return(Status);
             }
             DirInformation->FileIndex = NextMatch;
             FileNameBytes = DirInformation->FileNameLength;
+
+            // If the slot for the next entry would be beyond the length of the
+            // user's buffer, just exit (we know we've returned at least one entry
+            // already). This can happen when we quad-align the pointer past the end.
+
+            if (NextEntry > IrpSp->Parameters.QueryDirectory.Length) {
+
+                ReturnNextEntry = FALSE;
+                try_return(Status = STATUS_SUCCESS);
+            }
+
+            // Compute the number of bytes remaining in the buffer. Round this
+            // down to a WCHAR boundary so we can copy full characters.
+
+            BytesRemainingInBuffer = IrpSp->Parameters.QueryDirectory.Length - NextEntry;
+            ClearFlag(BytesRemainingInBuffer, 1);
 
             // If this won't fit and we have returned a previous entry then just
             // return STATUS_SUCCESS.
@@ -420,72 +558,95 @@ UDFQueryDirectory(
 
                 // If we already found an entry then just exit.
 
-                if (CurrentOffset != 0) {
-                    try_return(RC = STATUS_SUCCESS);
+                if (NextEntry != 0) {
+
+                    ReturnNextEntry = FALSE;
+                    try_return(Status = STATUS_SUCCESS);
                 }
 
                 // Reduce the FileNameBytes to just fit in the buffer.
 
                 FileNameBytes = BytesRemainingInBuffer - BaseLength;
                 ReturnSingleEntry = TRUE;
-                RC = STATUS_BUFFER_OVERFLOW;
+                Status = STATUS_BUFFER_OVERFLOW;
             }
-            //  Now we have an entry to return to our caller.
-            //  We'll case on the type of information requested and fill up
-            //  the user buffer if everything fits.
-            switch (FileInformationClass) {
+            //  Protect access to the user buffer with an exception handler.
+            //  Since (at our request) IO doesn't buffer these requests, we have
+            //  to guard against a user messing with the page protection and other
+            //  such trickery.
 
-            case FileBothDirectoryInformation:
-            case FileFullDirectoryInformation:
-            case FileIdBothDirectoryInformation:
-            case FileDirectoryInformation:
+            _SEH2_TRY
+            {
+                //  Now we have an entry to return to our caller.
+                //  We'll case on the type of information requested and fill up
+                //  the user buffer if everything fits.
+                switch (FileInformationClass) {
 
-                BothDirInformation = (PFILE_BOTH_DIR_INFORMATION)(Buffer + CurrentOffset);
-                RtlCopyMemory(BothDirInformation,DirInformation,BaseLength);
-                BothDirInformation->FileIndex = NextMatch;
-                BothDirInformation->FileNameLength = FileNameBytes;
-                break;
+                case FileBothDirectoryInformation:
+                case FileFullDirectoryInformation:
+                case FileIdBothDirectoryInformation:
+                case FileIdFullDirectoryInformation:
+                case FileDirectoryInformation:
 
-            case FileNamesInformation:
+                    BothDirInformation = (PFILE_BOTH_DIR_INFORMATION)(UserBuffer + NextEntry);
+                    RtlCopyMemory(BothDirInformation,DirInformation,BaseLength);
+                    BothDirInformation->FileIndex = NextMatch;
+                    BothDirInformation->FileNameLength = FileNameBytes;
+                    break;
 
-                NamesInfo = (PFILE_NAMES_INFORMATION)(Buffer + CurrentOffset);
-                NamesInfo->FileIndex = NextMatch;
-                NamesInfo->FileNameLength = FileNameBytes;
-                break;
+                case FileNamesInformation:
 
-            default:
-                break;
+                    NamesInfo = (PFILE_NAMES_INFORMATION)(UserBuffer + NextEntry);
+                    NamesInfo->FileIndex = NextMatch;
+                    NamesInfo->FileNameLength = FileNameBytes;
+                    break;
+
+                default:
+                    break;
+                }
+
+                switch (FileInformationClass) {
+
+                case FileIdBothDirectoryInformation:
+                    IdBothDirInfo = (PFILE_ID_BOTH_DIR_INFORMATION)(UserBuffer + NextEntry);
+                    IdBothDirInfo->FileId = UDFGetNTFileId(Vcb, Fcb->FileInfo);
+                    break;
+
+                case FileIdFullDirectoryInformation:
+                    IdFullDirInfo = (PFILE_ID_FULL_DIR_INFORMATION)(UserBuffer + NextEntry);
+                    IdFullDirInfo->FileId = UDFGetNTFileId(Vcb, Fcb->FileInfo);
+                    break;
+
+                default:
+                    break;
+                }
+
+                if (FileNameBytes) {
+                    //  This is a Unicode name, we can copy the bytes directly.
+                    RtlCopyMemory( (PVOID)(UserBuffer + NextEntry + BaseLength),
+                                   DirInformation->FileName, FileNameBytes );
+                }
+
+                Information = NextEntry + BaseLength + FileNameBytes;
+
+                //  ((..._INFORMATION)(PointerToPreviousEntryInBuffer))->NextEntryOffset = NextEntry - LastEntry;
+                *((PULONG)(UserBuffer+LastEntry)) = NextEntry - LastEntry;
+                //  Set up our variables for the next dirent.
+                FirstTimeQuery = FALSE;
+
+                LastEntry    = NextEntry;
+                ReturnNextEntry = TRUE;
+                NextEntry = UDFQuadAlign(Information);
             }
-
-            switch (FileInformationClass) {
-
-            case FileIdBothDirectoryInformation:
-                IdBothDirInfo = (PFILE_ID_BOTH_DIR_INFORMATION)(Buffer + CurrentOffset);
-                IdBothDirInfo->FileId = UDFGetNTFileId(Vcb, Fcb->FileInfo);
-                break;
-
-            default:
-                break;
+            _SEH2_EXCEPT(!FsRtlIsNtstatusExpected(_SEH2_GetExceptionCode()) ?
+                          EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+            {
+                //  We had a problem filling in the user's buffer, so stop
+                //  and fail this request.
+                Information = 0;
+                try_return(Status = _SEH2_GetExceptionCode());
             }
-
-            if (FileNameBytes) {
-                //  This is a Unicode name, we can copy the bytes directly.
-                RtlCopyMemory( (PVOID)(Buffer + CurrentOffset + BaseLength),
-                               DirInformation->FileName, FileNameBytes );
-            }
-
-            Information = CurrentOffset + BaseLength + FileNameBytes;
-
-            //  ((..._INFORMATION)(PointerToPreviousEntryInBuffer))->NextEntryOffset = CurrentOffset - LastOffset;
-            *((PULONG)(Buffer+LastOffset)) = CurrentOffset - LastOffset;
-            //  Set up our variables for the next dirent.
-            FirstTimeQuery = FALSE;
-
-            LastOffset    = CurrentOffset;
-            PrevMatch     = NextMatch;
-            NextMatch++;
-            CurrentOffset = UDFQuadAlign(Information);
-            BytesRemainingInBuffer = BufferLength - CurrentOffset;
+            _SEH2_END;
         }
 
 try_exit:   NOTHING;
@@ -493,30 +654,34 @@ try_exit:   NOTHING;
 
     } _SEH2_FINALLY {
 
+        if (!_SEH2_AbnormalTermination() && !NT_ERROR(Status)) {
 
-#ifdef UDF_DBG
-        if (!NT_SUCCESS(RC)) {
-            UDFPrint(("    Not found\n"));
+            // Update the CCB to show the current state of the enumeration.
+
+            UDFLockFcb(IrpContext, Fcb);
+
+            Ccb->CurrentIndex = NextMatch;
+
+            ClearFlag(Ccb->Flags, UDF_CCB_ENUM_RETURN_NEXT);
+
+            if (ReturnNextEntry) {
+
+                SetFlag(Ccb->Flags, UDF_CCB_ENUM_RETURN_NEXT);
+            }
+
+            UDFUnlockFcb(IrpContext, Fcb);
         }
-#endif // UDF_DBG
+
+        if (DirInformation) MyFreePool__(DirInformation);
 
         UDFReleaseFcb(IrpContext, Fcb);
-
-        if (!_SEH2_AbnormalTermination() && !NT_ERROR(RC)) {
-
-            // Remember to update the CurrentByteOffset field in the CCB if required.
-            Ccb->CurrentIndex = NextMatch;
-        }
-
-        if (SearchPattern.Buffer) RtlFreeUnicodeString(&SearchPattern);
-        if (DirInformation) MyFreePool__(DirInformation);
     } _SEH2_END;
 
     Irp->IoStatus.Information = Information;
 
-    UDFCompleteRequest(IrpContext, Irp, RC);
+    UDFCompleteRequest(IrpContext, Irp, Status);
 
-    return(RC);
+    return Status;
 } // end UDFQueryDirectory()
 
 /*
@@ -642,3 +807,117 @@ UDFNotifyChangeDirectory(
 
     return STATUS_PENDING;
 } // end UDFNotifyChangeDirectory()
+
+VOID
+UDFNotifyReportChange(
+    PIRP_CONTEXT IrpContext,
+    PVCB Vcb,
+    PFCB Fcb,
+    ULONG Filter,
+    ULONG Action,
+    PLCB Lcb,
+    PFILE_OBJECT FileObject
+    )
+{
+    USHORT TargetNameOffset = 0;
+    UNICODE_STRING FullPath;
+    BOOLEAN PathAllocated = FALSE;
+    WCHAR RootChar;
+
+    FullPath.Buffer = NULL;
+    FullPath.Length = 0;
+    FullPath.MaximumLength = 0;
+
+    //
+    // Acquire FcbResource shared for the duration of the notify.
+    // Protects LCB chain and name buffers from concurrent teardown.
+    //
+    UDFAcquireFcbShared(IrpContext, Fcb, FALSE);
+
+    _SEH2_TRY {
+
+        // If no LCB provided, find first valid (non-deleted) one
+        if (!Lcb) {
+            if (!IsListEmpty(&Fcb->ParentLcbQueue)) {
+                PLIST_ENTRY ListEntry = Fcb->ParentLcbQueue.Flink;
+                while (ListEntry != &Fcb->ParentLcbQueue) {
+                    PLCB CandidateLcb = CONTAINING_RECORD(ListEntry, LCB, ChildFcbLinks);
+                    if (!(CandidateLcb->Flags & UDF_LCB_FLAG_LINK_DELETED)) {
+                        Lcb = CandidateLcb;
+                        break;
+                    }
+                    ListEntry = ListEntry->Flink;
+                }
+            }
+        }
+
+        //
+        // Build the full target name in the same namespace the registered
+        // notify watches were keyed under. Prefer FileObject->FileName (the
+        // absolute path from the volume root, stable and independent of LCB
+        // chain state) unless the open cannot be trusted to carry one:
+        //   - a relative open holds only the final component, no parent path
+        //     (recorded as CCB_FLAG_HAS_RELATED_CCB on the CCB), and
+        //   - a link with a generated short name is ambiguous.
+        // For those, build the absolute path from the LCB chain instead.
+        //
+        // FsContext2 carries the type-of-open in its low bits; UDFDecodeFileObject
+        // strips them and returns the real CCB (NULL for an unopened object).
+        //
+        PCCB Ccb = NULL;
+        if (FileObject != NULL) {
+            PFCB DecodedFcb = NULL;
+            UDFDecodeFileObject(FileObject, &DecodedFcb, &Ccb);
+        }
+        BOOLEAN RelativeOpen = (Ccb != NULL &&
+                                Ccb->NodeIdentifier.NodeTypeCode == UDF_NODE_TYPE_CCB &&
+                                FlagOn(Ccb->Flags, CCB_FLAG_HAS_RELATED_CCB));
+        BOOLEAN ShortNameLink = (Lcb != NULL && FlagOn(Lcb->Flags, UDF_LCB_FLAG_SHORT_NAME_CREATED));
+
+        if (FileObject && FileObject->FileName.Buffer &&
+            FileObject->FileName.Length > 0 &&
+            !RelativeOpen && !ShortNameLink) {
+            FullPath = FileObject->FileName;
+        } else if (Lcb) {
+            NTSTATUS Status = UDFBuildFullPathFromLcb(NULL, Lcb, &FullPath, FALSE);
+            if (NT_SUCCESS(Status)) {
+                PathAllocated = TRUE;
+            }
+        }
+
+        // Fallback to root
+        if (!FullPath.Buffer || FullPath.Length == 0) {
+            RootChar = L'\\';
+            FullPath.Buffer = &RootChar;
+            FullPath.Length = sizeof(WCHAR);
+            FullPath.MaximumLength = sizeof(WCHAR);
+            PathAllocated = FALSE;
+            Lcb = NULL;
+        }
+
+        // TargetNameOffset: byte offset within FullPath to the final name component
+        if (Lcb && Lcb->ExactCaseLinkName.Length > 0 &&
+            FullPath.Length > Lcb->ExactCaseLinkName.Length) {
+            TargetNameOffset = FullPath.Length - Lcb->ExactCaseLinkName.Length;
+        }
+
+        FsRtlNotifyFullReportChange(Vcb->NotifySync,
+                                    &Vcb->NextNotifyIRP,
+                                    (PSTRING)&FullPath,
+                                    TargetNameOffset,
+                                    NULL,
+                                    NULL,
+                                    Filter,
+                                    Action,
+                                    NULL);
+
+    } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+        NOTHING;
+    } _SEH2_END;
+
+    UDFReleaseFcb(IrpContext, Fcb);
+
+    if (PathAllocated && FullPath.Buffer) {
+        ExFreePool(FullPath.Buffer);
+    }
+}

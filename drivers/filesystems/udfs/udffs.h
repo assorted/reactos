@@ -23,8 +23,6 @@
 
 //#define UDF_LIMIT_NAME_LEN
 
-//#define UDF_LIMIT_DIR_SIZE
-
 #ifdef UDF_LIMIT_NAME_LEN
   #define UDF_X_NAME_LEN (20)
   #define UDF_X_PATH_LEN (25)
@@ -112,7 +110,6 @@ typedef FILE_ID                     *PFILE_ID;
 // global variables - minimize these
 extern UDFData              UdfData;
 
-#include "env_spec.h"
 #include "udf_dbg.h"
 
 #include "Include/Sys_spec_lib.h"

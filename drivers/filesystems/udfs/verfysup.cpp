@@ -121,10 +121,10 @@ UDFVerifyVcb(
 
         if (Vcb->VcbCondition != VcbMountInProgress) {
 
-            Status = UDFTSendIOCTL(
+            Status = UDFPerformDevIoCtrl(
                                 (Vcb->Vpb->RealDevice->DeviceType == FILE_DEVICE_CD_ROM ?
                                 IOCTL_CDROM_CHECK_VERIFY : IOCTL_DISK_CHECK_VERIFY),
-                                Vcb,
+                                Vcb->TargetDeviceObject,
                                 NULL, 0,
                                 &MediaChangeCount, sizeof(ULONG),
                                 FALSE, &Iosb);

@@ -347,6 +347,16 @@ UDFInsertPrefix(
             Lcb->FileName.Length = FileName->Length;
             RtlCopyMemory(NameBuffer, FileName->Buffer, FileName->Length);
 
+            // Mirror the exact-case component name. It aliases the same
+            // embedded buffer (never freed separately), consistent with
+            // UDFRenameMovePrefix. Change-notify offset computation and
+            // full-path building read ExactCaseLinkName; without this it
+            // stayed zero-length on freshly created links, which forced a
+            // TargetNameOffset of 0 in UDFNotifyReportChange — so FsRtl saw
+            // an empty parent directory and no registered notify matched,
+            // and Explorer would not refresh added/removed entries until F5.
+            Lcb->ExactCaseLinkName = Lcb->FileName;
+
             // Copy CaseFileName (uppercase for ignore-case comparisons)
             if (CaseFileName != NULL && CaseFileName->Length > 0) {
                 // Skip alignment padding (0x18 bytes) after FileName
@@ -767,13 +777,16 @@ UDFBuildFullPathFromLcb(
             }
 
             if (ComponentName && ComponentName->Length > 0) {
-                // Add backslash
-                CurrentPosition--;
-                *CurrentPosition = L'\\';
-
-                // Add component name
+                // Prepend "\<component>". The buffer is filled back-to-front,
+                // so write the name first, then the separator immediately in
+                // front of it. (Writing the separator after the name would
+                // produce "<component>\" with no leading backslash — a
+                // relative, malformed path that no registered notify matches.)
                 CurrentPosition -= (ComponentName->Length / sizeof(WCHAR));
                 RtlCopyMemory(CurrentPosition, ComponentName->Buffer, ComponentName->Length);
+
+                CurrentPosition--;
+                *CurrentPosition = L'\\';
             }
 
             // Move to parent

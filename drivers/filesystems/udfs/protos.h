@@ -161,22 +161,6 @@ extern NTSTATUS NTAPI UDFCommonDirControl(
 PIRP_CONTEXT IrpContext,
 PIRP                    Irp);
 
-extern NTSTATUS NTAPI UDFQueryDirectory(
-PIRP_CONTEXT IrpContext,
-PIRP                    Irp,
-PIO_STACK_LOCATION      IrpSp,
-PFILE_OBJECT            FileObject,
-PFCB                    Fcb,
-PCCB                    Ccb);
-
-extern NTSTATUS NTAPI UDFNotifyChangeDirectory(
-PIRP_CONTEXT IrpContext,
-PIRP                    Irp,
-PIO_STACK_LOCATION      IrpSp,
-PFILE_OBJECT            FileObject,
-PFCB                    Fcb,
-PCCB                    Ccb);
-
 /*************************************************************************
 * Prototypes for the file devcntrl.cpp
 *************************************************************************/
@@ -630,9 +614,6 @@ extern NTSTATUS UDFGetVolumeBitmap(IN PIRP_CONTEXT IrpContext,
 extern NTSTATUS UDFGetRetrievalPointers(IN PIRP_CONTEXT IrpContext,
                                         IN PIRP Irp);
 
-extern NTSTATUS UDFInvalidateVolumes(IN PIRP_CONTEXT IrpContext,
-                                     IN PIRP Irp);
-
 NTSTATUS
 UDFCommonPnp(
     IN PIRP_CONTEXT IrpContext,
@@ -748,6 +729,50 @@ UDFDeallocateCcb(
 VOID
 UDFDeleteCcb(
     PCCB Ccb
+    );
+
+// Bitmap cache stream
+NTSTATUS
+UDFCreateBitmapStream(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN ULONG BitmapPsn,
+    IN ULONG BitmapLength
+    );
+
+VOID
+UDFDeleteBitmapStream(
+    IN PVCB Vcb
+    );
+
+// Per-page bitmap cache access (alloc.cpp)
+VOID
+UDFPinBitmapPage(
+    IN PVCB Vcb,
+    IN ULONG Lbn
+    );
+
+VOID
+UDFUnpinBitmapPage(
+    IN PVCB Vcb
+    );
+
+VOID
+UDFDirtyBitmapPage(
+    IN PVCB Vcb
+    );
+
+BOOLEAN
+UDFIsBitmapBitFree(
+    IN PVCB Vcb,
+    IN ULONG Lbn
+    );
+
+SIZE_T
+UDFGetCachedBitmapLen(
+    IN PVCB Vcb,
+    IN ULONG Start,
+    IN ULONG Limit
     );
 
 // prefxsup.cpp - LCB functions
@@ -1472,5 +1497,43 @@ UDFPrePostIrp(
     _Inout_ PIRP_CONTEXT IrpContext,
     _Inout_ PIRP Irp
     );
+
+VOID
+UDFNotifyReportChange(
+    PIRP_CONTEXT IrpContext,
+    PVCB Vcb,
+    PFCB Fcb,
+    ULONG Filter,
+    ULONG Action,
+    PLCB Lcb,
+    PFILE_OBJECT FileObject
+    );
+
+NTSTATUS
+UDFNonCachedIo(
+    _In_ PIRP_CONTEXT IrpContext,
+    _In_ PFCB Fcb,
+    _In_ LONGLONG StartingOffset,
+    _In_ ULONG ByteCount
+    );
+
+NTSTATUS
+NTAPI
+UDFHijackCompletionRoutine(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIRP Irp,
+    _In_reads_opt_(_Inexpressible_("varies")) PVOID Contxt
+    );
+
+NTSTATUS
+UDFPerformDevIoCtrl(
+    IN ULONG IoControlCode,
+    IN PDEVICE_OBJECT DeviceObject,
+    IN PVOID InputBuffer ,
+    IN ULONG InputBufferLength,
+    OUT PVOID OutputBuffer ,
+    IN ULONG OutputBufferLength,
+    IN BOOLEAN OverrideVerify,
+    OUT PIO_STATUS_BLOCK Iosb OPTIONAL);
 
 #endif  // _UDF_PROTOS_H_

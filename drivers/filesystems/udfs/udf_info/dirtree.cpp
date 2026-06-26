@@ -50,10 +50,6 @@ UDFDirIndexAlloc(
 
     if (!i)
         return NULL;
-#ifdef UDF_LIMIT_DIR_SIZE
-    if (i>UDF_DIR_INDEX_FRAME)
-        return NULL;
-#endif //UDF_LIMIT_DIR_SIZE
 
     j = i >> UDF_DIR_INDEX_FRAME_SH;
     i &= (UDF_DIR_INDEX_FRAME-1);
@@ -129,7 +125,6 @@ UDFDirIndexGrow(
     j = hDirNdx->LastFrameCount+d;
 
     if (j > UDF_DIR_INDEX_FRAME) {
-#ifndef UDF_LIMIT_DIR_SIZE // release
         // Grow header
         k = hDirNdx->FrameCount;
         if (!MyReallocPool__((int8*)hDirNdx, sizeof(DIR_INDEX_HDR) + k*sizeof(PDIR_INDEX_ITEM),
@@ -151,9 +146,6 @@ UDFDirIndexGrow(
         RtlZeroMemory(FrameList[k], (j-UDF_DIR_INDEX_FRAME)*sizeof(DIR_INDEX_ITEM));
         hDirNdx->LastFrameCount = j-UDF_DIR_INDEX_FRAME;
         (*_hDirNdx) = hDirNdx;
-#else   // UDF_LIMIT_DIR_SIZE
-        return STATUS_INSUFFICIENT_RESOURCES;
-#endif  // UDF_LIMIT_DIR_SIZE
     } else {
         k = hDirNdx->FrameCount;
         FrameList = (PDIR_INDEX_ITEM*)(hDirNdx+1);
@@ -239,22 +231,16 @@ UDFDirIndexTrunc(
     This routine returns pointer to DirIndex item with index i.
  */
 PDIR_INDEX_ITEM
-__fastcall
 UDFDirIndex(
     IN PDIR_INDEX_HDR hDirNdx,
     IN uint_di i
     )
 {
-#ifdef UDF_LIMIT_DIR_SIZE
-    if ( hDirNdx && (i < hDirNdx->LastFrameCount))
-        return &( (((PDIR_INDEX_ITEM*)(hDirNdx+1))[0])[i] );
-#else //UDF_LIMIT_DIR_SIZE
     uint_di j, k;
     if ( hDirNdx &&
         ((j = (i >> UDF_DIR_INDEX_FRAME_SH)) < (k = hDirNdx->FrameCount) ) &&
         ((i = (i & (UDF_DIR_INDEX_FRAME-1))) < ((j < (k-1)) ? UDF_DIR_INDEX_FRAME : hDirNdx->LastFrameCount)) )
         return &( (((PDIR_INDEX_ITEM*)(hDirNdx+1))[j])[i] );
-#endif // UDF_LIMIT_DIR_SIZE
     return NULL;
 }
 
@@ -274,16 +260,10 @@ UDFDirIndexGetFrame(
     if (Frame >= hDirNdx->FrameCount)
         return NULL;
     if (Index) {
-#ifdef UDF_LIMIT_DIR_SIZE
-        (*Index) = Rel;
-//    if (FrameLen)
-        (*FrameLen) = hDirNdx->LastFrameCount;
-#else //UDF_LIMIT_DIR_SIZE
         (*Index) = Frame*UDF_DIR_INDEX_FRAME+Rel;
 //    if (FrameLen)
         (*FrameLen) = (Frame < (hDirNdx->FrameCount-1)) ? UDF_DIR_INDEX_FRAME :
                                                           hDirNdx->LastFrameCount;
-#endif //UDF_LIMIT_DIR_SIZE
     }
     return ((PDIR_INDEX_ITEM*)(hDirNdx+1))[Frame]+Rel;
 } // end UDFDirIndexGetFrame()
@@ -467,7 +447,6 @@ UDFIndexDirectory(
     int8* buff;
     PEXTENT_INFO ExtInfo;  // Extent array for directory
     uint16 PartNum;
-    ULONG ReadBytes;
     uint16 valueCRC;
 
     if (!FileInfo) return STATUS_INVALID_PARAMETER;
@@ -478,8 +457,12 @@ UDFIndexDirectory(
     UDFPrint(("UDF: scaning directory\n"));
     // allocate buffer for the whole directory
     ASSERT((uint32)(ExtInfo->Length));
-    if (!ExtInfo->Length)
+
+    if (!ExtInfo->Length) {
+
         return STATUS_FILE_CORRUPT_ERROR;
+    }
+
     buff = (int8*)DbgAllocatePool(PagedPool, (uint32)(ExtInfo->Length));
     if (!buff)
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -487,7 +470,7 @@ UDFIndexDirectory(
     ExtInfo->Flags |= EXTENT_FLAG_ALLOC_SEQUENTIAL;
 
     // read FileIdents
-    status = UDFReadExtent(IrpContext, Vcb, ExtInfo, 0, (uint32)(ExtInfo->Length), FALSE, buff, &ReadBytes);
+    status = UDFReadExtent(IrpContext, Vcb, ExtInfo, 0, (uint32)(ExtInfo->Length), FALSE, buff);
     if (!NT_SUCCESS(status)) {
         DbgFreePool(buff);
         return status;
@@ -648,7 +631,7 @@ UDFIndexDirectory(
 #ifdef UDF_CHECK_DISK_ALLOCATION
         if (!(FileId->fileCharacteristics & FILE_DELETED) &&
             (UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) != LBA_OUT_OF_EXTENT) &&
-             UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) )) {
+             (Vcb->BitmapFcb ? UDFIsBitmapBitFree(Vcb, UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) - Vcb->Partitions[0].PartitionRoot) : UDFGetFreeBit(((uint32*)(Vcb->FSBM_Bitmap)), UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) - Vcb->Partitions[0].PartitionRoot))) {
 
             AdPrint(("Ref to Discarded block %x\n",UDFPartLbaToPhys(Vcb, &(DirNdx->FileEntryLoc)) ));
             BrutePoint();
@@ -699,7 +682,6 @@ UDFReTagDirectory(
     uint32 Offset;
     int8* Buf;
     NTSTATUS status;
-    ULONG ReadBytes;
     SIZE_T WrittenBytes;
     PUDF_FILE_INFO curFileInfo;
     PDIR_INDEX_ITEM DirNdx;
@@ -737,7 +719,7 @@ UDFReTagDirectory(
     while((DirNdx = UDFDirIndexScan(&ScanContext, NULL))) {
 
         status = UDFReadFile__(IrpContext, Vcb, FileInfo, Offset = DirNdx->Offset,
-                                                   l = DirNdx->Length, FALSE, Buf, &ReadBytes);
+                                                   l = DirNdx->Length, FALSE, Buf);
         if (!NT_SUCCESS(status)) {
             DbgFreePool(Buf);
             return status;

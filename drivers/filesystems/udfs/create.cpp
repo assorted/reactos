@@ -117,6 +117,19 @@ UDFSupersedeOrOverwriteFile(
         // Update FCB cache
         Fcb->FileAttributes = NewFileAttributes;
 
+        // Recreating the main file drops its named streams. For a regular file
+        // (not itself a stream or stream directory) that has a stream directory,
+        // delete the streams here. Safe under the Vcb-exclusive overwrite path.
+        if (!UDFIsAStream(FileInfo) && !UDFIsAStreamDir(FileInfo) &&
+            UDFHasAStreamDir(FileInfo)) {
+
+            RC = UDFDeleteAllStreams(IrpContext, Vcb, FileInfo);
+            if (!NT_SUCCESS(RC)) {
+                AdPrint(("    Error dropping streams on overwrite\n"));
+                try_return(RC);
+            }
+        }
+
 try_exit: NOTHING;
 
     } _SEH2_FINALLY {
@@ -454,6 +467,7 @@ UDFOpenObjectFromDirContext(
         // Use pre-created FileInfo (e.g., from UDFCreateFile__).
         // Skip disk read — FileInfo is already open with valid RefCount.
         NewFileInfo = ExistingFileInfo;
+        Status = STATUS_SUCCESS;
     } else {
         // Step 1: Open FileInfo from directory context (read from disk or find cached)
         ASSERT(DirContext);
@@ -987,47 +1001,46 @@ try_exit:   NOTHING;
 * Function: UDFNormalizeStreamSuffix()
 *
 * Description:
-*   Strip the default stream type suffix ":$DATA" from a stream name.
-*   UDF only supports the $DATA stream type; any other suffix is rejected.
+*   Validate and strip the stream type suffix that UDFDissectName leaves in
+*   RemainingName after extracting a stream component into StreamName.
 *
-*   Input Name may be ":stream_name:$DATA" or ":stream_name" or just
-*   the FileName tail containing ":$DATA".
+*   On entry StreamName holds the stream name (e.g. "stream1", possibly empty
+*   for the default data stream) and RemainingName holds the trailing suffix
+*   (e.g. ":$DATA") or is empty when no suffix was present. UDF only supports
+*   the default $DATA stream type, so the suffix — if any — must be exactly
+*   ":$DATA"; on a match RemainingName is consumed (Length set to 0).
 *
-* Return Value: STATUS_SUCCESS or STATUS_OBJECT_NAME_INVALID
+* Raises: STATUS_OBJECT_NAME_INVALID for an unknown suffix, or for an empty
+*   stream name with no suffix (e.g. "file:").
 *
 *************************************************************************/
 static
 VOID
 UDFNormalizeStreamSuffix(
     IN PIRP_CONTEXT IrpContext,
-    IN OUT PUNICODE_STRING Name
+    IN PUNICODE_STRING StreamName,
+    IN OUT PUNICODE_STRING RemainingName
     )
 {
     static const UNICODE_STRING DataSuffix = RTL_CONSTANT_STRING(L":$DATA");
 
-    // Name must be long enough to contain ":$DATA" suffix
-    if (Name->Length <= DataSuffix.Length)
-        return;
-
-    // Check if Name ends with ":$DATA" (case-insensitive)
-    UNICODE_STRING Tail;
-    Tail.Buffer = &Name->Buffer[(Name->Length - DataSuffix.Length) / sizeof(WCHAR)];
-    Tail.Length = Tail.MaximumLength = DataSuffix.Length;
-
-    if (RtlEqualUnicodeString(&Tail, &DataSuffix, TRUE)) {
-        // Strip the default stream type suffix
-        Name->Length -= DataSuffix.Length;
-        return;
-    }
-
-    // Check if there's a second ':' at all — if so, it's an unknown stream type
-    PWCHAR buf = Name->Buffer;
-    USHORT len = Name->Length / sizeof(WCHAR);
-    for (USHORT i = 1; i < len; i++) {
-        if (buf[i] == L':') {
+    if (RemainingName->Length == 0) {
+        // No suffix follows the stream name. An empty stream name with no
+        // suffix ("file:") is not a valid object.
+        if (StreamName->Length == 0) {
             UDFRaiseStatus(IrpContext, STATUS_OBJECT_NAME_INVALID);
         }
+        return;
     }
+
+    // A suffix is present — it must be exactly ":$DATA" (case-insensitive).
+    // Anything else is an unsupported stream type.
+    if (RtlEqualUnicodeString(RemainingName, &DataSuffix, TRUE)) {
+        RemainingName->Length = 0;
+        return;
+    }
+
+    UDFRaiseStatus(IrpContext, STATUS_OBJECT_NAME_INVALID);
 }
 
 /*************************************************************************
@@ -1095,16 +1108,21 @@ UDFCommonCreate(
 
     UNICODE_STRING FinalName;           // 'cdf' - current path component
     UNICODE_STRING RemainingName;       // 'fff\rrrr.tre:s' - remaining path to parse
-    UNICODE_STRING StreamName;          // ':s'
+    UNICODE_STRING StreamName;          // bare stream name when creating a new stream
 
     PUDF_FILE_INFO RelatedFileInfo;
     PUDF_FILE_INFO OldRelatedFileInfo = NULL;
     PUDF_FILE_INFO NewFileInfo = NULL;
+    // Base file of a stream path, opened as an intermediate node. It carries an
+    // extra reference (from path traversal) that is normally absorbed by the
+    // stream directory linkage on success. If the stream operation fails before
+    // that linkage is established, this reference must be released explicitly,
+    // otherwise the base file leaks a reference and can no longer be deleted.
+    PUDF_FILE_INFO StreamBaseFileInfo = NULL;
     PUDF_FILE_INFO LastGoodFileInfo = NULL;
     BOOLEAN VolumeOpen = FALSE;
 
     BOOLEAN StreamOpen = FALSE;
-    BOOLEAN StreamExists = FALSE;
     ULONG SNameIndex = 0;
 
     BOOLEAN NewFileCreated = FALSE;
@@ -1278,6 +1296,16 @@ UDFCommonCreate(
         !OpenByFileId) {
 
         VolumeOpen = TRUE;
+        UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
+
+    } else if (CreateDisposition == FILE_SUPERSEDE ||
+               CreateDisposition == FILE_OVERWRITE ||
+               CreateDisposition == FILE_OVERWRITE_IF) {
+
+        // Overwriting/superseding an existing file may drop its stream directory,
+        // which removes prefix LCBs and adjusts VCB-global reference counts that
+        // are not individually locked — take the Vcb exclusively. These
+        // dispositions are rare, so the reduced concurrency is acceptable.
         UDFAcquireVcbExclusive(IrpContext, Vcb, FALSE);
 
     } else {
@@ -1518,16 +1546,10 @@ UDFCommonCreate(
             RelatedFileInfo = Vcb->RootIndexFcb->FileInfo;
         }
 
-        if (StreamOpen) {
-            StreamName = *FileName;
-            StreamName.Buffer += SNameIndex;
-            StreamName.Length -= (USHORT)SNameIndex*sizeof(WCHAR);
-            // Strip :$DATA suffix; raises STATUS_OBJECT_NAME_INVALID on unknown type
-            UDFNormalizeStreamSuffix(IrpContext, &StreamName);
-            // if StreamOpen specified & stream name starts with NULL character
-            // we should create Stream Dir at first
-            RemainingName.Length -= StreamName.Length;
-        }
+        // RemainingName keeps the full path including any ":stream:$DATA"
+        // suffix. The traversal loop parses the stream component in place:
+        // UDFDissectName splits on ':' and the suffix is validated as each
+        // stream component is reached.
         FinalName.MaximumLength = RemainingName.MaximumLength;
 
         Status = STATUS_SUCCESS;
@@ -1664,8 +1686,12 @@ UDFCommonCreate(
             try_return(Status = STATUS_OBJECT_PATH_NOT_FOUND);
         }
 
-        // Path traversal start point must be a directory.
-        if (!(CurrentFcb->FcbState & UDF_FCB_DIRECTORY)) {
+        // Path traversal start point must be a directory — unless the
+        // remaining path is a stream suffix (":stream"), in which case the
+        // start point is the base file that owns the stream (e.g. the prefix
+        // search matched the base file and left ":stream" to process).
+        if (!(CurrentFcb->FcbState & UDF_FCB_DIRECTORY) &&
+            !(RemainingName.Length && RemainingName.Buffer[0] == L':')) {
             try_return(Status = STATUS_OBJECT_PATH_NOT_FOUND);
         }
 
@@ -1691,13 +1717,24 @@ UDFCommonCreate(
 
         while (TRUE) {
 
-            // get next path part using UDFDissectName
-            // Splits on both '\' and ':'; IsStreamComponent is TRUE when ':' prefix detected.
+            // Split off the next component from the name.
+
             UDFDissectName(IrpContext, &RemainingName, &FinalName, &IsStreamComponent);
 
             // Cannot open children within a named stream — streams are leaf objects.
+
             if (RelatedFileInfo && UDFIsAStream(RelatedFileInfo)) {
+
                 try_return(Status = STATUS_INVALID_PARAMETER);
+            }
+
+            // For a stream component, the remaining tail is its type suffix.
+            // Validate it (":$DATA" only) and consume it from RemainingName so
+            // the stream name in FinalName is processed as the final component.
+
+            if (IsStreamComponent) {
+
+                UDFNormalizeStreamSuffix(IrpContext, &FinalName, &RemainingName);
             }
 
             if ( FinalName.Length &&
@@ -1705,10 +1742,6 @@ UDFCommonCreate(
                 // ...wow! non-zero! try to open!
                 if (!NT_SUCCESS(Status)) {
                     AdPrint(("    Error opening path component\n"));
-                    // we haven't reached last name part... hm..
-                    // probably, the path specified is invalid..
-                    // or we had a hard error... What else can we do ?
-                    // Only say ..CK OFF !!!!
                     if (Status == STATUS_OBJECT_NAME_NOT_FOUND)
                         Status = STATUS_OBJECT_PATH_NOT_FOUND;
                     try_return(Status);
@@ -1769,8 +1802,11 @@ UDFCommonCreate(
                             (DirContext.DirNdx->FileCharacteristics & FILE_DIRECTORY)) {
                             Status = STATUS_OBJECT_PATH_NOT_FOUND;
                         } else
-                        // Check if intermediate path component is a directory
+                        // Check if intermediate path component is a directory.
+                        // A leading ':' in RemainingName is a stream suffix, not a
+                        // subdirectory — a file with a stream is still valid here.
                         if (RemainingName.Length &&
+                            RemainingName.Buffer[0] != L':' &&
                             !(DirContext.DirNdx->FileCharacteristics & FILE_DIRECTORY)) {
                             AdPrint(("    Not a directory\n"));
                             Status = STATUS_NOT_A_DIRECTORY;
@@ -1795,21 +1831,39 @@ UDFCommonCreate(
                                 try_return(Status);
                             }
                             if (!RemainingName.Length) {
+                                // Metadata files are internal volume structures and
+                                // must not be opened by the caller.
+                                if (DirContext.DirNdx->FileCharacteristics & FILE_METADATA) {
+                                    try_return(Status = STATUS_ACCESS_DENIED);
+                                }
                                 // Final path component found — break out of loop.
                                 // Will be opened post-loop with PerformUserOpen=TRUE.
                                 break;
                             }
-                            // Intermediate path component — open now without user open
+                            // Intermediate path component (or the base file of a
+                            // stream path, where RemainingName still holds ":stream")
+                            // — open now without user open. Non-zero RemainingNameLength
+                            // tells UDFOpenObjectFromDirContext to create an LCB.
                             Status = UDFOpenObjectFromDirContext(
                                 IrpContext, IrpSp, Vcb, &DirContext,
                                 RelatedFileInfo,
                                 &CurrentFcb, &PreviousFcb,
                                 IgnoreCase, FALSE, CreateDisposition,
-                                RemainingName.Length, NULL, NULL,
+                                RemainingName.Length,
+                                NULL, NULL,
                                 NULL,  // ExistingFileInfo
                                 &NewFileInfo, &PtrNewFcb);
                             if (NT_SUCCESS(Status)) {
                                 LastGoodFileInfo = NewFileInfo;
+                                // If the remaining tail is a stream suffix, this
+                                // intermediate node is the base file of a stream
+                                // path. Remember it so its extra traversal
+                                // reference can be released if the stream
+                                // operation fails before the SDir linkage forms.
+                                if (StreamOpen && RemainingName.Length &&
+                                    RemainingName.Buffer[0] == L':') {
+                                    StreamBaseFileInfo = NewFileInfo;
+                                }
                             }
                         }
                     }
@@ -1824,22 +1878,24 @@ UDFCommonCreate(
                     // then open it through the unified path (FCB + lock + LCB).
                     // DissectName already consumed the ':' prefix, so FinalName
                     // is the stream name (e.g., "stream1" not ":stream1").
+
+                    // OpenTargetDirectory (rename/move target lookup) is not a
+                    // meaningful operation on a named stream — reject it.
+
+                    if (OpenTargetDirectory) {
+
+                        try_return(Status = STATUS_INVALID_PARAMETER);
+                    }
+
                     PUDF_FILE_INFO StreamDirInfo = NULL;
                     Status = UDFOpenStreamDir__(IrpContext, Vcb, RelatedFileInfo, &StreamDirInfo);
-                    if (NT_SUCCESS(Status)) {
-                        StreamExists = TRUE;
-                    } else
                     if (Status == STATUS_NOT_FOUND) {
                         // Stream Dir doesn't exist, but caller wants it to be
                         // created. Lets try to help him...
                         if ((CreateDisposition == FILE_CREATE) ||
                            (CreateDisposition == FILE_OPEN_IF) ||
-                           (CreateDisposition == FILE_OVERWRITE_IF) ||
-                            OpenTargetDirectory) {
+                           (CreateDisposition == FILE_OVERWRITE_IF)) {
                             Status = UDFCreateStreamDir__(IrpContext, Vcb, RelatedFileInfo, &StreamDirInfo);
-                            if (NT_SUCCESS(Status)) {
-                                StreamExists = TRUE;
-                            }
                         }
                         if (!NT_SUCCESS(Status)) {
                             // Remap STATUS_NOT_FOUND for consistent error handling
@@ -1864,6 +1920,12 @@ UDFCommonCreate(
                             &NewFileInfo, &PtrNewFcb);
                         if (NT_SUCCESS(Status)) {
                             LastGoodFileInfo = NewFileInfo;
+                            // The base file is now held by the stream directory
+                            // linkage (and will be released through it on
+                            // teardown). Its extra traversal reference is no
+                            // longer dangling, so stop tracking it for explicit
+                            // release.
+                            StreamBaseFileInfo = NULL;
                         } else {
                             // FCB setup failed — close stream dir and exit
                             UDFCloseFile__(IrpContext, Vcb, StreamDirInfo);
@@ -1903,6 +1965,15 @@ UDFCommonCreate(
                 // update last good state information...
                 OldRelatedFileInfo = RelatedFileInfo;
                 RelatedFileInfo = NewFileInfo;
+
+                // Base file of a stream path doesn't exist. Stop here: FinalName
+                // holds the base name and RemainingName still holds the ":stream"
+                // suffix. Post-loop creation builds the file, its stream directory,
+                // and the stream from that suffix.
+                if (Status == STATUS_OBJECT_NAME_NOT_FOUND && StreamOpen &&
+                    RemainingName.Length && RemainingName.Buffer[0] == L':') {
+                    break;
+                }
 
                 // If this was the final path component (RemainingName exhausted),
                 // break out of loop for open/create finalization.
@@ -1966,7 +2037,8 @@ UDFCommonCreate(
                                              UdfIsExtendedFESupported(Vcb),
                                              (CreateDisposition == FILE_CREATE), OldRelatedFileInfo, &NewFileInfo);
                         if (!NT_SUCCESS(Status)) {
-                            AdPrint(("    Creation error\n"));
+                            UDFPrint(("UDF BM: UDFCreateFile__ FAILED Status=%x Dir=%d Name=%wZ\n",
+                                Status, DirectoryFile, &FinalName));
                             try_return(Status);
                         }
                         // Update parent object
@@ -1993,14 +2065,6 @@ UDFCommonCreate(
                         NewFileCreated = TRUE;
                         CreateDisposition = FILE_CREATE;
                         Status = STATUS_SUCCESS;
-                    }
-                    // Stream transition: if the file path is exhausted but
-                    // a stream suffix exists, switch to stream processing.
-                    // RemainingName = StreamName (e.g., ":stream1") causes
-                    // DissectName to set IsStreamComponent=TRUE on next iteration.
-                    if (StreamOpen && NT_SUCCESS(Status) && !StreamExists) {
-                        RemainingName = StreamName;
-                        continue;
                     }
                     break;
                 }
@@ -2090,9 +2154,8 @@ UDFCommonCreate(
         if (!NT_SUCCESS(Status)) {
             if (Status == STATUS_OBJECT_NAME_NOT_FOUND ||
                 Status == STATUS_OBJECT_PATH_NOT_FOUND) {
-                if ( ((CreateDisposition == FILE_OPEN) ||
-                    (CreateDisposition == FILE_OVERWRITE)) /*&&
-                    (!StreamOpen || !StreamExists)*/ ){
+                if ((CreateDisposition == FILE_OPEN) ||
+                    (CreateDisposition == FILE_OVERWRITE)) {
                     AdPrint(("    File doesn't exist\n"));
                     try_return(Status);
                 }
@@ -2127,8 +2190,6 @@ UDFCommonCreate(
             }
 
             // Create a new file/directory here ...
-            if (StreamOpen)
-                StreamName.Buffer[StreamName.Length/sizeof(WCHAR)] = 0;
             // FinalName from UDFDissectName never contains backslashes
             {
                 USHORT i;
@@ -2191,7 +2252,25 @@ UDFCommonCreate(
                 }
             }
 
-            if (StreamOpen && !StreamExists) {
+            // Decide whether a separate stream object must be created.
+            // When OldRelatedFileInfo is already a stream directory, the base file
+            // and SDir existed and FinalName (the stream) was just created above.
+            // Otherwise, for a stream path, the base file was created above and its
+            // stream suffix still sits in RemainingName — extract the stream name
+            // (validating/consuming ":$DATA"). An empty stream name ("file::$DATA")
+            // is the default data stream, i.e. the base file itself — nothing more
+            // to create.
+            BOOLEAN CreateStreamObject = StreamOpen && !UDFIsAStreamDir(OldRelatedFileInfo) &&
+                                         RemainingName.Length && RemainingName.Buffer[0] == L':';
+            if (CreateStreamObject) {
+                BOOLEAN IsStreamDummy;
+                RtlZeroMemory(&StreamName, sizeof(StreamName));
+                UDFDissectName(IrpContext, &RemainingName, &StreamName, &IsStreamDummy);
+                UDFNormalizeStreamSuffix(IrpContext, &StreamName, &RemainingName);
+                CreateStreamObject = (StreamName.Length != 0);
+            }
+
+            if (CreateStreamObject) {
 
                 // PHASE 0: Open the base file through unified path (FCB + lock + LCB)
                 PUDF_FILE_INFO BaseFileInfo = NewFileInfo;
@@ -2243,10 +2322,9 @@ UDFCommonCreate(
                 }
                 LastGoodFileInfo = NewFileInfo;
 
-                // PHASE 2: Create stream file in the stream directory
+                // PHASE 2: Create stream file in the stream directory.
+                // StreamName already holds the bare stream name (no leading ':').
                 RelatedFileInfo = NewFileInfo;
-                StreamName.Buffer++;
-                StreamName.Length -= sizeof(WCHAR);
                 Status = UDFCreateFile__(IrpContext, Vcb, IgnoreCase, &StreamName, 0, 0,
                          UdfIsExtendedFESupported(Vcb), (CreateDisposition == FILE_CREATE),
                          RelatedFileInfo, &NewFileInfo);
@@ -2395,6 +2473,16 @@ try_exit:   NOTHING;
 
         if (_SEH2_AbnormalTermination()) {
 
+            // Release the dangling reference on a stream path's base file.
+            // The stream operation raised before the SDir linkage was formed,
+            // so the base file's extra traversal reference would otherwise leak
+            // (teardown below stops at the base's non-zero FcbReference when it
+            // is held by a delayed close).
+            if (StreamBaseFileInfo) {
+                UDFCloseFile__(IrpContext, Vcb, StreamBaseFileInfo);
+                StreamBaseFileInfo = NULL;
+            }
+
             //
             //  In the error path we start by calling our teardown routine if we
             //  have a CurrentFcb.
@@ -2415,17 +2503,13 @@ try_exit:   NOTHING;
                 }
             }
 
-            //
-            //  No need to complete the request.
-            //
+            // No need to complete the request.
 
             IrpContext = NULL;
             Irp = NULL;
 
-        //
-        //  If we posted this request we need to show that there is no
-        //  reason to complete the request.
-        //
+        // If we posted this request we need to show that there is no
+        // reason to complete the request.
 
         } else if (Status == STATUS_PENDING) {
 
@@ -2434,9 +2518,7 @@ try_exit:   NOTHING;
 
         } else if (!NT_SUCCESS(Status)) {
 
-            //
-            //  Failure path — clean up partial structures.
-            //
+            // Failure path — clean up partial structures.
 
             AdPrint(("UDF: CREATE FAILED RC=%x Fcb=%p Name='%wZ' Disp=%x DesAccess=%x\n",
                      Status, PtrNewFcb,
@@ -2445,17 +2527,21 @@ try_exit:   NOTHING;
                      IrpSp->Parameters.Create.SecurityContext ?
                          IrpSp->Parameters.Create.SecurityContext->DesiredAccess : 0));
 
-            //
-            //  Balance UDFReferenceFile__ from prefix match / path traversal.
-            //
+            // Balance UDFReferenceFile__ from prefix match / path traversal.
+
+            // Release the dangling reference on a stream path's base file
+            // (stream operation failed before the SDir linkage was formed).
+            // Guard against double-close when the base also surfaced as NewFileInfo.
+            if (StreamBaseFileInfo && StreamBaseFileInfo != NewFileInfo) {
+                UDFCloseFile__(IrpContext, Vcb, StreamBaseFileInfo);
+            }
+            StreamBaseFileInfo = NULL;
 
             if (NewFileInfo) {
                 UDFCloseFile__(IrpContext, Vcb, NewFileInfo);
             }
 
-            //
-            //  Mark last successfully opened directory as valid.
-            //
+            // Mark last successfully opened directory as valid.
 
             if (LastGoodFileInfo && LastGoodFileInfo->Fcb) {
                 LastGoodFileInfo->Fcb->FcbState |= UDF_FCB_VALID;
@@ -2463,11 +2549,9 @@ try_exit:   NOTHING;
             }
 
 
-            //
-            //  Teardown partial FCB structures.
-            //  Protect PreviousFcb from deletion via FcbReference bump —
-            //  TeardownStructures walks parent chain and may free parents.
-            //
+            // Teardown partial FCB structures.
+            // Protect PreviousFcb from deletion via FcbReference bump —
+            // TeardownStructures walks parent chain and may free parents.
 
             // CurrentFcb may be NULL on early failures (e.g. FILE_CREATE on existing root)
             // while LastGoodFileInfo->Fcb is valid from path traversal. This is expected.
@@ -2501,32 +2585,30 @@ try_exit:   NOTHING;
                 }
 
             } else {
-                ASSERT(!LastGoodFileInfo);
+                // LastGoodFileInfo can be set when PtrNewFcb == RootIndexFcb
+                // (e.g. creating file in root dir) — no teardown needed for root
+                ASSERT(!LastGoodFileInfo || (PtrNewFcb == Vcb->RootIndexFcb));
             }
         }
 
-        //
-        //  Release the Fcb locks.
-        //
+        // Release the Fcb locks.
 
         if (PreviousFcb && PreviousFcb != CurrentFcb) {
+
             UDFReleaseFcb(IrpContext, PreviousFcb);
         }
 
         if (CurrentFcb != NULL) {
+
             UDFReleaseFcb(IrpContext, CurrentFcb);
         }
 
-        //
-        //  Release the Vcb.
-        //
+        // Release the Vcb.
 
         UDFReleaseVcb(IrpContext, Vcb);
 
-        //
-        //  Call our completion routine.  It will handle the case where either
-        //  the Irp and/or IrpContext are gone.
-        //
+        // Call our completion routine.  It will handle the case where either
+        // the Irp and/or IrpContext are gone.
 
         UDFCompleteRequest( IrpContext, Irp, Status );
 
@@ -2600,6 +2682,23 @@ UDFFirstOpenFile(
         (*PtrNewFcb)->FileInfo = NewFileInfo;
         NewFileInfo->Fcb = (*PtrNewFcb);
         (*PtrNewFcb)->ParentFcb = RelatedFileInfo->Fcb;
+
+        // On 32-bit, FID_DIR_MASK is a no-op (bit 31 already set in
+        // kernel addresses), so a file and a directory at the same LBA
+        // share the same FileId.  When an LBA is reused (e.g., deleted
+        // file's block allocated for a new stream directory), the stale
+        // FCB in FcbTable may have wrong type flags.  Update them.
+        if (UDFIsADirectory(NewFileInfo)) {
+            (*PtrNewFcb)->FcbState |= UDF_FCB_DIRECTORY;
+            (*PtrNewFcb)->Header.NodeTypeCode = UDF_NODE_TYPE_INDEX;
+        } else {
+            (*PtrNewFcb)->FcbState &= ~UDF_FCB_DIRECTORY;
+            (*PtrNewFcb)->Header.NodeTypeCode = UDF_NODE_TYPE_DATA;
+        }
+        // Clear stale flags from previous incarnation
+        (*PtrNewFcb)->FcbState &= ~(UDF_FCB_DELETED | UDF_FCB_NOT_FOUND_ON_MEDIA);
+        // Update Dloc linkage for the new file
+        NewFileInfo->Dloc->CommonFcb = (*PtrNewFcb);
 
         UDFUnlockFcbTable(IrpContext, Vcb);
         return STATUS_SUCCESS;
@@ -2911,6 +3010,16 @@ UDFCompleteFcbOpen(
         Ccb->Flags = UserCcbFlags;
         if (DeleteOnClose) {
             Ccb->Flags |= UDF_CCB_DELETE_ON_CLOSE;
+        }
+
+        // A relative open (RelatedFileObject supplied) leaves FileObject->FileName
+        // holding only the final path component. Record it so change notifications
+        // build the absolute target name from the LCB chain instead of trusting
+        // the relative FileName.
+
+        if (IrpSp->FileObject->RelatedFileObject != NULL) {
+
+            Ccb->Flags |= CCB_FLAG_HAS_RELATED_CCB;
         }
 
         // Acquire or create LCB to link parent directory FCB to this file FCB.

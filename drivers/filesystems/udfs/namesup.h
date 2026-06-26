@@ -33,10 +33,10 @@ UDFIsNameValid(
     OUT ULONG* SNameIndex
     );
 
-extern BOOLEAN __fastcall UDFIsMatchAllMask(IN PUNICODE_STRING Name,
+extern BOOLEAN UDFIsMatchAllMask(IN PUNICODE_STRING Name,
                                  OUT BOOLEAN* DosOpen);
 
-extern BOOLEAN __fastcall UDFCanNameBeA8dot3(IN PUNICODE_STRING Name);
+extern BOOLEAN UDFCanNameBeA8dot3(IN PUNICODE_STRING Name);
 
 NTSTATUS
 UDFGetFileNameFromFileInfo(

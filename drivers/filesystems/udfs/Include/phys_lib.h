@@ -8,32 +8,15 @@
 #define __UDF_PHYS_LIB__H__
 
 NTSTATUS
-UDFTRead(
-    PIRP_CONTEXT IrpContext,
-    PVOID _Vcb,
-    PVOID Buffer,     // Target buffer
-    SIZE_T Length,
-    ULONG LBA,
-    PULONG ReadBytes,
-    ULONG Flags = 0
-    );
-
-NTSTATUS
-UDFTWrite(
+UDFReadWriteSectors(
     IN PIRP_CONTEXT IrpContext,
-    IN PVOID _Vcb,
-    IN PVOID Buffer,     // Target buffer
-    IN SIZE_T Length,
-    IN ULONG LBA,
-    OUT PSIZE_T WrittenBytes,
-    IN ULONG Flags = 0
+    IN PVCB Vcb,
+    IN LONGLONG StartingOffset,
+    IN ULONG ByteCount,
+    IN BOOLEAN ReturnError,
+    IN PVOID Buffer,
+    IN BOOLEAN IsWrite
     );
-
-#define PH_TMP_BUFFER          1
-#define PH_LOCK_CACHE          0x10000000
-
-#define PH_EX_WRITE            0x80000000
-#define PH_IO_LOCKED           0x20000000
 
 extern NTSTATUS UDFPrepareForWriteOperation(
     IN PVCB Vcb,
@@ -48,9 +31,6 @@ UDFDetermineVolumeLayout(
     PULONG SessionStart,
     PULONG SessionEnd
     );
-
-extern NTSTATUS UDFGetBlockSize(PDEVICE_OBJECT DeviceObject, // the target device object
-                                PVCB           Vcb);         // Volume control block fro this DevObj
 
 NTSTATUS
 UDFGetDiskInfo(
@@ -67,9 +47,6 @@ UDFPrepareForReadOperation(
     IN uint32 BCount
     );
 
-extern NTSTATUS UDFDoDismountSequence(IN PVCB Vcb,
-                                      IN BOOLEAN Eject);
-
 // read physical sectors
 NTSTATUS
 UDFReadSectors(
@@ -79,23 +56,9 @@ UDFReadSectors(
     IN ULONG Lba,
     IN ULONG BCount,
     IN BOOLEAN Direct,
-    OUT PCHAR Buffer,
-    OUT PULONG ReadBytes
+    OUT PCHAR Buffer
     );
 
-// read data inside physical sector
-NTSTATUS
-UDFReadInSector(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN BOOLEAN Translate,       // Translate Logical to Physical
-    IN ULONG Lba,
-    IN ULONG i,                 // offset in sector
-    IN ULONG l,                 // transfer length
-    IN BOOLEAN Direct,
-    OUT PCHAR Buffer,
-    OUT PULONG ReadBytes
-    );
 
 // read unaligned data
 NTSTATUS
@@ -106,8 +69,7 @@ UDFReadData(
     IN LONGLONG Offset,
     IN ULONG Length,
     IN BOOLEAN Direct,
-    OUT PCHAR Buffer,
-    OUT PULONG ReadBytes
+    OUT PCHAR Buffer
     );
 
 // write physical sectors
@@ -120,17 +82,6 @@ NTSTATUS UDFWriteSectors(IN PIRP_CONTEXT IrpContext,
                                                     // data to indefinite term
                          IN PCHAR Buffer,
                          OUT PSIZE_T WrittenBytes);
-// write directly to cached sector
-NTSTATUS UDFWriteInSector(
-    IN PIRP_CONTEXT IrpContext,
-    IN PVCB Vcb,
-    IN BOOLEAN Translate,       // Translate Logical to Physical
-    IN ULONG Lba,
-    IN ULONG i,                 // offset in sector
-    IN ULONG l,                 // transfer length
-    IN BOOLEAN Direct,
-    OUT PCHAR Buffer,
-    OUT PSIZE_T WrittenBytes);
 
 // write data at unaligned offset & length
 NTSTATUS
@@ -151,5 +102,11 @@ UDFWriteData(
 
 #define SwapCopyUchar4(Dst, Src) \
     (*(UNALIGNED ULONG*)(Dst) = _byteswap_ulong(*(UNALIGNED ULONG*)(Src)))
+
+uint32
+UDFFixFPAddress(
+    IN PVCB Vcb,
+    IN uint32 Lba
+    );
 
 #endif //__UDF_PHYS_LIB__H__

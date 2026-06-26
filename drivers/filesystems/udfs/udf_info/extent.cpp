@@ -272,7 +272,6 @@ UDFShortAllocDescToMapping(
     EXTENT_AD AllocExt;
     PALLOC_EXT_DESC NextAllocDesc;
     lb_addr locAddr;
-    ULONG ReadBytes;
     EXTENT_INFO NextAllocLoc;
     BOOLEAN w2k_compat = FALSE;
 
@@ -338,7 +337,7 @@ UDFShortAllocDescToMapping(
 
             // record information about this frag
             locAddr.logicalBlockNum = AllocDesc->extPosition;
-            AllocExt.extLength = len;
+            AllocExt.extLength = ALIGN_UP_BY(len, Vcb->SectorSize);
             AllocExt.extLocation = UDFPartLbaToPhys(Vcb, &locAddr);
             if (AllocExt.extLocation == LBA_OUT_OF_EXTENT) {
                 UDFPrint(("bad address\n"));
@@ -360,7 +359,7 @@ UDFShortAllocDescToMapping(
             if (!AllocLoc->Mapping ||
             // read this frag
                !NT_SUCCESS(UDFReadExtent(IrpContext, Vcb, &NextAllocLoc,
-                                0, len, FALSE, (int8*)NextAllocDesc, &ReadBytes)))
+                                0, len, FALSE, (int8*)NextAllocDesc)))
             {
                 MyFreePool__(AllocMap);
                 MyFreePool__(NextAllocDesc);
@@ -466,7 +465,6 @@ UDFLongAllocDescToMapping(
     PEXTENT_MAP Extent, Extent2, AllocMap;
     EXTENT_AD AllocExt;
     PALLOC_EXT_DESC NextAllocDesc;
-    ULONG ReadBytes;
     EXTENT_INFO NextAllocLoc;
 
     ExtPrint(("UDFLongAllocDescToMapping: len=%x\n", AllocDescLength));
@@ -498,7 +496,7 @@ UDFLongAllocDescToMapping(
                 return NULL;
             }
             // record information about this frag
-            AllocExt.extLength = len;
+            AllocExt.extLength = ALIGN_UP_BY(len, Vcb->SectorSize);
             AllocExt.extLocation = UDFPartLbaToPhys(Vcb,&(AllocDesc[i].extLocation));
             if (AllocExt.extLocation == LBA_OUT_OF_EXTENT) {
                 UDFPrint(("bad address\n"));
@@ -518,7 +516,7 @@ UDFLongAllocDescToMapping(
             if (!AllocLoc->Mapping ||
             // read this frag
                !NT_SUCCESS(UDFReadExtent(IrpContext, Vcb, &NextAllocLoc,
-                                0, len, FALSE, (int8*)NextAllocDesc, &ReadBytes)))
+                                0, len, FALSE, (int8*)NextAllocDesc)))
             {
                 MyFreePool__(AllocMap);
                 MyFreePool__(NextAllocDesc);
@@ -605,7 +603,6 @@ UDFExtAllocDescToMapping(
     PEXTENT_MAP Extent, Extent2, AllocMap;
     EXTENT_AD AllocExt;
     PALLOC_EXT_DESC NextAllocDesc;
-    ULONG ReadBytes;
     EXTENT_INFO NextAllocLoc;
 
     ExtPrint(("UDFExtAllocDescToMapping: len=%x\n", AllocDescLength));
@@ -635,7 +632,7 @@ UDFExtAllocDescToMapping(
                 return NULL;
             }
             // record information about this frag
-            AllocExt.extLength = len;
+            AllocExt.extLength = ALIGN_UP_BY(len, Vcb->SectorSize);
             AllocExt.extLocation = UDFPartLbaToPhys(Vcb,&(AllocDesc[i].extLocation));
             if (AllocExt.extLocation == LBA_OUT_OF_EXTENT) {
                 UDFPrint(("bad address\n"));
@@ -655,7 +652,7 @@ UDFExtAllocDescToMapping(
             if (!AllocLoc->Mapping ||
             // read this frag
                !NT_SUCCESS(UDFReadExtent(IrpContext, Vcb, &NextAllocLoc,
-                                0, len, FALSE, (int8*)NextAllocDesc, &ReadBytes)))
+                                0, len, FALSE, (int8*)NextAllocDesc)))
             {
                 MyFreePool__(AllocMap);
                 MyFreePool__(NextAllocDesc);
@@ -1968,13 +1965,11 @@ UDFResizeExtent(
     NTSTATUS status;
     EXTENT_INFO TmpExtInf;
     EXTENT_MAP  TmpMapping[2];
-    uint32 s, pe, BSh, PS;
+    uint32 s, pe, BSh;
     SIZE_T req_s;
     SIZE_T LBS = Vcb->SectorSize;
     BSh = Vcb->SectorShift;
-    PS = Vcb->WriteBlockSize >> Vcb->SectorShift;
     uint32 MaxGrow = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS);
-    BOOLEAN Sequential = FALSE;
 
     ASSERT(PartNum < 3);
 
@@ -1985,10 +1980,6 @@ UDFResizeExtent(
     } else
     if (ExtInfo->Length == Length) {
         return STATUS_SUCCESS;
-    }
-    if ((ExtInfo->Flags & EXTENT_FLAG_ALLOC_MASK) == EXTENT_FLAG_ALLOC_SEQUENTIAL) {
-        MaxGrow &= ~(Vcb->WriteBlockSize-1);
-        Sequential = TRUE;
     }
 
     UDFCheckSpaceAllocation(Vcb, 0, ExtInfo->Mapping, AS_USED); // check if used
@@ -2092,11 +2083,7 @@ UDFResizeExtent(
                     lba = ExtInfo->Mapping[i].extLocation + s;
                     pe=UDFPartEnd(Vcb,PartNum);
                     // maximum frag length
-                    if (Sequential) {
-                        lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, PS) >> BSh;
-                    } else {
-                        lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS) >> BSh;
-                    }
+                    lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS) >> BSh;
                     // required last extent length
                     req_s = s + (uint32)( (((Length + LBS - 1) & ~((ULONGLONG)LBS-1)) -
                                            ((l      + LBS - 1) & ~((ULONGLONG)LBS-1))   ) >> BSh);
@@ -2112,12 +2099,17 @@ UDFResizeExtent(
                     // how many sectors we should add
                     req_s = lim - s;
                     ASSERT(req_s);
-                    if ((lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, lba)) {
-                        s += UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s));
-                    }
-/*                    for(s1=lba; (s<lim) && (s1<pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, s1); s1++) {
-                        s++;
-                    }*/
+                    // Convert PSN to LBN for bitmap access
+                    {uint32 _lbn = lba - Vcb->Partitions[0].PartitionRoot;
+                    uint32 _pe_lbn = pe - Vcb->Partitions[0].PartitionRoot;
+                    BOOLEAN _free;
+                    if (Vcb->BitmapFcb) {
+                        _free = (lba < pe) && UDFIsBitmapBitFree(Vcb, _lbn);
+                        if (_free) s += UDFGetCachedBitmapLen(Vcb, _lbn, min(_pe_lbn, _lbn+req_s));
+                    } else {
+                        _free = (lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, _lbn);
+                        if (_free) s += UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), _lbn, min(_pe_lbn, _lbn+req_s));
+                    }}
                     if (s==lim) {
                         // we can just increase the last frag
                         AdPrint(("Resize grow last Not-Rec (4)\n"));
@@ -2166,11 +2158,7 @@ UDFResizeExtent(
                     lba = ExtInfo->Mapping[i].extLocation + s;
                     pe=UDFPartEnd(Vcb,PartNum);
                     // maximum frag length
-                    if (Sequential) {
-                        lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, PS) >> BSh;
-                    } else {
-                        lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS) >> BSh;
-                    }
+                    lim = ALIGN_DOWN_BY(UDF_EXTENT_LENGTH_MASK, LBS) >> BSh;
                     // required last extent length
                     req_s = s + (uint32)( (((Length + LBS - 1) & ~((ULONGLONG)LBS-1)) -
                                            ((l      + LBS - 1) & ~((ULONGLONG)LBS-1))   ) >> BSh);
@@ -2185,12 +2173,17 @@ UDFResizeExtent(
 
                         UDFAcquireResourceExclusive(&(Vcb->BitMapResource1),TRUE);
                         //ASSERT(req_s);
-                        if ((lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, lba)) {
-                            s += (d = UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), lba, min(pe, lba+req_s)));
-                        }
-    /*                    for(s1=lba; (s<lim) && (s1<pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, s1); s1++) {
-                            s++;
-                        }*/
+                        // Convert PSN to LBN for bitmap access
+                        {uint32 _lbn = lba - Vcb->Partitions[0].PartitionRoot;
+                        uint32 _pe_lbn = pe - Vcb->Partitions[0].PartitionRoot;
+                        BOOLEAN _free;
+                        if (Vcb->BitmapFcb) {
+                            _free = (lba < pe) && UDFIsBitmapBitFree(Vcb, _lbn);
+                            if (_free) s += (d = (ULONG)UDFGetCachedBitmapLen(Vcb, _lbn, min(_pe_lbn, _lbn+req_s)));
+                        } else {
+                            _free = (lba < pe) && UDFGetFreeBit(Vcb->FSBM_Bitmap, _lbn);
+                            if (_free) s += (d = (ULONG)UDFGetBitmapLen((uint32*)(Vcb->FSBM_Bitmap), _lbn, min(_pe_lbn, _lbn+req_s)));
+                        }}
 
                         if (s==lim) {
                             AdPrint(("Resize grow last Rec (6)\n"));
@@ -2699,11 +2692,9 @@ UDFReadExtent(
     IN int64 Offset,      // offset in extent
     IN SIZE_T Length,
     IN BOOLEAN Direct,
-    OUT int8* Buffer,
-    OUT PULONG ReadBytes
+    OUT int8* Buffer
     )
 {
-    (*ReadBytes) = 0;
     if (!ExtInfo || !ExtInfo->Mapping) return STATUS_INVALID_PARAMETER;
     ASSERT((uintptr_t)Buffer > 0x1000);
 
@@ -2711,7 +2702,6 @@ UDFReadExtent(
 
     PEXTENT_MAP Extent = ExtInfo->Mapping;   // Extent array
     SIZE_T to_read;
-    ULONG _ReadBytes;
     uint32 Lba, sect_offs, flags;
     uint32 index;
     NTSTATUS status;
@@ -2721,20 +2711,17 @@ UDFReadExtent(
     Offset += ExtInfo->Offset;               // used for in-ICB data
     // read maximal possible part of each frag of extent
     Lba = UDFExtentOffsetToLba(Vcb, Extent, Offset, &sect_offs, &to_read, &flags, &index);
-    _ReadBytes = index;
     while(Length) {
         // EOF check
         if (Lba == LBA_OUT_OF_EXTENT) return STATUS_END_OF_FILE;
-        Extent += (_ReadBytes + 1);
+        Extent += (index + 1);
         // check for reading tail
         to_read = min(to_read, Length);
         if (flags == EXTENT_RECORDED_ALLOCATED) {
-            status = UDFReadData(IrpContext, Vcb, TRUE, ( ((uint64)Lba) << Vcb->SectorShift) + sect_offs, to_read, Direct, Buffer, &_ReadBytes);
-            (*ReadBytes) += _ReadBytes;
+            status = UDFReadData(IrpContext, Vcb, TRUE, ( ((uint64)Lba) << Vcb->SectorShift) + sect_offs, to_read, Direct, Buffer);
             if (!NT_SUCCESS(status)) return status;
         } else {
             RtlZeroMemory(Buffer, to_read);
-            (*ReadBytes) += to_read;
         }
         // prepare for reading next frag...
         Length -= to_read;
@@ -2744,7 +2731,6 @@ UDFReadExtent(
         Buffer += to_read;
 //        Offset += to_read;
         Lba = UDFNextExtentToLba(Vcb, Extent, &to_read, &flags, &index);
-        _ReadBytes = index;
         sect_offs = 0;
     }
     return STATUS_SUCCESS;

@@ -42,8 +42,7 @@ NTSTATUS UDFReadExtent(
     IN int64 Offset,   // offset in extent
     IN SIZE_T Length,
     IN BOOLEAN Direct,
-    OUT int8* Buffer,
-    OUT PULONG ReadBytes
+    OUT int8* Buffer
     );
 
 // builds mapping for specified amount of data at any offset from specified extent.
@@ -736,6 +735,15 @@ UDFUnlinkFile__(
     IN BOOLEAN FreeSpace
     );
 
+// drop the stream directory (all named streams) of a file that itself survives
+// (overwrite/supersede). Requires exclusive Vcb access.
+NTSTATUS
+UDFDeleteAllStreams(
+    IN PIRP_CONTEXT IrpContext,
+    IN PVCB Vcb,
+    IN PUDF_FILE_INFO FileInfo
+    );
+
 // delete all files in directory (FreeSpace = TRUE)
 NTSTATUS
 UDFUnlinkAllFilesInDir(
@@ -801,13 +809,12 @@ UDFReadFile__(
     IN int64 Offset,   // offset in extent
     IN SIZE_T Length,
     IN BOOLEAN Direct,
-    OUT int8* Buffer,
-    OUT PULONG ReadBytes
+    OUT int8* Buffer
     )
 {
     ValidateFileInfo(FileInfo);
 
-    return UDFReadExtent(IrpContext, Vcb, &FileInfo->Dloc->DataLoc, Offset, Length, Direct, Buffer, ReadBytes);
+    return UDFReadExtent(IrpContext, Vcb, &FileInfo->Dloc->DataLoc, Offset, Length, Direct, Buffer);
 } // end UDFReadFile__()*/
 
 /*
@@ -1365,11 +1372,7 @@ NTSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,
 
 #define UDFGetFileICBAllocMode__(fi)  (((PFILE_ENTRY)((fi)->Dloc->FileEntry))->icbTag.flags & ICB_FLAG_ALLOC_MASK)
 
-#ifndef UDF_LIMIT_DIR_SIZE // release
 #define UDF_DIR_INDEX_FRAME_SH   9
-#else   //  demo
-#define UDF_DIR_INDEX_FRAME_SH   7
-#endif
 
 #define UDF_DIR_INDEX_FRAME      ((uint_di)(1 << UDF_DIR_INDEX_FRAME_SH))
 
@@ -1378,7 +1381,6 @@ NTSTATUS UDFPretendFileDeleted__(IN PVCB Vcb,
 #define AlignDirIndex(n)   ((n+UDF_DIR_INDEX_FRAME_GRAN_MASK) & ~(UDF_DIR_INDEX_FRAME_GRAN_MASK))
 
 PDIR_INDEX_ITEM
-__fastcall
 UDFDirIndex(
     IN PDIR_INDEX_HDR hDirNdx,
     IN uint_di i
@@ -1414,6 +1416,9 @@ UDFDirIndex(
 #define UDFSetFreeBits(arr,bit,bc)  UDFSetBits(arr,bit,bc)
 
 #define UDFGetBadBit(arr,bit)       UDFGetBit(arr,bit)
+
+// Bitmap pin granularity: 8KB per page
+#define BITMAP_PIN_GRANULARITY  0x2000
 
 #define UDFGetZeroBit(arr,bit)      UDFGetBit(arr,bit)
 #define UDFSetZeroBit(arr,bit)      UDFSetBit(arr,bit)

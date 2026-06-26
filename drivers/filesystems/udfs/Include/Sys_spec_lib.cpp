@@ -15,6 +15,7 @@
 *
 *************************************************************************/
 
+#include            "udffs.h"
 
 /*
     This routine converts UDF timestamp to NT time
@@ -24,24 +25,52 @@ UDFTimeToNT(
     IN PUDF_TIME_STAMP UdfTime
     )
 {
+#define TIMESTAMP_ZONE_MIN  (-1440)  // -24 hours in minutes
+#define TIMESTAMP_ZONE_MAX  ( 1440)  // +24 hours in minutes
+
     LONGLONG NtTime;
     TIME_FIELDS TimeFields;
 
-    TimeFields.Milliseconds = (USHORT)(UdfTime->centiseconds * 10 + UdfTime->hundredsOfMicroseconds / 100);
+    // Extract Type (bits 15-12) and Zone (bits 11-0, signed 12-bit) from packed field
+    USHORT TypeAndTz = UdfTime->typeAndTimezone;
+    USHORT Type = (TypeAndTz >> 12) & 0x0F;
+    SHORT Zone = (SHORT)(TypeAndTz << 4) >> 4; // sign-extend 12-bit value
+    BOOLEAN HasOffset = (TypeAndTz & TIMESTAMP_OFFSET_MASK) != TIMESTAMP_NO_OFFSET;
+
     TimeFields.Second = (USHORT)(UdfTime->second);
     TimeFields.Minute = (USHORT)(UdfTime->minute);
     TimeFields.Hour = (USHORT)(UdfTime->hour);
     TimeFields.Day = (USHORT)(UdfTime->day);
     TimeFields.Month = (USHORT)(UdfTime->month);
     TimeFields.Year = (USHORT)((UdfTime->year < 1601) ? 1601 : UdfTime->year);
+    TimeFields.Milliseconds = 0;
 
-    if (!RtlTimeFieldsToTime(&TimeFields, (PLARGE_INTEGER)&NtTime)) {
-        NtTime = 0;
+    if (Type <= TIMESTAMP_TYPE_LOCAL &&
+        (!HasOffset || (Zone >= TIMESTAMP_ZONE_MIN && Zone <= TIMESTAMP_ZONE_MAX)) &&
+        RtlTimeFieldsToTime(&TimeFields, (PLARGE_INTEGER)&NtTime)) {
+
+        // Add sub-second precision: centiseconds (10^-2), hundredsOfMicroseconds (10^-4),
+        // microseconds (10^-6), all converted to 100ns units
+
+        NtTime += ((LONGLONG)(UdfTime->centiseconds) * (10 * 1000) +
+                   (LONGLONG)(UdfTime->hundredsOfMicroseconds) * 100 +
+                   (LONGLONG)(UdfTime->microseconds)) * 10;
+
+        // Convert local time to UTC using timezone offset
+
+        if (Type == TIMESTAMP_TYPE_LOCAL && HasOffset) {
+            NtTime += Int32x32To64( -Zone, (60 * 10 * 1000 * 1000) );
+        }
+
     } else {
-        ExLocalTimeToSystemTime( (PLARGE_INTEGER)&NtTime, (PLARGE_INTEGER)&NtTime );
+
+        NtTime = 0;
     }
 
     return NtTime;
+
+#undef TIMESTAMP_ZONE_MIN
+#undef TIMESTAMP_ZONE_MAX
 } // end UDFTimeToNT()
 
 
@@ -74,7 +103,11 @@ UDFTimeToUDF(
     UdfTime->day = (UCHAR)(TimeFields.Day);
     UdfTime->month = (UCHAR)(TimeFields.Month);
     UdfTime->year = (USHORT)(TimeFields.Year);
-    UdfTime->typeAndTimezone = (TIMESTAMP_TYPE_LOCAL << 14);
+    // Type occupies bits 12-15 of typeAndTimezone (timezone offset is bits 0-11,
+    // see ECMA-167 / TIMESTAMP_OFFSET_MASK). It must be written at bit 12 so the
+    // reader (UDFTimeToNT), which extracts ((field >> 12) & 0xF), gets TYPE_LOCAL
+    // instead of a bogus type 4 that would make it reject the timestamp as 0.
+    UdfTime->typeAndTimezone = (TIMESTAMP_TYPE_LOCAL << 12);
 } // end UDFTimeToUDF()
 
 /*

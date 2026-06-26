@@ -28,7 +28,7 @@
                             sizeof(UDF_IO_CONTEXT),  \
                             TAG_IO_CONTEXT)
 
-#define UDFFreeIoContext(IO)     ExFreePool( &(IO) )
+#define UDFFreeIoContext(IO)     ExFreePool( (IO) )
 
 /*************************************************************************
 *
@@ -597,7 +597,8 @@ Return Value:
 
         // Deallocate the Io context if allocated.
 
-        if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO)) {
+        if (FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_ALLOC_IO) &&
+            IrpContext->IoContext != NULL) {
 
             UDFFreeIoContext(IrpContext->IoContext);
         }
@@ -673,20 +674,17 @@ Return Value:
 
     //  Lock the Fcb and check if there is really any work to do.
 
-    //TODO: impl
-    //UDFLockFcb( IrpContext, Fcb );
+    UDFLockFcb( IrpContext, Fcb );
 
     if (Fcb->FileLock != NULL) {
 
-        //TODO: impl
-        //UDFUnlockFcb( IrpContext, Fcb );
+        UDFUnlockFcb( IrpContext, Fcb );
         return TRUE;
     }
 
     Fcb->FileLock = FileLock = FsRtlAllocateFileLock(NULL, NULL);
 
-    //TODO: impl
-    //UDFUnlockFcb( IrpContext, Fcb );
+    UDFUnlockFcb( IrpContext, Fcb );
 
     //  Return or raise as appropriate.
     if (FileLock == NULL) {
@@ -1343,7 +1341,6 @@ UDFDeleteVCB(
         UDFDeleteResource(&(Vcb->DlocResource2));
         UDFDeleteResource(&(Vcb->FlushResource));
         UDFDeleteResource(&(Vcb->PreallocResource));
-        UDFDeleteResource(&(Vcb->IoResource));
     } _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
         BrutePoint();
     } _SEH2_END;
